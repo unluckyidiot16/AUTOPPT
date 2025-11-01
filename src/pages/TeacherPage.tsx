@@ -7,6 +7,8 @@ import { useTeacherNotify, type TeacherEvent } from "../hooks/useTeacherNotify";
 import { loadSlides, type SlideMeta } from "../slideMeta";
 import { supabase } from "../supabaseClient";
 import { RoomQR } from "../components/RoomQR";
+import { getBasePath } from "../utils/getBasePath"; // 👈 추가
+
 
 function makeRoomCode(len = 6) {
     const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -31,12 +33,11 @@ export default function TeacherPage() {
 
     // 현재 room 기준 학생 접속 URL
     const studentUrl = useMemo(() => {
-        // ⚠️ GitHub Pages 경로 맞춰서
-        const base = window.location.origin;
-        // 예: https://user.github.io/AUTOPPT
-        const prefix = base.includes("github.io") ? `${base}/AUTOPPT` : base;
-        return `${prefix}/student?room=${roomId}`;
+        const origin = window.location.origin;
+        const base = getBasePath(); // "" 또는 "/AUTOPPT"
+        return `${origin}${base}/student?room=${roomId}`;
     }, [roomId]);
+
 
     useEffect(() => {
         loadSlides().then(setSlides).catch(() => setSlides([]));
@@ -111,14 +112,16 @@ export default function TeacherPage() {
     const handleNewRoom = () => {
         const code = makeRoomCode();
         nav(`/teacher?room=${code}`);
-        // 클립보드에 학생용 URL
-        const base = window.location.origin;
-        const prefix = base.includes("github.io") ? `${base}/AUTOPPT` : base;
-        const stuUrl = `${prefix}/student?room=${code}`;
+
+        const origin = window.location.origin;
+        const base = getBasePath();
+        const stuUrl = `${origin}${base}/student?room=${code}`;
+
         if (navigator.clipboard) {
             navigator.clipboard.writeText(stuUrl).catch(() => {});
         }
     };
+
 
     // 과거 기록 로딩
     useEffect(() => {
