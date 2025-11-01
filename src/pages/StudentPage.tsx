@@ -4,6 +4,7 @@ import { useRoomId } from "../hooks/useRoomId";
 import { useRealtime } from "../hooks/useRealtime";
 import { useTeacherNotify } from "../hooks/useTeacherNotify";
 import { loadSlides, type SlideMeta } from "../slideMeta";
+import { useRole } from "../roles";
 
 function makeStudentId() {
     return "stu-" + Math.random().toString(36).slice(2, 7);
@@ -20,6 +21,9 @@ export default function StudentPage() {
     const [answer, setAnswer] = useState("");
     const [submitted, setSubmitted] = useState(false);
     const [slides, setSlides] = useState<SlideMeta[]>([]);
+
+    const { setStudent } = useRole();
+    useEffect(() => setStudent(), [setStudent]);
 
     useEffect(() => {
         loadSlides().then(setSlides).catch(() => setSlides([]));
