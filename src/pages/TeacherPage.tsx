@@ -1,95 +1,97 @@
-import React, { useState, useEffect } from "react";
-import ConnectionStatus from "../components/ConnectionStatus";
+// src/pages/TeacherPage.tsx
+import React, { useEffect, useState } from "react";
+import { useRoomId } from "../hooks/useRoomId";
 import { useRealtime } from "../hooks/useRealtime";
-import { useTeacherNotify } from "../hooks/useTeacherNotify";
-import type { TeacherEvent } from "../hooks/useTeacherNotify";
-
-const DUMMY_SLIDES = [1, 2, 3, 4];
+import { useTeacherNotify, type TeacherEvent } from "../hooks/useTeacherNotify";
+import { SLIDE_META } from "../slideMeta";
 
 export default function TeacherPage() {
-    const roomId = "class-1";
-
-    // 메인 채널: 슬라이드/스텝 브로드캐스트
+    const roomId = useRoomId("class-1");
     const { connected, lastMessage, send } = useRealtime(roomId, "teacher");
+    const { connected: tConnected, lastEvent } = useTeacherNotify(roomId);
 
-    // 교사용 채널: 학생들이 보낸 unlock 요청
-    const {
-        connected: teacherChanConnected,
-        lastEvent,
-    } = useTeacherNotify(roomId);
+    const [slide, setSlide] = useState(1);
+    const [step, setStep] = useState(0);
+    const [queue, setQueue] = useState<TeacherEvent[]>([]);
 
-    const [currentSlide, setCurrentSlide] = useState(1);
-    const [currentStep, setCurrentStep] = useState(0);
-    const [pending, setPending] = useState<TeacherEvent[]>([]);
-
-    // 학생이 뭔가 보냈을 때 대기열에 쌓기
+    // 학생들이 보낸 요청 수신
     useEffect(() => {
         if (!lastEvent) return;
         if (lastEvent.type === "unlock-request") {
-            setPending((prev) => [...prev, lastEvent]);
+            setQueue((prev) => [...prev, lastEvent]);
         }
     }, [lastEvent]);
 
-    const gotoSlide = (slide: number) => {
-        setCurrentSlide(slide);
-        setCurrentStep(0);
-        send({ type: "goto", slide, step: 0 });
+    // 교사도 다른 교사(혹은 자기) 신호 받아서 화면 맞추기
+    useEffect(() => {
+        if (!lastMessage) return;
+        if (lastMessage.type === "goto") {
+            setSlide(lastMessage.slide);
+            setStep(lastMessage.step);
+        }
+    }, [lastMessage]);
+
+    const currentMeta = SLIDE_META[slide]?.steps?.[step];
+
+    const goTo = (nextSlide: number, nextStep: number) => {
+        // 본인 화면
+        setSlide(nextSlide);
+        setStep(nextStep);
+        // 전체에게 방송
+        send({ type: "goto", slide: nextSlide, step: nextStep });
     };
 
-    const nextStep = () => {
-        const next = currentStep + 1;
-        setCurrentStep(next);
-        send({ type: "goto", slide: currentSlide, step: next });
-        // 같은 슬라이드/스텝에 대한 요청은 이제 필요 없으니까 비워도 됨
-        setPending([]);
+    // 다음 스텝으로 진행
+    const handleNext = () => {
+        const steps = SLIDE_META[slide]?.steps || [];
+        const nextStep = step + 1;
+        if (nextStep < steps.length) {
+            goTo(slide, nextStep);
+        } else {
+            // 다음 슬라이드로 넘어가고 step=0
+            goTo(slide + 1, 0);
+        }
+        // 승인 후 큐 비우기
+        setQueue([]);
     };
 
     return (
-        <div>
-            <h2 style={{ fontSize: 20, marginBottom: 12 }}>교사 화면</h2>
-            <ConnectionStatus connected={connected} />
-            <p>메인 채널: {connected ? "OK" : "X"} / 교사용 채널: {teacherChanConnected ? "OK" : "X"}</p>
-
-            <p style={{ marginTop: 8 }}>
-                현재 슬라이드: {currentSlide}, 스텝: {currentStep}
-            </p>
-
-            <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-                {DUMMY_SLIDES.map((s) => (
-                    <button key={s} onClick={() => gotoSlide(s)}>
-                        슬라이드 {s}
-                    </button>
-                ))}
+        <div style={{ display: "grid", gap: 16 }}>
+            <div>
+                <h2>교사 화면</h2>
+                <p>room: {roomId}</p>
+                <p>
+                    실시간: {connected ? "🟢" : "⚪️"} / 학생알림: {tConnected ? "🟢" : "⚪️"}
+                </p>
+                <p>
+                    현재 슬라이드: {slide} / 스텝: {step}{" "}
+                    {currentMeta?.kind === "quiz" ? "(문제 스텝)" : ""}
+                </p>
+                <button onClick={handleNext}>다음으로 보내기</button>
             </div>
 
-            <button onClick={nextStep} style={{ marginTop: 16 }}>
-                다음 스텝으로 전체 보내기
-            </button>
-
-            <div style={{ marginTop: 24 }}>
-                <h3>학생 요청 대기열</h3>
-                {pending.length === 0 && <p>아직 도착한 정답이 없습니다.</p>}
-                {pending.map((evt, idx) => (
+            <div>
+                <h3>해제 요청 대기열</h3>
+                {queue.length === 0 && <p>대기 중인 학생 없음</p>}
+                {queue.map((evt, idx) => (
                     <div
                         key={idx}
                         style={{
-                            marginTop: 8,
+                            border: "1px solid #334155",
+                            borderRadius: 8,
                             padding: 8,
-                            background: "#1f2937",
-                            borderRadius: 6,
+                            marginBottom: 8,
                         }}
                     >
-                        <div>
-                            slide {evt.slide} / step {evt.step}
-                        </div>
-                        <div>answer: {evt.answer}</div>
-                        <div>student: {evt.studentId ?? "익명"}</div>
+                        <p>
+                            학생: {evt.studentId ?? "unknown"} / 입력: <b>{evt.answer}</b>
+                        </p>
+                        <p>
+                            슬라이드 {evt.slide} / 스텝 {evt.step}
+                        </p>
+                        <button onClick={handleNext}>이 학생 승인하고 다음으로</button>
                     </div>
                 ))}
-            </div>
-
-            <div style={{ marginTop: 16 }}>
-                <small>마지막 수신: {lastMessage ? JSON.stringify(lastMessage) : "없음"}</small>
             </div>
         </div>
     );
