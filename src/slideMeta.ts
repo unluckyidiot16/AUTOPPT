@@ -1,17 +1,21 @@
 // src/slideMeta.ts
-// src/slideMeta.ts
 export type StepMeta =
-    | { kind: "show" }
-    | { kind: "quiz"; answer: string; auto?: boolean }; // auto=true면 자동채점
+    | { kind: "show"; img?: string }
+    | { kind: "quiz"; answer: string; auto?: boolean; img?: string };
 
-export const SLIDE_META: Record<number, { steps: StepMeta[] }> = {
-    1: {
-        steps: [
-            { kind: "show" },
-            { kind: "quiz", answer: "반지름", auto: true },
-        ],
-    },
-    2: {
-        steps: [{ kind: "show" }],
-    },
+export type SlideMeta = {
+    slide: number;
+    title?: string;
+    steps: StepMeta[];
 };
+
+// 간단 캐시
+let _slides: SlideMeta[] | null = null;
+
+export async function loadSlides(): Promise<SlideMeta[]> {
+    if (_slides) return _slides;
+    const res = await fetch("/AUTOPPT/slides.json"); // base에 맞게 조정
+    const data = (await res.json()) as SlideMeta[];
+    _slides = data;
+    return data;
+}

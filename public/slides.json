@@ -1,0 +1,17 @@
+[
+  {
+    "slide": 1,
+    "title": "원의 성질 1",
+    "steps": [
+      { "kind": "show", "img": "/slides/1-0.png" },
+      { "kind": "quiz", "answer": "반지름", "img": "/slides/1-1.png", "auto": true }
+    ]
+  },
+  {
+    "slide": 2,
+    "title": "원의 성질 2",
+    "steps": [
+      { "kind": "show", "img": "/slides/2-0.png" }
+    ]
+  }
+]
