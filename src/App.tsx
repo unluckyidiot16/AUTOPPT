@@ -1,14 +1,15 @@
-// 변경/추가 import
+// src/App.tsx
 import { Routes, Route, Navigate } from "react-router-dom";
-import { RequireTeacher } from "./roles";
-import UnlockTeacher from "./pages/UnlockTeacher";
+import RequireTeacher from "./auth/RequireTeacher";
 import TeacherPage from "./pages/TeacherPage";
 import StudentPage from "./pages/StudentPage";
+import LoginPage from "./pages/LoginPage";
 
 export default function App() {
     return (
         <Routes>
             <Route path="/" element={<Navigate to="/student" replace />} />
+            <Route path="/login" element={<LoginPage />} />
             <Route path="/student" element={<StudentPage />} />
             <Route
                 path="/teacher"
@@ -18,7 +19,6 @@ export default function App() {
                     </RequireTeacher>
                 }
             />
-            <Route path="/unlock" element={<UnlockTeacher />} />
         </Routes>
     );
 }

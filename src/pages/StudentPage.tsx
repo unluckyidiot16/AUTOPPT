@@ -1,17 +1,18 @@
-// src/pages/StudentPage.tsx
+// src/pages/StudentPage.tsx (전체 교체본)
 import React, { useEffect, useMemo, useState } from "react";
 import { useRoomId } from "../hooks/useRoomId";
 import { useRealtime } from "../hooks/useRealtime";
 import { useTeacherNotify } from "../hooks/useTeacherNotify";
 import { loadSlides, type SlideMeta } from "../slideMeta";
 import { useRole } from "../roles";
+import { supabase } from "../supabaseClient";
 
 function makeStudentId() {
     return "stu-" + Math.random().toString(36).slice(2, 7);
 }
 
 export default function StudentPage() {
-    const roomId = useRoomId("class-1");
+    const roomId = useRoomId("class-1"); // ex) KAK9GP
     const { connected, lastMessage } = useRealtime(roomId, "student");
     const { send: sendToTeacher } = useTeacherNotify(roomId);
 
@@ -43,9 +44,25 @@ export default function StudentPage() {
     const currentMeta = currentSlide?.steps?.[step];
     const isQuiz = currentMeta?.kind === "quiz";
 
-    const handleSubmit = () => {
+    const handleSubmit = async () => {
         if (!isQuiz) return;
         const userAns = answer.trim();
+
+        // 1) 서버 저장 (현재 스키마: ppt_sessions + answers)
+        try {
+            const { error } = await supabase.rpc("submit_answer", {
+                p_room_code: roomId,    // 텍스트 코드
+                p_slide: slide,
+                p_step: step,
+                p_student_id: studentId,
+                p_answer: userAns,
+            });
+            if (error) console.error("[submit_answer] RPC error:", error);
+        } catch (e) {
+            console.error(e);
+        }
+
+        // 2) 교사 화면 대기열 업데이트용 실시간 알림(기존 채널)
         sendToTeacher({
             type: "unlock-request",
             roomId,
@@ -54,6 +71,7 @@ export default function StudentPage() {
             answer: userAns,
             studentId,
         });
+
         setSubmitted(true);
     };
 

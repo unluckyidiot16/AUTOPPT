@@ -1,4 +1,4 @@
-// src/pages/TeacherPage.tsx
+// src/pages/TeacherPage.tsx (교체/수정 포인트만)
 import React, { useEffect, useState, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { useRoomId } from "../hooks/useRoomId";
@@ -7,8 +7,7 @@ import { useTeacherNotify, type TeacherEvent } from "../hooks/useTeacherNotify";
 import { loadSlides, type SlideMeta } from "../slideMeta";
 import { supabase } from "../supabaseClient";
 import { RoomQR } from "../components/RoomQR";
-import { getBasePath } from "../utils/getBasePath"; // 👈 추가
-
+import { getBasePath } from "../utils/getBasePath";
 
 function makeRoomCode(len = 6) {
     const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -19,7 +18,8 @@ function makeRoomCode(len = 6) {
 
 export default function TeacherPage() {
     const nav = useNavigate();
-    const roomId = useRoomId("class-1");
+    const roomId = useRoomId("class-1"); // ex) KAK9GP
+
     const { connected, lastMessage, send } = useRealtime(roomId, "teacher");
     const { connected: tConnected, lastEvent } = useTeacherNotify(roomId);
 
@@ -31,27 +31,21 @@ export default function TeacherPage() {
         { id: number; studentId?: string; answer: string; slide: number; step: number; created_at?: string }[]
     >([]);
 
-    // A) 학생 접속 URL 메모 (상단 useMemo 부분)
+    // ✅ 학생 접속 URL: 현재 roomId(텍스트 코드) 기준
     const studentUrl = useMemo(() => {
         const origin = window.location.origin;
         const base = getBasePath(); // "/AUTOPPT"
-        // ✅ 해시 라우팅
         return `${origin}${base}/#/student?room=${roomId}`;
     }, [roomId]);
 
-    // B) 새 반 만들기(handleNewRoom)에서 클립보드 복사용 URL
+    // ✅ 새 반: 코드만 만들고 쿼리스트링 갱신(rooms 미사용)
     const handleNewRoom = () => {
         const code = makeRoomCode();
         nav(`/teacher?room=${code}`);
-
         const origin = window.location.origin;
         const base = getBasePath();
-        // ✅ 해시 라우팅
         const stuUrl = `${origin}${base}/#/student?room=${code}`;
-
-        if (navigator.clipboard) {
-            navigator.clipboard.writeText(stuUrl).catch(() => {});
-        }
+        navigator.clipboard?.writeText(stuUrl).catch(() => {});
     };
 
     useEffect(() => {
@@ -61,39 +55,15 @@ export default function TeacherPage() {
     const currentSlide = slides.find((s) => s.slide === slide);
     const currentMeta = currentSlide?.steps?.[step];
 
-    // 학생 요청 수신 + 로그 저장
+    // 학생 요청 수신 + UI 큐 반영(answers insert는 학생 RPC가 수행)
     useEffect(() => {
         if (!lastEvent) return;
         if (lastEvent.type === "unlock-request") {
             setQueue((prev) => [...prev, lastEvent]);
-
-            supabase
-                .from("answers")
-                .insert({
-                    room_id: lastEvent.roomId,
-                    slide: lastEvent.slide,
-                    step: lastEvent.step,
-                    student_id: lastEvent.studentId ?? null,
-                    answer: lastEvent.answer,
-                })
-                .then(({ error }) => {
-                    if (!error) {
-                        setHistory((prev) => [
-                            {
-                                id: Date.now(),
-                                studentId: lastEvent.studentId,
-                                answer: lastEvent.answer,
-                                slide: lastEvent.slide,
-                                step: lastEvent.step,
-                            },
-                            ...prev,
-                        ]);
-                    }
-                });
         }
     }, [lastEvent]);
 
-    // 다른 교사 탭에서 온 sync
+    // 교사 간 sync
     useEffect(() => {
         if (!lastMessage) return;
         if (lastMessage.type === "goto") {
@@ -124,15 +94,16 @@ export default function TeacherPage() {
         setQueue([]);
     };
 
-    // 과거 기록 로딩
+    // ✅ 최근 제출 로딩: answers.room_code = roomId
     useEffect(() => {
         supabase
             .from("answers")
             .select("*")
-            .eq("room_id", roomId)
+            .eq("room_code", roomId)
             .order("created_at", { ascending: false })
             .limit(30)
-            .then(({ data }) => {
+            .then(({ data, error }) => {
+                if (error) { console.error(error); return; }
                 if (!data) return;
                 setHistory(
                     data.map((row: any, idx: number) => ({
@@ -147,106 +118,5 @@ export default function TeacherPage() {
             });
     }, [roomId]);
 
-    return (
-        <div className="app-shell">
-            <div className="topbar">
-                <h1 style={{ fontSize: 20, margin: 0 }}>교사 제어 패널</h1>
-                <button className="btn" onClick={handleNewRoom}>
-                    + 반(ROOM) 만들기
-                </button>
-                <span className="badge">sync: {connected ? "🟢" : "⚪️"}</span>
-                <span className="badge">student: {tConnected ? "🟢" : "⚪️"}</span>
-                <span className="badge">room: {roomId}</span>
-            </div>
-
-            <div style={{ display: "grid", gridTemplateColumns: "1.25fr 0.75fr", gap: 16 }}>
-                {/* 왼쪽: 현재 문제 + 대기열 */}
-                <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-                    <div className="panel">
-                        <div style={{ fontSize: 13, opacity: 0.7, marginBottom: 6 }}>현재 문제</div>
-                        <div style={{ fontSize: 30, fontWeight: 700, marginBottom: 6 }}>
-                            슬라이드 {slide} / 스텝 {step}{" "}
-                            {currentMeta?.kind === "quiz" ? <span style={{ color: "#f97316" }}>(문제)</span> : null}
-                        </div>
-                        {currentMeta?.img ? (
-                            <img
-                                src={currentMeta.img}
-                                alt="current"
-                                style={{ maxWidth: "100%", borderRadius: 14, marginBottom: 10 }}
-                            />
-                        ) : null}
-                        <div style={{ display: "flex", gap: 8 }}>
-                            <button className="btn" onClick={handleNext}>
-                                ⏭ 다음 스텝으로 보내기
-                            </button>
-                            <button className="btn" onClick={handleUnlockOnly}>
-                                🔓 이 스텝만 다시 열기
-                            </button>
-                        </div>
-                    </div>
-
-                    <div className="panel">
-                        <h3 style={{ marginTop: 0, marginBottom: 10 }}>해제 요청 대기열</h3>
-                        {queue.length === 0 ? (
-                            <p style={{ opacity: 0.6 }}>대기 중인 학생 없음</p>
-                        ) : (
-                            queue.map((evt, idx) => (
-                                <div key={idx} className="queue-item">
-                                    <div>
-                                        <b>{evt.studentId ?? "익명 학생"}</b> 가 제출했습니다.
-                                    </div>
-                                    <div style={{ fontSize: 12, opacity: 0.7 }}>
-                                        슬라이드 {evt.slide} / 스텝 {evt.step}
-                                    </div>
-                                    <div
-                                        style={{
-                                            marginTop: 6,
-                                            background: "rgba(15,23,42,0.25)",
-                                            borderRadius: 8,
-                                            padding: "4px 8px",
-                                        }}
-                                    >
-                                        답안: {evt.answer || "(빈값)"}
-                                    </div>
-                                    <div style={{ marginTop: 6, display: "flex", gap: 6 }}>
-                                        <button className="btn" onClick={handleNext}>
-                                            ⏭ 승인 후 다음
-                                        </button>
-                                        <button className="btn" onClick={handleUnlockOnly}>
-                                            🔓 이 스텝만
-                                        </button>
-                                    </div>
-                                </div>
-                            ))
-                        )}
-                    </div>
-                </div>
-
-                {/* 오른쪽: QR + 기록 */}
-                <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-                    <RoomQR url={studentUrl} />
-
-                    <div className="panel">
-                        <h3 style={{ marginTop: 0, marginBottom: 8 }}>최근 제출 기록</h3>
-                        <div style={{ maxHeight: 240, overflowY: "auto" }}>
-                            {history.length === 0 ? (
-                                <p style={{ opacity: 0.6 }}>기록 없음</p>
-                            ) : (
-                                history.map((h) => (
-                                    <div key={h.id} style={{ borderBottom: "1px solid rgba(148,163,184,0.12)", padding: "5px 0" }}>
-                                        <div style={{ fontSize: 13 }}>
-                                            <b>{h.studentId ?? "익명"}</b> → {h.answer}
-                                        </div>
-                                        <div style={{ fontSize: 11, opacity: 0.6 }}>
-                                            slide {h.slide} / step {h.step} {h.created_at ? "· " + h.created_at : ""}
-                                        </div>
-                                    </div>
-                                ))
-                            )}
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    );
+    // ... 이하 렌더는 기존 그대로 ...
 }
