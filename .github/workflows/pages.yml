@@ -14,14 +14,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
-      - run: npm install
+
+      # 1) 의존성 설치
+      - run: npm ci
+
+      # 2) 빌드 (여기에 env 넣어줘야 supabaseClient가 빈 값으로 안 빌드됨)
+      - run: npm run build
         env:
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
           VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+
+      # 3) dist 올리기
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist
