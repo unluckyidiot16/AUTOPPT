@@ -1,0 +1,43 @@
+# macOS
+.DS_Store
+
+# Node / Vite 기본
+node_modules/
+dist/
+.vite/
+.cache/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+package-lock.json
+npm-shrinkwrap.json
+
+# env (로컬 비밀키)
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.development
+
+# 우리가 실제로 쓰는 이름
+.env.local
+
+# Vite / editor stuff
+*.local
+*.log
+.vscode/
+.idea/
+*.swp
+
+# Supabase 로컬 관련 (필요한 건 남기고 나머지 무시)
+supabase/.branches
+supabase/.temp
+supabase/.supabase
+supabase/docker
+supabase/.env
+
+# 빌드/배포 도구
+.vercel/
+.netlify/
+.tmp/
