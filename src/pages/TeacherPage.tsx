@@ -1,6 +1,6 @@
 // src/pages/TeacherPage.tsx
-import React, { useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import React, { useRef, useEffect, useMemo, useState } from "react";
+import { useNavigate, useLocation } from "react-router-dom";
 import { useRoomId } from "../hooks/useRoomId";
 import { useRealtime } from "../hooks/useRealtime";
 import { useTeacherNotify, type TeacherEvent } from "../hooks/useTeacherNotify";
@@ -18,7 +18,8 @@ function makeRoomCode(len = 6) {
 
 export default function TeacherPage() {
     const nav = useNavigate();
-    const roomId = useRoomId("CLASS-" + makeRoomCode()); // 기본값도 랜덤
+    const defaultCode = useMemo(() => "CLASS-" + makeRoomCode(), []);
+    const roomId = useRoomId(defaultCode); 
     const { connected, lastMessage, send } = useRealtime(roomId, "teacher");
     const { connected: tConnected, lastEvent } = useTeacherNotify(roomId);
 
@@ -37,10 +38,14 @@ export default function TeacherPage() {
         return `${origin}${base}/#/student?room=${roomId}`;
     }, [roomId]);
 
+    const claimedRef = useRef<string | null>(null);
+    
     // 세션 보장 + 점유
     useEffect(() => {
         let cancelled = false;
-
+        if (claimedRef.current === roomId) return; // 같은 room에 대해 재실행 방지
+        claimedRef.current = roomId;
+        
         async function ensureAndClaim(code: string, attempt = 0): Promise<void> {
             if (cancelled) return;
             await supabase.rpc("ensure_session", { p_room_code: code });
@@ -107,6 +112,15 @@ export default function TeacherPage() {
         }
     }, [lastMessage]);
 
+    const loc = useLocation();
+    useEffect(() => {
+        const hasRoom = new URLSearchParams(loc.search).has("room");
+        if (!hasRoom && roomId) {
+            // 첫 진입 시 한 번만 URL에 고정
+            nav(`/teacher?room=${roomId}`, { replace: true });
+        }
+        }, [loc.search, nav, roomId]);
+    
     const goTo = (nextSlide: number, nextStep: number) => {
         setSlide(nextSlide);
         setStep(nextStep);
