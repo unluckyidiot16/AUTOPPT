@@ -31,13 +31,28 @@ export default function TeacherPage() {
         { id: number; studentId?: string; answer: string; slide: number; step: number; created_at?: string }[]
     >([]);
 
-    // 현재 room 기준 학생 접속 URL
+    // A) 학생 접속 URL 메모 (상단 useMemo 부분)
     const studentUrl = useMemo(() => {
         const origin = window.location.origin;
-        const base = getBasePath(); // "" 또는 "/AUTOPPT"
-        return `${origin}${base}/student?room=${roomId}`;
+        const base = getBasePath(); // "/AUTOPPT"
+        // ✅ 해시 라우팅
+        return `${origin}${base}/#/student?room=${roomId}`;
     }, [roomId]);
 
+    // B) 새 반 만들기(handleNewRoom)에서 클립보드 복사용 URL
+    const handleNewRoom = () => {
+        const code = makeRoomCode();
+        nav(`/teacher?room=${code}`);
+
+        const origin = window.location.origin;
+        const base = getBasePath();
+        // ✅ 해시 라우팅
+        const stuUrl = `${origin}${base}/#/student?room=${code}`;
+
+        if (navigator.clipboard) {
+            navigator.clipboard.writeText(stuUrl).catch(() => {});
+        }
+    };
 
     useEffect(() => {
         loadSlides().then(setSlides).catch(() => setSlides([]));
@@ -108,20 +123,6 @@ export default function TeacherPage() {
         send({ type: "goto", slide, step });
         setQueue([]);
     };
-
-    const handleNewRoom = () => {
-        const code = makeRoomCode();
-        nav(`/teacher?room=${code}`);
-
-        const origin = window.location.origin;
-        const base = getBasePath();
-        const stuUrl = `${origin}${base}/student?room=${code}`;
-
-        if (navigator.clipboard) {
-            navigator.clipboard.writeText(stuUrl).catch(() => {});
-        }
-    };
-
 
     // 과거 기록 로딩
     useEffect(() => {

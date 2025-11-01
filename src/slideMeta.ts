@@ -14,7 +14,8 @@ let _slides: SlideMeta[] | null = null;
 
 export async function loadSlides(): Promise<SlideMeta[]> {
     if (_slides) return _slides;
-    const res = await fetch("/AUTOPPT/slides.json"); // base에 맞게 조정
+    // ✅ 하드코딩 대신 BASE_URL 사용
+    const res = await fetch((import.meta.env.BASE_URL || "/") + "slides.json");
     const data = (await res.json()) as SlideMeta[];
     _slides = data;
     return data;
