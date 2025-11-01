@@ -1,22 +1,18 @@
 // src/supabaseClient.ts
-import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { createClient } from "@supabase/supabase-js";
 
-const supabaseUrl =
-    import.meta.env.VITE_SUPABASE_URL ?? "https://infhrqalyvybktiibtty.supabase.co";
-const supabaseAnonKey =
-    import.meta.env.VITE_SUPABASE_ANON_KEY ?? "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImluZmhycWFseXZ5Ymt0aWlidHR5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjE4OTgzMjIsImV4cCI6MjA3NzQ3NDMyMn0.Skq7wnJBG5EqRVblo-wArAUYjT-3AQbVTRNZJmwWt_E";
+// 1) 우선 Vite env에서 읽는다
+const envUrl = import.meta.env.VITE_SUPABASE_URL;
+const envAnon = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
+// 2) CI나 GitHub Pages에서 env가 비어 있으면 여기 값으로 쓴다
+//    ↓↓↓ 여기는 네 실제 프로젝트 URL/anon으로 바꿔도 됨
+const fallbackUrl = "https://example.supabase.co";
+const fallbackAnon = "eyJhbGciOi...example...";
+
+// 3) 최종으로 쓸 값
+const supabaseUrl = envUrl ?? fallbackUrl;
+const supabaseAnonKey = envAnon ?? fallbackAnon;
+
+// 4) create 한 번만!
 export const supabase = createClient(supabaseUrl, supabaseAnonKey);
-let supabase: SupabaseClient;
-
-if (!supabaseUrl || !supabaseAnonKey) {
-    console.warn(
-        "[supabase] 환경변수가 없습니다. .env.local 에 VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY 넣어주세요."
-    );
-    // 개발 편의용 dummy client
-    supabase = createClient("https://example.supabase.co", "ey.fake.fake.fake");
-} else {
-    supabase = createClient(supabaseUrl, supabaseAnonKey);
-}
-
-export { supabase };
