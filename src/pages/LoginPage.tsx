@@ -1,6 +1,6 @@
 // src/pages/LoginPage.tsx
 import { useEffect, useState } from "react";
-import { supabase } from "../lib/supabase";
+import { supabase } from "../supabaseClient";
 import { useNavigate, useSearchParams } from "react-router-dom";
 
 export default function LoginPage() {
