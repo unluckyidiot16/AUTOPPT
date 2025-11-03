@@ -2,6 +2,8 @@ import React, { useEffect, useMemo, useState } from "react";
 import { supabase } from "../supabaseClient";
 import { useRoomId } from "../hooks/useRoomId";
 import { loadSlides, type SlideMeta } from "../slideMeta";
+import PdfViewer from "../components/PdfViewer";
+
 
 const DEBUG = true;
 const DBG = {
@@ -14,6 +16,7 @@ const DBG = {
         return () => console.timeEnd(`[AUTOPPT] ${label}`);
     },
 };
+
 
 async function rpc<T = any>(name: string, params: Record<string, any>) {
     const stop = DBG.time(`rpc:${name}`);
@@ -30,6 +33,13 @@ if (typeof window !== "undefined") {
     (window).sb = supabase;
 }
 
+function getNickname() {
+    return localStorage.getItem("autoppt:nickname") ?? "";
+}
+function setNickname(v: string) {
+    localStorage.setItem("autoppt:nickname", v);
+}
+
 export default function StudentPage() {
     const roomCode = useRoomId("CLASS-XXXXXX");
     const studentId = useMemo(() => getOrSetStudentId(), []);
@@ -42,6 +52,30 @@ export default function StudentPage() {
     const [submitted, setSubmitted] = useState(false);
     const [showToast, setShowToast] = useState(false);
 
+    const [nickname, setNicknameState] = useState(getNickname());
+    const [editNick, setEditNick] = useState(false);
+    const [nickInput, setNickInput] = useState(nickname);
+    const saveNick = () => { setNickname(nickInput.trim()); setNicknameState(nickInput.trim()); setEditNick(false); };
+
+    const [deckFileUrl, setDeckFileUrl] = useState<string | null>(null);
+
+    function getPublicUrl(key: string) {
+        return supabase.storage.from("presentations").getPublicUrl(key).data.publicUrl;
+    }
+
+    useEffect(() => {
+        (async () => {
+            if (!currentDeckId) { setDeckFileUrl(null); return; }
+            const { data, error } = await supabase
+                .from("decks")
+                .select("file_key")
+                .eq("id", currentDeckId)
+                .maybeSingle();
+            if (!error && data?.file_key) setDeckFileUrl(getPublicUrl(data.file_key));
+            else setDeckFileUrl(null);
+        })();
+    }, [currentDeckId]);
+    
     useEffect(() => { DBG.info("StudentPage mount", { room: roomCode, studentId }); }, [roomCode, studentId]);
 
     useEffect(() => { loadSlides().then(setSlides).catch(() => setSlides([])); }, []);
@@ -154,6 +188,15 @@ export default function StudentPage() {
                 <span className="badge">room: {roomCode}</span>
                 <span className="badge">내 ID: {studentId}</span>
                 <span className="badge">교시: {currentDeckId ? "선택됨" : "미선택"}</span>
+                {nickname ? (
+                    <span className="badge">닉네임: {nickname}</span>
+                ) : (
+                    <span className="badge">닉네임: 설정 안 됨</span>
+                )}
+                <button className="btn" style={{ marginLeft: 8 }}
+                        onClick={() => { setNickInput(nickname); setEditNick(true); }}>
+                    닉네임 설정
+                </button>
                 <button className="btn" style={{ marginLeft: 8 }} onClick={refreshRoomNow} disabled={checking}>
                     새 교시 확인
                 </button>
@@ -184,6 +227,19 @@ export default function StudentPage() {
                     ) : (
                         <div className="lock-banner">교사가 아직 이 스텝을 열지 않았습니다. 잠시 기다려 주세요.</div>
                     )}
+
+                    // 본문 표시부
+                    <div className="panel" style={{ marginBottom: 14 }}>
+                        <div style={{ fontSize: 12, opacity: 0.7 }}>현재 자료</div>
+                        <div style={{ fontSize: 26, fontWeight: 700, marginBottom: 6 }}>
+                            슬라이드 {slide} / 스텝 {step} {isQuiz ? <span style={{ color: "#f97316" }}>(문제)</span> : <span>(설명)</span>}
+                        </div>
+                        {deckFileUrl ? (
+                            <PdfViewer fileUrl={deckFileUrl} page={slide} />
+                        ) : currentMeta?.img ? (
+                            <img src={currentMeta.img} alt="slide" style={{ maxWidth: "100%", borderRadius: 14, marginBottom: 4 }} />
+                        ) : null}
+                    </div>
 
                     {/* 토스트 입력창 */}
                     {showToast && !submitted && isQuiz && (
@@ -222,6 +278,23 @@ export default function StudentPage() {
                                 >
                                     ×
                                 </button>
+                            </div>
+                        </div>
+                    )}
+                    {/* 닉네임 편집 토스트: 정답 토스트 바깥에 독립적으로 둠 */}
+                    {editNick && (
+                        <div style={{
+                            position:'fixed', left:'50%', bottom:72, transform:'translateX(-50%)',
+                            background:'rgba(17,24,39,0.98)', border:'1px solid rgba(148,163,184,0.25)',
+                            borderRadius:12, padding:'10px', width:'min(92vw, 360px)', zIndex:55
+                        }} role="dialog" aria-label="닉네임 설정">
+                            <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+                                <div style={{ fontWeight:700 }}>닉네임</div>
+                                <input className="input" value={nickInput}
+                                       onChange={(e)=>setNickInput(e.target.value)}
+                                       style={{ flex:1 }} placeholder="표시할 닉네임"/>
+                                <button className="btn" onClick={saveNick}>저장</button>
+                                <button className="btn" onClick={()=>setEditNick(false)}>×</button>
                             </div>
                         </div>
                     )}

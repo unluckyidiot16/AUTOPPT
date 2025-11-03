@@ -6,6 +6,7 @@ import { loadSlides, type SlideMeta } from "../slideMeta";
 import { RoomQR } from "../components/RoomQR";
 import { getBasePath } from "../utils/getBasePath";
 import { useRoomDecksSubscription } from "../hooks/useRoomDecksSubscription";
+import PdfViewer from "../components/PdfViewer";
 
 const DEBUG = true;
 const DBG = {
@@ -19,6 +20,21 @@ const DBG = {
     },
 };
 
+function useToast(ms = 2400) {
+    const [msg, setMsg] = useState<string>("");
+    const [open, setOpen] = useState(false);
+    const show = (m: string) => { setMsg(m); setOpen(true); setTimeout(() => setOpen(false), ms); };
+    const node = open ? (
+        <div style={{
+            position:'fixed', left:'50%', bottom:24, transform:'translateX(-50%)',
+            background:'rgba(17,24,39,0.98)', color:'#fff',
+            border:'1px solid rgba(148,163,184,0.25)', borderRadius:12, padding:'10px 14px',
+            boxShadow:'0 10px 24px rgba(0,0,0,0.35)', zIndex:60
+        }}>{msg}</div>
+    ) : null;
+    return { show, node };
+}
+
 async function rpc<T = any>(name: string, params: Record<string, any>) {
     const stop = DBG.time(`rpc:${name}`);
     DBG.info("rpc →", name, params);
@@ -27,11 +43,6 @@ async function rpc<T = any>(name: string, params: Record<string, any>) {
     if (error) DBG.err("rpc ←", name, error);
     else DBG.ok("rpc ←", name, data);
     return { data: data as T | null, error };
-}
-
-if (typeof window !== "undefined") {
-    // @ts-ignore
-    (window).sb = supabase;
 }
 
 function makeRoomCode(len = 6) {
@@ -44,30 +55,134 @@ function makeRoomCode(len = 6) {
 export default function TeacherPage() {
     const nav = useNavigate();
     const loc = useLocation();
+    const toast = useToast();
 
+    // ----- room code / view mode -----
     const defaultCode = useMemo(() => "CLASS-" + makeRoomCode(), []);
     const roomCode = useRoomId(defaultCode);
+    const qs = new URLSearchParams(loc.search);
+    const viewMode: "present" | "setup" = qs.get("mode") === "setup" ? "setup" : "present";
+    const setViewMode = (m: "present" | "setup") => {
+        const next = new URLSearchParams(loc.search);
+        next.set("mode", m);
+        if (!next.get("room") && roomCode) next.set("room", roomCode);
+        nav(`/teacher?${next.toString()}`, { replace: true });
+    };
 
-    const [roomId, setRoomId] = useState<string | null>(null);
-
+    // room param 보장
     useEffect(() => {
         const hasRoom = new URLSearchParams(loc.search).has("room");
-        if (!hasRoom && roomCode) nav(`/teacher?room=${roomCode}`, { replace: true });
+        if (!hasRoom && roomCode) {
+            const next = new URLSearchParams(loc.search);
+            next.set("room", roomCode);
+            if (!next.get("mode")) next.set("mode", "present");
+            nav(`/teacher?${next.toString()}`, { replace: true });
+        }
     }, [loc.search, nav, roomCode]);
 
+    // ----- ownership / claim -----
     const claimedRef = useRef<string | null>(null);
     const [isOwner, setIsOwner] = useState(false);
 
-    const [decks, setDecks] = useState<Record<number, any>>({});
+    useEffect(() => {
+        let cancelled = false;
+        (async () => {
+            if (!roomCode) return;
+            if (claimedRef.current === roomCode) return;
+            claimedRef.current = roomCode;
 
+            const { data: claimOk, error } = await rpc<boolean>("claim_room_auth", { p_code: roomCode });
+            if (cancelled) return;
+            if (error) { setIsOwner(false); return; }
+            if (claimOk !== true) {
+                const next = "CLASS-" + makeRoomCode();
+                await rpc("ensure_room", { p_code: next });
+                toast.show("이미 사용 중인 코드입니다. 새 방을 만들었어요.");
+                nav(`/teacher?room=${next}&mode=${viewMode}`, { replace: true });
+                setIsOwner(false);
+                return;
+            }
+            setIsOwner(true);
+        })();
+
+        const hb = setInterval(() => { rpc("heartbeat_room_auth", { p_code: roomCode }); }, 30_000);
+        const onBye = () => rpc("release_room_auth", { p_code: roomCode });
+        window.addEventListener("beforeunload", onBye);
+        return () => { cancelled = true; clearInterval(hb); window.removeEventListener("beforeunload", onBye); };
+    }, [roomCode, nav, viewMode]);
+
+    // ----- room id / rooms state -----
+    const [roomId, setRoomId] = useState<string | null>(null);
+    const [state, setState] = useState<{ slide?: number; step?: number }>({});
+    const [currentDeckId, setCurrentDeckId] = useState<string | null>(null);
+
+    useEffect(() => {
+        let cancelled = false;
+        (async () => {
+            if (!roomCode) return;
+            const { data, error } = await supabase
+                .from("rooms")
+                .select("id, current_deck_id, state")
+                .eq("code", roomCode)
+                .maybeSingle();
+            if (!cancelled && !error && data) {
+                setRoomId(data.id ?? null);
+                setCurrentDeckId(data.current_deck_id ?? null);
+                setState((data.state as any) ?? {});
+            }
+            const ch = supabase
+                .channel(`rooms:${roomCode}`)
+                .on("postgres_changes",
+                    { event: "UPDATE", schema: "public", table: "rooms", filter: `code=eq.${roomCode}` },
+                    (payload) => {
+                        const row: any = payload.new;
+                        setCurrentDeckId(row.current_deck_id ?? null);
+                        setState(row.state ?? {});
+                    })
+                .subscribe();
+            return () => { supabase.removeChannel(ch); };
+        })();
+        return () => { cancelled = true; };
+    }, [roomCode]);
+
+    // ----- slides meta -----
+    const [slides, setSlides] = useState<SlideMeta[]>([]);
+    useEffect(() => { loadSlides().then(setSlides).catch(() => setSlides([])); }, []);
+    const currSlide = Number(state?.slide ?? 1);
+    const currStep  = Number(state?.step  ?? 0);
+    const stepsOfCurrent = (slides.find(s => s.slide === currSlide)?.steps) ?? [];
+    const currentStepMeta = stepsOfCurrent[currStep];
+
+    // ----- deck slots (for setup) -----
+    const [slots, setSlots] = useState<{ slot: number; deck_id: string | null; title?: string | null }[]>(
+        Array.from({ length: 6 }, (_, i) => ({ slot: i + 1, deck_id: null }))
+    );
+    useEffect(() => {
+        (async () => {
+            if (!roomCode) return;
+            const { data: roomRow } = await supabase.from("rooms").select("id").eq("code", roomCode).maybeSingle();
+            if (!roomRow?.id) return;
+            setRoomId(roomRow.id);
+            const { data } = await supabase
+                .from("room_decks")
+                .select("slot, deck_id, decks(title)")
+                .eq("room_id", roomRow.id)
+                .order("slot", { ascending: true });
+            if (data) {
+                setSlots(Array.from({ length: 6 }, (_, i) => {
+                    const found = data.find((d: any) => d.slot === i + 1);
+                    return { slot: i + 1, deck_id: found?.deck_id ?? null, title: (found as any)?.decks?.title ?? null };
+                }));
+            }
+        })();
+    }, [roomCode]);
+
+    // 실시간 슬롯 업데이트
+    const [decks, setDecks] = useState<Record<number, any>>({});
     useRoomDecksSubscription(roomId, (ev) => {
         setDecks((prev) => {
             const next = { ...prev };
-            if (ev.eventType === "DELETE") {
-                const slot = ev.old?.slot;
-                if (slot in next) delete next[slot];
-                return next;
-            }
+            if (ev.eventType === "DELETE") { const slot = ev.old?.slot; if (slot in next) delete next[slot]; return next; }
             const row = ev.new;
             next[row.slot] = {
                 deck_id: row.deck_id,
@@ -79,132 +194,89 @@ export default function TeacherPage() {
         });
     });
 
+    // ----- answers_v2 realtime (history live) -----
+    const [history, setHistory] = useState<any[]>([]);
     useEffect(() => {
-        let cancelled = false;
+        if (!roomId) return;
+        const ch = supabase
+            .channel(`answers:${roomId}`)
+            .on('postgres_changes',{
+                event:'INSERT', schema:'public', table:'answers_v2', filter:`room_id=eq.${roomId}`
+            }, (ev:any)=>{ setHistory((prev)=>[ev.new, ...prev].slice(0,50)); })
+            .subscribe();
+        return ()=>{ supabase.removeChannel(ch); };
+    }, [roomId]);
 
-        DBG.info("TeacherPage mount", { room: roomCode });
-
+    useEffect(() => {
         (async () => {
             if (!roomCode) return;
-            if (claimedRef.current === roomCode) return;
-            claimedRef.current = roomCode;
-
-            // 방 보장 & 점유
-            const { data: claimOk, error } = await rpc<boolean>("claim_room_auth", { p_code: roomCode });
-            if (cancelled) return;
-            if (error) {
-                setIsOwner(false);
-                return;
-            }
-            if (claimOk !== true) {
-                const next = "CLASS-" + makeRoomCode();
-                await rpc("ensure_room", { p_code: next });
-                nav(`/teacher?room=${next}`, { replace: true });
-                setIsOwner(false);
-                return;
-            }
-            setIsOwner(true);
+            const { data, error } = await rpc<any[]>("fetch_history_by_code", { p_room_code: roomCode, p_limit: 50 });
+            if (!error) setHistory(data ?? []);
         })();
+    }, [roomCode, state]);
 
-        const hb = setInterval(() => {
-            rpc("heartbeat_room_auth", { p_code: roomCode });
-        }, 30_000);
-
-        const onBye = () => rpc("release_room_auth", { p_code: roomCode });
-        window.addEventListener("beforeunload", onBye);
-
-        return () => {
-            cancelled = true;
-            clearInterval(hb);
-            window.removeEventListener("beforeunload", onBye);
-        };
-    }, [roomCode, nav]);
-
-    const [slides, setSlides] = useState<SlideMeta[]>([]);
-    useEffect(() => {
-        loadSlides().then(setSlides).catch(() => setSlides([]));
-    }, []);
-
-    const [state, setState] = useState<{ slide?: number; step?: number }>({});
-    const [currentDeckId, setCurrentDeckId] = useState<string | null>(null);
+    // ----- deck file (PDF) -----
+    const [deckFileUrl, setDeckFileUrl] = useState<string | null>(null);
+    const getPublicUrl = (key: string) =>
+        supabase.storage.from("presentations").getPublicUrl(key).data.publicUrl;
 
     useEffect(() => {
-        let cancelled = false;
         (async () => {
-            if (!roomCode) return;
-
-            // 초깃값: id 포함(Realtime 구독용)
+            if (!currentDeckId) { setDeckFileUrl(null); return; }
             const { data, error } = await supabase
-                .from("rooms")
-                .select("id, current_deck_id, state")
-                .eq("code", roomCode)
+                .from("decks")
+                .select("file_key")
+                .eq("id", currentDeckId)
                 .maybeSingle();
-
-            if (!cancelled && !error && data) {
-                setRoomId(data.id ?? null);
-                setCurrentDeckId(data.current_deck_id ?? null);
-                setState((data.state as any) ?? {});
-            }
-
-            const channel = supabase
-                .channel(`rooms:${roomCode}`)
-                .on(
-                    "postgres_changes",
-                    { event: "UPDATE", schema: "public", table: "rooms", filter: `code=eq.${roomCode}` },
-                    (payload) => {
-                        const row: any = payload.new;
-                        setCurrentDeckId(row.current_deck_id ?? null);
-                        setState(row.state ?? {});
-                    }
-                )
-                .subscribe();
-
-            return () => {
-                supabase.removeChannel(channel);
-            };
+            if (!error && data?.file_key) setDeckFileUrl(getPublicUrl(data.file_key));
+            else setDeckFileUrl(null);
         })();
+    }, [currentDeckId]);
 
-        return () => {
-            cancelled = true;
-        };
+    // ----- student URL -----
+    const studentUrl = useMemo(() => {
+        const origin = window.location.origin;
+        const base = getBasePath();
+        return `${origin}${base}/#/student?room=${roomCode}`;
     }, [roomCode]);
 
-    const [slots, setSlots] = useState<{ slot: number; deck_id: string | null; title?: string | null }[]>(
-        Array.from({ length: 6 }, (_, i) => ({ slot: i + 1, deck_id: null }))
-    );
+    // ----- actions -----
+    const goto = async (nextSlide: number, nextStep: number) => {
+        if (!isOwner) return;
+        await rpc("goto_slide", { p_code: roomCode, p_slide: nextSlide, p_step: nextStep });
+    };
+    const next = async () => {
+        const nStep = currStep + 1;
+        if (nStep < stepsOfCurrent.length) await goto(currSlide, nStep);
+        else await goto(currSlide + 1, 0);
+    };
+    const prev = async () => {
+        if (currStep > 0) await goto(currSlide, currStep - 1);
+        else if (currSlide > 1) {
+            const prevSteps = (slides.find(s => s.slide === (currSlide - 1))?.steps ?? []);
+            await goto(currSlide - 1, Math.max(0, prevSteps.length - 1));
+        }
+    };
 
+    // 발표 모드 단축키
     useEffect(() => {
-        (async () => {
-            if (!roomCode) return;
-            const { data: roomRow } = await supabase.from("rooms").select("id").eq("code", roomCode).maybeSingle();
-            if (!roomRow?.id) return;
-            setRoomId(roomRow.id); // ← roomId 세팅(보강)
+        if (viewMode !== "present") return;
+        const onKey = (e: KeyboardEvent) => {
+            if (!isOwner) return;
+            if (e.key === "ArrowRight" || e.key === " ") { e.preventDefault(); next(); }
+            if (e.key === "ArrowLeft") { e.preventDefault(); prev(); }
+        };
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+    }, [viewMode, isOwner, currSlide, currStep, slides]);
 
-            const { data } = await supabase
-                .from("room_decks")
-                .select("slot, deck_id, decks(title)")
-                .eq("room_id", roomRow.id)
-                .order("slot", { ascending: true });
-
-            if (data) {
-                setSlots(
-                    Array.from({ length: 6 }, (_, i) => {
-                        const found = data.find((d: any) => d.slot === i + 1);
-                        return { slot: i + 1, deck_id: found?.deck_id ?? null, title: (found as any)?.decks?.title ?? null };
-                    })
-                );
-            }
-        })();
-    }, [roomCode]);
-
+    // 슬롯 배정/업로드(설정 모드)
     const [slotEdit, setSlotEdit] = useState<{ [k: number]: { ext?: string; title?: string } }>({});
     const assignSlot = async (slot: number) => {
         const ext = slotEdit[slot]?.ext?.trim() || "";
         const title = slotEdit[slot]?.title?.trim() || `Deck ${slot}`;
         if (!ext) { alert("ext_id를 입력하세요"); return; }
-        const { error } = await rpc("assign_room_deck_by_ext", {
-            p_code: roomCode, p_slot: slot, p_ext_id: ext, p_title: title
-        });
+        const { error } = await rpc("assign_room_deck_by_ext", { p_code: roomCode, p_slot: slot, p_ext_id: ext, p_title: title });
         if (error) { alert("슬롯 배정 실패"); return; }
 
         const { data: roomRow } = await supabase.from("rooms").select("id").eq("code", roomCode).maybeSingle();
@@ -215,142 +287,161 @@ export default function TeacherPage() {
             .eq("room_id", roomRow.id)
             .order("slot");
         if (data) {
-            setSlots(
-                Array.from({ length: 6 }, (_, i) => {
-                    const found = data.find((d: any) => d.slot === i + 1);
-                    return { slot: i + 1, deck_id: found?.deck_id ?? null, title: (found as any)?.decks?.title ?? null };
-                })
-            );
+            setSlots(Array.from({ length: 6 }, (_, i) => {
+                const found = data.find((d: any) => d.slot === i + 1);
+                return { slot: i + 1, deck_id: found?.deck_id ?? null, title: (found as any)?.decks?.title ?? null };
+            }));
         }
     };
 
-    const selectPeriod = async (slot: number) => {
-        if (!isOwner) return;
-        const { error } = await rpc("set_room_deck", { p_code: roomCode, p_slot: slot });
-        if (error) { alert("교시 전환 실패(먼저 슬롯에 덱을 배정하세요)"); return; }
-        await rpc("goto_slide", { p_code: roomCode, p_slide: 1, p_step: 0 });
-    };
+    async function uploadPdfForSlot(slot: number) {
+        const s = slots.find(x => x.slot === slot);
+        if (!s?.deck_id) { alert("먼저 슬롯에 덱을 배정하세요."); return; }
 
-    const currSlide = Number(state?.slide ?? 1);
-    const currStep  = Number(state?.step ?? 0);
-    const [slidesMeta, setSlidesMeta] = useState<SlideMeta[]>([]);
-    useEffect(() => setSlidesMeta(slides), [slides]);
+        const input = document.createElement("input");
+        input.type = "file";
+        input.accept = "application/pdf";
+        input.onchange = async () => {
+            const file = input.files?.[0];
+            if (!file) return;
+            const key = `${s.deck_id}/slides.pdf`;
+            const { error: upErr } = await supabase.storage
+                .from("presentations")
+                .upload(key, file, { upsert: true, contentType: file.type });
+            if (upErr) { alert("업로드 실패"); return; }
 
-    const goto = async (nextSlide: number, nextStep: number) => {
-        if (!isOwner) return;
-        await rpc("goto_slide", { p_code: roomCode, p_slide: nextSlide, p_step: nextStep });
-    };
-    const next = async () => {
-        const steps = (slidesMeta.find((s) => s.slide === currSlide)?.steps) ?? [];
-        const nStep = currStep + 1;
-        if (nStep < steps.length) await goto(currSlide, nStep);
-        else await goto(currSlide + 1, 0);
-    };
+            const { data: deckRow } = await supabase.from("decks").select("ext_id").eq("id", s.deck_id).maybeSingle();
+            const ext = deckRow?.ext_id ?? "";
+            await rpc("upsert_deck_file", { p_ext_id: ext || null, p_file_key: key });
 
-    const studentUrl = useMemo(() => {
-        const origin = window.location.origin;
-        const base = getBasePath();
-        return `${origin}${base}/#/student?room=${roomCode}`;
-    }, [roomCode]);
+            if (currentDeckId === s.deck_id) setDeckFileUrl(getPublicUrl(key));
+            toast.show("업로드 완료");
+        };
+        input.click();
+    }
 
-    const [history, setHistory] = useState<any[]>([]);
-    useEffect(() => {
-        (async () => {
-            if (!roomCode) return;
-            const { data, error } = await rpc<any[]>("fetch_history_by_code", {
-                p_room_code: roomCode, p_limit: 50
-            });
-            if (error) return;
-            setHistory(data ?? []);
-        })();
-    }, [roomCode, state]);
+    // ----- views -----
+    const PresentView = (
+        <div className="panel" style={{ padding: 12 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+                <div style={{ fontSize: 12, opacity: 0.7 }}>슬라이드 {currSlide} / 스텝 {currStep}</div>
+                <a className="btn" href={studentUrl} target="_blank" rel="noreferrer">학생 접속 링크</a>
+            </div>
+            <div style={{ display: "grid", placeItems: "center" }}>
+                {deckFileUrl ? (
+                    <PdfViewer fileUrl={deckFileUrl} page={currSlide} className="pdf-stage" />
+                ) : currentStepMeta?.img ? (
+                    <img src={currentStepMeta.img} alt="current" style={{ maxWidth: "100%", borderRadius: 12 }} />
+                ) : (
+                    <div style={{ opacity: 0.6 }}>자료가 없습니다.</div>
+                )}
+            </div>
+            <div style={{ display: "flex", gap: 8, justifyContent: "center", marginTop: 10 }}>
+                <button className="btn" onClick={prev} disabled={!isOwner}>◀ 이전</button>
+                <button className="btn" onClick={() => goto(currSlide, currStep)} disabled={!isOwner}>🔓 현재 스텝 해제</button>
+                <button className="btn" onClick={next} disabled={!isOwner}>다음 ▶</button>
+            </div>
+        </div>
+    );
 
-    const currentStepMeta = (slidesMeta.find((s) => s.slide === currSlide)?.steps ?? [])[currStep];
+    const SetupView = (
+        <div style={{ display: "grid", gridTemplateColumns: "1.25fr 0.75fr", gap: 16 }}>
+            {/* 좌측: 진행+슬롯 설정 */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                <div className="panel">
+                    <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 6 }}>
+                        현재 교시: {currentDeckId ? "선택됨" : "미선택"} · 슬라이드 {currSlide} / 스텝 {currStep}
+                    </div>
+                    {deckFileUrl ? (
+                        <PdfViewer fileUrl={deckFileUrl} page={currSlide} className="pdf-stage" />
+                    ) : currentStepMeta?.img ? (
+                        <img src={currentStepMeta.img} alt="current" style={{ maxWidth: "100%", borderRadius: 12, marginBottom: 8 }} />
+                    ) : null}
+                    <div style={{ display: "flex", gap: 8 }}>
+                        <button className="btn" onClick={next} disabled={!isOwner}>⏭ 다음</button>
+                        <button className="btn" onClick={() => goto(currSlide, currStep)} disabled={!isOwner}>🔓 현재 스텝 해제</button>
+                    </div>
+                </div>
+
+                <div className="panel">
+                    <h3 style={{ marginTop: 0 }}>교시 전환(1~6) & 자료 연결</h3>
+                    <div style={{ display: "grid", gap: 8, gridTemplateColumns: "repeat(3,minmax(0,1fr))" }}>
+                        {slots.map((s) => (
+                            <div key={s.slot} className="card" style={{ padding: 8, borderRadius: 10 }}>
+                                <div style={{ fontWeight: 700, marginBottom: 6 }}>{s.slot}교시</div>
+                                <div style={{ fontSize: 12, opacity: 0.8, minHeight: 18 }}>
+                                    {s.title || (s.deck_id ? s.deck_id.slice(0, 8) : "미배정")}
+                                </div>
+                                <button className="btn" style={{ marginTop: 6 }} onClick={() => rpc("set_room_deck", { p_code: roomCode, p_slot: s.slot }).then(()=>rpc("goto_slide",{p_code:roomCode,p_slide:1,p_step:0}))} disabled={!isOwner}>
+                                    전환
+                                </button>
+                                <button className="btn" style={{ marginTop: 6 }} onClick={() => uploadPdfForSlot(s.slot)} disabled={!isOwner}>
+                                    PDF 업로드
+                                </button>
+                                <div style={{ marginTop: 8 }}>
+                                    <input
+                                        className="input"
+                                        placeholder="ext_id(파일ID/slug)"
+                                        value={slotEdit[s.slot]?.ext ?? ""}
+                                        onChange={(e) => setSlotEdit((prev) => ({ ...prev, [s.slot]: { ...prev[s.slot], ext: e.target.value } }))}
+                                    />
+                                    <input
+                                        className="input"
+                                        style={{ marginTop: 6 }}
+                                        placeholder="표시 제목"
+                                        value={slotEdit[s.slot]?.title ?? ""}
+                                        onChange={(e) => setSlotEdit((prev) => ({ ...prev, [s.slot]: { ...prev[s.slot], title: e.target.value } }))}
+                                    />
+                                    <button className="btn" style={{ marginTop: 6 }} onClick={() => assignSlot(s.slot)} disabled={!isOwner}>
+                                        슬롯 배정/변경
+                                    </button>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            </div>
+
+            {/* 우측: QR + 제출 기록 */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                <RoomQR url={studentUrl} />
+                <div className="panel">
+                    <h3 style={{ marginTop: 0 }}>최근 제출 기록</h3>
+                    <div style={{ maxHeight: 280, overflowY: "auto" }}>
+                        {history.length === 0 ? (
+                            <p style={{ opacity: 0.6 }}>기록 없음</p>
+                        ) : (
+                            history.map((h, idx) => (
+                                <div key={idx} style={{ borderBottom: "1px solid rgba(148,163,184,0.12)", padding: "6px 0" }}>
+                                    <div style={{ fontSize: 13 }}>
+                                        <b>{h.student_id ?? "익명"}</b> → {h.answer_value ?? h.answer ?? ""}
+                                    </div>
+                                    <div style={{ fontSize: 11, opacity: 0.65 }}>
+                                        slide {h.slide} / step {h.step} · {h.created_at}
+                                    </div>
+                                </div>
+                            ))
+                        )}
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
 
     return (
         <div className="app-shell">
             <div className="topbar">
-                <h1 style={{ margin: 0 }}>교사 제어 패널</h1>
+                <h1 style={{ margin: 0 }}>교사 {viewMode === "present" ? "발표" : "설정"}</h1>
                 <span className="badge">권한: {isOwner ? "ON" : "OFF"}</span>
                 <span className="badge">room: {roomCode}</span>
-            </div>
-
-            <div style={{ display: "grid", gridTemplateColumns: "1.25fr 0.75fr", gap: 16 }}>
-                {/* 좌측: 진행 영역 */}
-                <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-                    <div className="panel">
-                        <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 6 }}>
-                            현재 교시: {currentDeckId ? "선택됨" : "미선택"} · 슬라이드 {currSlide} / 스텝 {currStep}
-                        </div>
-                        {currentStepMeta?.img ? (
-                            <img src={currentStepMeta.img} alt="current" style={{ maxWidth: "100%", borderRadius: 12, marginBottom: 8 }} />
-                        ) : null}
-                        <div style={{ display: "flex", gap: 8 }}>
-                            <button className="btn" onClick={next} disabled={!isOwner}>⏭ 다음</button>
-                            <button className="btn" onClick={() => goto(currSlide, currStep)} disabled={!isOwner}>🔓 현재 스텝 해제</button>
-                        </div>
-                    </div>
-
-                    <div className="panel">
-                        <h3 style={{ marginTop: 0 }}>교시 전환(1~6)</h3>
-                        <div style={{ display: "grid", gap: 8, gridTemplateColumns: "repeat(3,minmax(0,1fr))" }}>
-                            {slots.map((s) => (
-                                <div key={s.slot} className="card" style={{ padding: 8, borderRadius: 10 }}>
-                                    <div style={{ fontWeight: 700, marginBottom: 6 }}>{s.slot}교시</div>
-                                    <div style={{ fontSize: 12, opacity: 0.8, minHeight: 18 }}>
-                                        {s.title || (s.deck_id ? s.deck_id.slice(0, 8) : "미배정")}
-                                    </div>
-                                    <button className="btn" style={{ marginTop: 6 }} onClick={() => selectPeriod(s.slot)} disabled={!isOwner}>
-                                        전환
-                                    </button>
-                                    <div style={{ marginTop: 8 }}>
-                                        <input
-                                            className="input"
-                                            placeholder="ext_id(파일ID/slug)"
-                                            value={slotEdit[s.slot]?.ext ?? ""}
-                                            onChange={(e) => setSlotEdit((prev) => ({ ...prev, [s.slot]: { ...prev[s.slot], ext: e.target.value } }))}
-                                        />
-                                        <input
-                                            className="input"
-                                            style={{ marginTop: 6 }}
-                                            placeholder="표시 제목"
-                                            value={slotEdit[s.slot]?.title ?? ""}
-                                            onChange={(e) => setSlotEdit((prev) => ({ ...prev, [s.slot]: { ...prev[s.slot], title: e.target.value } }))}
-                                        />
-                                        <button className="btn" style={{ marginTop: 6 }} onClick={() => assignSlot(s.slot)} disabled={!isOwner}>
-                                            슬롯 배정/변경
-                                        </button>
-                                    </div>
-                                </div>
-                            ))}
-                        </div>
-                    </div>
-                </div>
-
-                {/* 우측: QR + 제출 기록 */}
-                <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-                    <RoomQR url={studentUrl} />
-                    <div className="panel">
-                        <h3 style={{ marginTop: 0 }}>최근 제출 기록</h3>
-                        <div style={{ maxHeight: 280, overflowY: "auto" }}>
-                            {history.length === 0 ? (
-                                <p style={{ opacity: 0.6 }}>기록 없음</p>
-                            ) : (
-                                history.map((h, idx) => (
-                                    <div key={idx} style={{ borderBottom: "1px solid rgba(148,163,184,0.12)", padding: "6px 0" }}>
-                                        <div style={{ fontSize: 13 }}>
-                                            <b>{h.student_id ?? "익명"}</b> → {h.answer_value ?? h.answer ?? ""}
-                                        </div>
-                                        <div style={{ fontSize: 11, opacity: 0.65 }}>
-                                            slide {h.slide} / step {h.step} · {h.created_at}
-                                        </div>
-                                    </div>
-                                ))
-                            )}
-                        </div>
-                    </div>
+                <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+                    <button className={`btn ${viewMode==='present'?'btn-primary':''}`} onClick={() => setViewMode("present")}>발표</button>
+                    <button className={`btn ${viewMode==='setup'?'btn-primary':''}`} onClick={() => setViewMode("setup")}>설정</button>
                 </div>
             </div>
+
+            {viewMode === "present" ? PresentView : SetupView}
+            {toast.node}
         </div>
     );
 }
