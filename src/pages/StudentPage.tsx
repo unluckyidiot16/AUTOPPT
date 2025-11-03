@@ -3,7 +3,6 @@ import { supabase } from "../supabaseClient";
 import { useRoomId } from "../hooks/useRoomId";
 import { loadSlides, type SlideMeta } from "../slideMeta";
 
-// --- AUTOPPT minimal debug helpers ---
 const DEBUG = true;
 const DBG = {
     info: (...a: any[]) => DEBUG && console.log("%c[AUTOPPT]", "color:#2563eb", ...a),
@@ -16,7 +15,6 @@ const DBG = {
     },
 };
 
-// supabase RPC 공통 래퍼 (성공/실패/소요시간 로깅)
 async function rpc<T = any>(name: string, params: Record<string, any>) {
     const stop = DBG.time(`rpc:${name}`);
     DBG.info("rpc →", name, params);
@@ -27,32 +25,26 @@ async function rpc<T = any>(name: string, params: Record<string, any>) {
     return { data: data as T | null, error };
 }
 
-// 브라우저 콘솔에서 즉석 디버깅 가능하게 노출(선택)
 if (typeof window !== "undefined") {
     // @ts-ignore
     (window).sb = supabase;
 }
 
-function makeStudentId() {
-    return "stu-" + Math.random().toString(36).slice(2, 7);
-}
-
 export default function StudentPage() {
     const roomCode = useRoomId("CLASS-XXXXXX");
-    const studentId = useMemo(() => makeStudentId(), []);
+    const studentId = useMemo(() => getOrSetStudentId(), []);
+
     const [slides, setSlides] = useState<SlideMeta[]>([]);
     const [state, setState] = useState<{ slide?: number; step?: number }>({});
     const [currentDeckId, setCurrentDeckId] = useState<string | null>(null);
+
     const [answer, setAnswer] = useState("");
     const [submitted, setSubmitted] = useState(false);
+    const [showToast, setShowToast] = useState(false);
 
-    useEffect(() => {
-        DBG.info("StudentPage mount", { room: roomCode, studentId });
-    }, [roomCode, studentId]);
+    useEffect(() => { DBG.info("StudentPage mount", { room: roomCode, studentId }); }, [roomCode, studentId]);
 
-    useEffect(() => {
-        loadSlides().then(setSlides).catch(() => setSlides([]));
-    }, []);
+    useEffect(() => { loadSlides().then(setSlides).catch(() => setSlides([])); }, []);
 
     // rooms(state/current_deck_id) 구독
     useEffect(() => {
@@ -81,18 +73,14 @@ export default function StudentPage() {
                         setState(row.state ?? {});
                         setSubmitted(false);
                         setAnswer("");
+                        setShowToast(false); // 진행이 바뀌면 입력창 닫힘
                     }
                 )
                 .subscribe();
 
-            return () => {
-                supabase.removeChannel(channel);
-            };
+            return () => { supabase.removeChannel(channel); };
         })();
-
-        return () => {
-            cancelled = true;
-        };
+        return () => { cancelled = true; };
     }, [roomCode]);
 
     const slide = Number(state?.slide ?? 1);
@@ -101,21 +89,62 @@ export default function StudentPage() {
     const currentMeta = currentSlide?.steps?.[step];
     const isQuiz = currentMeta?.kind === "quiz";
 
+    // 학생 ID 고정
+    function getOrSetStudentId() {
+        const k = "autoppt:student_id";
+        let v = localStorage.getItem(k);
+        if (!v) { v = "stu-" + Math.random().toString(36).slice(2, 9); localStorage.setItem(k, v); }
+        return v;
+    }
+    function getNickname() {
+        const k = "autoppt:nickname";
+        return localStorage.getItem(k) ?? "";
+    }
+
+    // 새 교시 확인(60s 폴링 + 버튼)
+    const [checking, setChecking] = useState(false);
+    async function refreshRoom() {
+        if (!roomCode) return;
+        const { data, error } = await supabase
+            .from("rooms")
+            .select("current_deck_id, state")
+            .eq("code", roomCode)
+            .maybeSingle();
+        if (!error && data) {
+            setCurrentDeckId(data.current_deck_id ?? null);
+            setState((data.state as any) ?? {});
+            setSubmitted(false);
+            setAnswer("");
+            setShowToast(false);
+        }
+    }
+    async function refreshRoomNow() { setChecking(true); try { await refreshRoom(); } finally { setChecking(false); } }
+    useEffect(() => { const t = setInterval(refreshRoomNow, 60_000); return () => clearInterval(t); }, []);
+
+    // quiz 스텝으로 진입하면 토스트 자동 표출(아직 미제출일 때)
+    useEffect(() => {
+        if (isQuiz && !submitted) {
+            setShowToast(true);
+        }
+    }, [isQuiz, slide, step, submitted]);
+
     const handleSubmit = async () => {
         if (!isQuiz) return;
         const userAns = answer.trim();
-        const payload = {
-            p_room_code: roomCode,
-            p_slide: slide,
-            p_step: step,
-            p_student_id: studentId,
-            p_answer: userAns,
-        };
+        const payload = { p_room_code: roomCode, p_slide: slide, p_step: step, p_student_id: studentId, p_answer: userAns };
         DBG.info("answer.submit click", payload);
-
         const { error } = await rpc("submit_answer_v2", payload);
         if (error) return;
         setSubmitted(true);
+        setShowToast(false);
+    };
+
+    // Enter 제출 지원
+    const onKeyDown: React.KeyboardEventHandler<HTMLInputElement> = (e) => {
+        if (e.key === "Enter" && !submitted) {
+            e.preventDefault();
+            handleSubmit();
+        }
     };
 
     return (
@@ -125,6 +154,9 @@ export default function StudentPage() {
                 <span className="badge">room: {roomCode}</span>
                 <span className="badge">내 ID: {studentId}</span>
                 <span className="badge">교시: {currentDeckId ? "선택됨" : "미선택"}</span>
+                <button className="btn" style={{ marginLeft: 8 }} onClick={refreshRoomNow} disabled={checking}>
+                    새 교시 확인
+                </button>
             </div>
 
             {!currentDeckId ? (
@@ -138,30 +170,60 @@ export default function StudentPage() {
                             {isQuiz ? <span style={{ color: "#f97316" }}>(문제)</span> : <span>(설명)</span>}
                         </div>
                         {currentMeta?.img ? (
-                            <img
-                                src={currentMeta.img}
-                                alt="slide"
-                                style={{ maxWidth: "100%", borderRadius: 14, marginBottom: 4 }}
-                            />
+                            <img src={currentMeta.img} alt="slide" style={{ maxWidth: "100%", borderRadius: 14, marginBottom: 4 }} />
                         ) : null}
                     </div>
 
+                    {/* 기존 하단 입력 패널 제거 → 토스트로 대체 */}
                     {isQuiz ? (
-                        <div className="panel">
-                            <p style={{ marginTop: 0, marginBottom: 8 }}>정답을 입력하면 선생님께 전송됩니다.</p>
-                            <input
-                                className="input"
-                                value={answer}
-                                onChange={(e) => setAnswer(e.target.value)}
-                                placeholder="정답 입력"
-                                disabled={submitted}
-                            />
-                            <button className="btn" onClick={handleSubmit} disabled={submitted} style={{ marginTop: 10 }}>
-                                {submitted ? "제출됨" : "제출"}
+                        <div style={{ display: "flex", justifyContent: "center" }}>
+                            <button className="btn" onClick={() => setShowToast(true)} disabled={submitted}>
+                                {submitted ? "제출됨" : "정답 입력"}
                             </button>
                         </div>
                     ) : (
                         <div className="lock-banner">교사가 아직 이 스텝을 열지 않았습니다. 잠시 기다려 주세요.</div>
+                    )}
+
+                    {/* 토스트 입력창 */}
+                    {showToast && !submitted && isQuiz && (
+                        <div
+                            style={{
+                                position: "fixed",
+                                left: "50%", bottom: 24, transform: "translateX(-50%)",
+                                background: "rgba(17,24,39,0.98)",
+                                border: "1px solid rgba(148,163,184,0.25)",
+                                borderRadius: 12,
+                                padding: "12px 12px",
+                                boxShadow: "0 10px 24px rgba(0,0,0,0.35)",
+                                width: "min(92vw, 420px)",
+                                zIndex: 50,
+                            }}
+                            role="dialog"
+                            aria-label="정답 입력"
+                        >
+                            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                <div style={{ fontWeight: 700, fontSize: 14, flex: "0 0 auto" }}>정답</div>
+                                <input
+                                    className="input"
+                                    value={answer}
+                                    onChange={(e) => setAnswer(e.target.value)}
+                                    onKeyDown={onKeyDown}
+                                    placeholder="정답 입력 후 Enter"
+                                    autoFocus
+                                    style={{ flex: 1 }}
+                                />
+                                <button className="btn" onClick={handleSubmit}>제출</button>
+                                <button
+                                    className="btn"
+                                    onClick={() => setShowToast(false)}
+                                    aria-label="닫기"
+                                    title="닫기"
+                                >
+                                    ×
+                                </button>
+                            </div>
+                        </div>
                     )}
                 </>
             )}

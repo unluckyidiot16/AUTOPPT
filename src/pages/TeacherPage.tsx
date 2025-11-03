@@ -5,8 +5,8 @@ import { useRoomId } from "../hooks/useRoomId";
 import { loadSlides, type SlideMeta } from "../slideMeta";
 import { RoomQR } from "../components/RoomQR";
 import { getBasePath } from "../utils/getBasePath";
+import { useRoomDecksSubscription } from "@/hooks/useRoomDecksSubscription";
 
-// --- AUTOPPT minimal debug helpers ---
 const DEBUG = true;
 const DBG = {
     info: (...a: any[]) => DEBUG && console.log("%c[AUTOPPT]", "color:#2563eb", ...a),
@@ -19,7 +19,6 @@ const DBG = {
     },
 };
 
-// supabase RPC 공통 래퍼 (성공/실패/소요시간 로깅)
 async function rpc<T = any>(name: string, params: Record<string, any>) {
     const stop = DBG.time(`rpc:${name}`);
     DBG.info("rpc →", name, params);
@@ -30,7 +29,6 @@ async function rpc<T = any>(name: string, params: Record<string, any>) {
     return { data: data as T | null, error };
 }
 
-// 브라우저 콘솔에서 즉석 디버깅 가능하게 노출(선택)
 if (typeof window !== "undefined") {
     // @ts-ignore
     (window).sb = supabase;
@@ -47,18 +45,39 @@ export default function TeacherPage() {
     const nav = useNavigate();
     const loc = useLocation();
 
-    // 1) URL에 room이 없으면 최초 1회만 생성해 고정
     const defaultCode = useMemo(() => "CLASS-" + makeRoomCode(), []);
     const roomCode = useRoomId(defaultCode);
+
+    const [roomId, setRoomId] = useState<string | null>(null);
 
     useEffect(() => {
         const hasRoom = new URLSearchParams(loc.search).has("room");
         if (!hasRoom && roomCode) nav(`/teacher?room=${roomCode}`, { replace: true });
     }, [loc.search, nav, roomCode]);
 
-    // 2) 방 점유(Auth) + 하트비트
     const claimedRef = useRef<string | null>(null);
     const [isOwner, setIsOwner] = useState(false);
+
+    const [decks, setDecks] = useState<Record<number, any>>({});
+
+    useRoomDecksSubscription(roomId, (ev) => {
+        setDecks((prev) => {
+            const next = { ...prev };
+            if (ev.eventType === "DELETE") {
+                const slot = ev.old?.slot;
+                if (slot in next) delete next[slot];
+                return next;
+            }
+            const row = ev.new;
+            next[row.slot] = {
+                deck_id: row.deck_id,
+                title: row.title ?? next[row.slot]?.title ?? "",
+                ext_id: row.ext_id ?? next[row.slot]?.ext_id ?? null,
+                meta: row.meta ?? null,
+            };
+            return next;
+        });
+    });
 
     useEffect(() => {
         let cancelled = false;
@@ -70,7 +89,7 @@ export default function TeacherPage() {
             if (claimedRef.current === roomCode) return;
             claimedRef.current = roomCode;
 
-            // 방 보장 & 점유 (한 번만 호출)
+            // 방 보장 & 점유
             const { data: claimOk, error } = await rpc<boolean>("claim_room_auth", { p_code: roomCode });
             if (cancelled) return;
             if (error) {
@@ -78,7 +97,6 @@ export default function TeacherPage() {
                 return;
             }
             if (claimOk !== true) {
-                // 다른 교사가 점유 중 → 새 코드 생성 후 이동
                 const next = "CLASS-" + makeRoomCode();
                 await rpc("ensure_room", { p_code: next });
                 nav(`/teacher?room=${next}`, { replace: true });
@@ -102,13 +120,11 @@ export default function TeacherPage() {
         };
     }, [roomCode, nav]);
 
-    // 3) 슬라이드 메타 로드
     const [slides, setSlides] = useState<SlideMeta[]>([]);
     useEffect(() => {
         loadSlides().then(setSlides).catch(() => setSlides([]));
     }, []);
 
-    // 4) rooms(state/current_deck_id) 실시간 구독
     const [state, setState] = useState<{ slide?: number; step?: number }>({});
     const [currentDeckId, setCurrentDeckId] = useState<string | null>(null);
 
@@ -117,19 +133,19 @@ export default function TeacherPage() {
         (async () => {
             if (!roomCode) return;
 
-            // 초깃값
+            // 초깃값: id 포함(Realtime 구독용)
             const { data, error } = await supabase
                 .from("rooms")
-                .select("current_deck_id, state")
+                .select("id, current_deck_id, state")
                 .eq("code", roomCode)
                 .maybeSingle();
 
             if (!cancelled && !error && data) {
+                setRoomId(data.id ?? null);
                 setCurrentDeckId(data.current_deck_id ?? null);
                 setState((data.state as any) ?? {});
             }
 
-            // 구독
             const channel = supabase
                 .channel(`rooms:${roomCode}`)
                 .on(
@@ -153,17 +169,17 @@ export default function TeacherPage() {
         };
     }, [roomCode]);
 
-    // 5) 교시 슬롯(1~6): 배정/전환
     const [slots, setSlots] = useState<{ slot: number; deck_id: string | null; title?: string | null }[]>(
         Array.from({ length: 6 }, (_, i) => ({ slot: i + 1, deck_id: null }))
     );
 
-    // 슬롯 정보 로드
     useEffect(() => {
         (async () => {
             if (!roomCode) return;
             const { data: roomRow } = await supabase.from("rooms").select("id").eq("code", roomCode).maybeSingle();
             if (!roomRow?.id) return;
+            setRoomId(roomRow.id); // ← roomId 세팅(보강)
+
             const { data } = await supabase
                 .from("room_decks")
                 .select("slot, deck_id, decks(title)")
@@ -181,7 +197,6 @@ export default function TeacherPage() {
         })();
     }, [roomCode]);
 
-    // 슬롯 배정 by ext_id (간편)
     const [slotEdit, setSlotEdit] = useState<{ [k: number]: { ext?: string; title?: string } }>({});
     const assignSlot = async (slot: number) => {
         const ext = slotEdit[slot]?.ext?.trim() || "";
@@ -192,7 +207,6 @@ export default function TeacherPage() {
         });
         if (error) { alert("슬롯 배정 실패"); return; }
 
-        // 새로고침하여 반영
         const { data: roomRow } = await supabase.from("rooms").select("id").eq("code", roomCode).maybeSingle();
         if (!roomRow?.id) return;
         const { data } = await supabase
@@ -210,7 +224,6 @@ export default function TeacherPage() {
         }
     };
 
-    // 교시 전환(슬롯 선택)
     const selectPeriod = async (slot: number) => {
         if (!isOwner) return;
         const { error } = await rpc("set_room_deck", { p_code: roomCode, p_slot: slot });
@@ -218,7 +231,6 @@ export default function TeacherPage() {
         await rpc("goto_slide", { p_code: roomCode, p_slide: 1, p_step: 0 });
     };
 
-    // 진행 제어
     const currSlide = Number(state?.slide ?? 1);
     const currStep  = Number(state?.step ?? 0);
     const [slidesMeta, setSlidesMeta] = useState<SlideMeta[]>([]);
@@ -235,23 +247,23 @@ export default function TeacherPage() {
         else await goto(currSlide + 1, 0);
     };
 
-    // 학생 접속 URL
     const studentUrl = useMemo(() => {
         const origin = window.location.origin;
         const base = getBasePath();
         return `${origin}${base}/#/student?room=${roomCode}`;
     }, [roomCode]);
 
-    // 히스토리(보안 RPC)
     const [history, setHistory] = useState<any[]>([]);
     useEffect(() => {
         (async () => {
             if (!roomCode) return;
-            const { data, error } = await rpc<any[]>("fetch_history", { p_room_code: roomCode, p_limit: 50 });
+            const { data, error } = await rpc<any[]>("fetch_history_by_code", {
+                p_room_code: roomCode, p_limit: 50
+            });
             if (error) return;
             setHistory(data ?? []);
         })();
-    }, [roomCode, state]); // 진행 변화 시 새로고침 느낌으로 갱신
+    }, [roomCode, state]);
 
     const currentStepMeta = (slidesMeta.find((s) => s.slide === currSlide)?.steps ?? [])[currStep];
 
@@ -324,10 +336,10 @@ export default function TeacherPage() {
                             {history.length === 0 ? (
                                 <p style={{ opacity: 0.6 }}>기록 없음</p>
                             ) : (
-                                history.map((h) => (
-                                    <div key={h.id} style={{ borderBottom: "1px solid rgba(148,163,184,0.12)", padding: "6px 0" }}>
+                                history.map((h, idx) => (
+                                    <div key={idx} style={{ borderBottom: "1px solid rgba(148,163,184,0.12)", padding: "6px 0" }}>
                                         <div style={{ fontSize: 13 }}>
-                                            <b>{h.student_id ?? "익명"}</b> → {h.answer}
+                                            <b>{h.student_id ?? "익명"}</b> → {h.answer_value ?? h.answer ?? ""}
                                         </div>
                                         <div style={{ fontSize: 11, opacity: 0.65 }}>
                                             slide {h.slide} / step {h.step} · {h.created_at}
