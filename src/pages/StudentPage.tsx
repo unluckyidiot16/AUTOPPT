@@ -55,6 +55,9 @@ export default function StudentPage() {
     const [nickname, setNicknameState] = useState(getNickname());
     const [editNick, setEditNick] = useState(false);
     const [nickInput, setNickInput] = useState(nickname);
+
+    const NW: React.CSSProperties = { whiteSpace: "nowrap" };
+
     const saveNick = () => { setNickname(nickInput.trim()); setNicknameState(nickInput.trim()); setEditNick(false); };
 
     const [deckFileUrl, setDeckFileUrl] = useState<string | null>(null);
@@ -185,19 +188,27 @@ export default function StudentPage() {
         <div className="app-shell" style={{ maxWidth: 560 }}>
             <div className="topbar" style={{ marginBottom: 14 }}>
                 <h1 style={{ fontSize: 18, margin: 0 }}>학생 화면</h1>
-                <span className="badge">room: {roomCode}</span>
-                <span className="badge">내 ID: {studentId}</span>
-                <span className="badge">교시: {currentDeckId ? "선택됨" : "미선택"}</span>
+                <span className="badge" style={NW}>room: {roomCode}</span>
+                <span className="badge" style={NW}>내 ID: {studentId}</span>
+                <span className="badge" style={NW}>교시: {currentDeckId ? "선택됨" : "미선택"}</span>
                 {nickname ? (
-                    <span className="badge">닉네임: {nickname}</span>
+                    <span className="badge" style={NW}>닉네임: {nickname}</span>
                 ) : (
-                    <span className="badge">닉네임: 설정 안 됨</span>
+                    <span className="badge" style={NW}>닉네임: 설정 안 됨</span>
                 )}
-                <button className="btn" style={{ marginLeft: 8 }}
-                        onClick={() => { setNickInput(nickname); setEditNick(true); }}>
+                <button
+                    className="btn"
+                    style={{ marginLeft: 8, whiteSpace: "nowrap" }}
+                    onClick={() => { setNickInput(nickname); setEditNick(true); }}
+                >
                     닉네임 설정
                 </button>
-                <button className="btn" style={{ marginLeft: 8 }} onClick={refreshRoomNow} disabled={checking}>
+                <button
+                    className="btn"
+                    style={{ marginLeft: 8, whiteSpace: "nowrap" }}
+                    onClick={refreshRoomNow}
+                    disabled={checking}
+                >
                     새 교시 확인
                 </button>
             </div>
