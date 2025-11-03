@@ -12,7 +12,7 @@ importers:
         specifier: ^2.49.1
         version: 2.78.0
       pdfjs-dist:
-        specifier: ^5.4.394
+        specifier: 5.4.394
         version: 5.4.394
       qrcode.react:
         specifier: ^4.2.0
