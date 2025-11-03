@@ -32,10 +32,6 @@ if (typeof window !== "undefined") {
     // @ts-ignore
     (window).sb = supabase;
 }
-
-function getNickname() {
-    return localStorage.getItem("autoppt:nickname") ?? "";
-}
 function setNickname(v: string) {
     localStorage.setItem("autoppt:nickname", v);
 }
@@ -239,7 +235,6 @@ export default function StudentPage() {
                         <div className="lock-banner">교사가 아직 이 스텝을 열지 않았습니다. 잠시 기다려 주세요.</div>
                     )}
 
-                    // 본문 표시부
                     <div className="panel" style={{ marginBottom: 14 }}>
                         <div style={{ fontSize: 12, opacity: 0.7 }}>현재 자료</div>
                         <div style={{ fontSize: 26, fontWeight: 700, marginBottom: 6 }}>
