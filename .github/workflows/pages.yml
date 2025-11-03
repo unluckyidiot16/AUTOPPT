@@ -1,3 +1,4 @@
+# .github/workflows/pages.yml
 name: Deploy Vite to GitHub Pages
 
 on:
@@ -15,21 +16,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm
+          cache: pnpm
 
-      # 1) 의존성 설치
-      - run: npm ci
+      - name: Install deps
+        run: pnpm install --frozen-lockfile
 
-      # 2) 빌드 (여기에 env 넣어줘야 supabaseClient가 빈 값으로 안 빌드됨)
-      - run: npm run build
+      - name: Build
+        run: pnpm build
         env:
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
           VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
 
-      # 3) dist 올리기
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist
