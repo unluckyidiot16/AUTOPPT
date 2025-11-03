@@ -5,7 +5,7 @@ import { useRoomId } from "../hooks/useRoomId";
 import { loadSlides, type SlideMeta } from "../slideMeta";
 import { RoomQR } from "../components/RoomQR";
 import { getBasePath } from "../utils/getBasePath";
-import { useRoomDecksSubscription } from "@/hooks/useRoomDecksSubscription";
+import { useRoomDecksSubscription } from "../hooks/useRoomDecksSubscription";
 
 const DEBUG = true;
 const DBG = {
