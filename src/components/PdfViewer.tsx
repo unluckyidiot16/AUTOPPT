@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
-import * as pdfjsLib from "pdfjs-dist";
-import "pdfjs-dist/build/pdf.worker.min.js"; // Vite + pdfjs 4.x에서 자동 번들되게 import
+import { GlobalWorkerOptions, getDocument } from "pdfjs-dist";
+import workerSrc from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+GlobalWorkerOptions.workerSrc = workerSrc;
 
 type Props = {
     fileUrl: string;   // Supabase Storage public URL
@@ -19,7 +20,7 @@ export default function PdfViewer({ fileUrl, page, className }: Props) {
         (async () => {
             try {
                 setLoading(true);
-                const pdf = await pdfjsLib.getDocument(fileUrl).promise;
+                const pdf = await getDocument(fileUrl).promise;
                 const p = Math.max(1, Math.min(page || 1, pdf.numPages));
                 const pdfPage = await pdf.getPage(p);
 
