@@ -372,22 +372,34 @@ export default function TeacherPage() {
                 const ensuredRoomId = existed?.id ?? (await rpc<string>("ensure_room", { p_code: roomCode })).data ?? null;
                 if (!ensuredRoomId) { clearInterval(timer); setUploadPct(100, "방 정보를 찾지 못했습니다."); return; }
 
-                // 1) 덱 확보
+                // 1) 덱 확보 (ID 기반, RPC 없을 때 폴백)
                 let deckId = s?.deck_id ?? null;
                 const baseTitle = toSlug(file.name) || `deck-${slot}`;
                 if (!deckId) {
-                       const { data: created, error: cErr } = await rpc< string >("create_deck_and_assign", {
-                             p_code: roomCode, p_slot: slot, p_title: baseTitle, p_slug: toSlug(file.name)   // p_slug는 옵션
+                       // 우선 시도: create_deck_and_assign (권장)
+                           const { data: created, error: cErr } = await rpc<string>("create_deck_and_assign", {
+                             p_code: roomCode, p_slot: slot, p_title: baseTitle, p_slug: toSlug(file.name) // slug는 옵션
                        });
-                       if (cErr) { clearInterval(timer); setUploadPct(100, "덱 생성 실패"); return; }
-                       deckId = created!;
-                     } else {
-                       // 기존 슬롯이면 그대로 유지(제목 변경 필요 없으면 패스)
-                }
+                       if (cErr || !created) {
+                             // 폴백: 예전 ext기반 배정 (RPC 미배치 환경 대비)
+                                 const fallbackSlug = `deck-${baseTitle}-${Math.random().toString(36).slice(2,6)}`;
+                             const { error: aErr } = await rpc("assign_room_deck_by_ext", {
+                                   p_code: roomCode, p_slot: slot, p_ext_id: fallbackSlug, p_title: baseTitle
+                             });
+                             if (aErr) { clearInterval(timer); setUploadPct(100, "덱 생성 실패"); return; }
+                             // 방금 배정된 deck_id 조회
+                                 const { data: rd } = await supabase.from("room_decks")
+                               .select("deck_id").eq("room_id", ensuredRoomId).eq("slot", slot).maybeSingle();
+                             deckId = rd?.deck_id ?? null;
+                             if (!deckId) { clearInterval(timer); setUploadPct(100, "덱 생성 실패"); return; }
+                           } else {
+                             deckId = created;
+                           }
+                    }
 
                 // 2) 업로드
-                const extOrId = (extForUpdate ?? deckId) as string;
-                let key = `rooms/${ensuredRoomId}/decks/${extOrId}/slides-${Date.now()}.pdf`;
+                if (!deckId) { clearInterval(timer); setUploadPct(100, "덱 식별자 누락"); return; }
+                const key = `rooms/${ensuredRoomId}/decks/${deckId}/slides-${Date.now()}.pdf`;
                 let up = await supabase.storage.from("presentations")
                     .upload(key, file, { upsert: true, contentType: "application/pdf" });
                 if (up.error) { clearInterval(timer); setUploadPct(100, "업로드 실패"); console.error(up.error); return; }
