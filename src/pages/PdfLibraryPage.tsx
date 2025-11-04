@@ -69,6 +69,7 @@ export default function PdfLibraryPage() {
 
     const assignAndUse = async (d: DeckRow) => {
         if (!roomCode || !d.ext_id) return;
+        if (!d.ext_id) { console.warn("[LIB] ext_id 없음: 지도로 배정 불가, PDF 재업로드로 식별자 생성 권장"); setErrMsg("이 자료는 식별자가 없어 바로 불러올 수 없습니다. 해당 PDF를 교사 화면에서 한 번만 다시 업로드해 주세요."); return; }
         await rpc("assign_room_deck_by_ext", {
             p_code: roomCode, p_slot: slotSel, p_ext_id: d.ext_id, p_title: d.title ?? d.ext_id
         });
@@ -115,12 +116,12 @@ export default function PdfLibraryPage() {
             </div>
 
             <div className="panel">
-                {filt.length === 0 ? (
-                    <div style={{ opacity: 0.6 }}>업로드된 PDF가 없습니다.</div>
-                    {errMsg ? (
-                        <div style={{ color:"#ef4444" }}>{errMsg}</div>
-                        ) : filt.length === 0 ? (
-                            <div style={{ opacity: 0.6 }}>{loading ? "불러오는 중..." : "업로드된 PDF가 없습니다."}</div>
+                {errMsg ? (
+                    <div style={{ color:"#ef4444" }}>{errMsg}</div>
+                ) : filt.length === 0 ? (
+                    <div style={{ opacity: 0.6 }}>
+                        {loading ? "불러오는 중..." : "업로드된 PDF가 없습니다."}
+                    </div>
                 ) : (
                     <div style={{ display: "grid", gap: 10, gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))" }}>
                         {filt.map(d => (
@@ -130,7 +131,14 @@ export default function PdfLibraryPage() {
                                 <div style={{ display:"flex", gap: 8, flexWrap:"wrap" }}>
                                     {d.file_key && <a className="btn" href={getPublicUrl(d.file_key)} target="_blank" rel="noreferrer">링크 열기</a>}
                                     <button className="btn" onClick={() => setPreview(d)}>미리보기</button>
-                                    <button className="btn btn-primary" onClick={() => assignAndUse(d)}>지금 불러오기</button>
+                                    <button
+                                        className="btn btn-primary"
+                                        onClick={() => assignAndUse(d)}
+                                        title={d.ext_id ? "" : "이 자료는 ext_id가 없어 바로 배정할 수 없습니다."}
+                                        disabled={!d.ext_id}
+                                    >
+                                        지금 불러오기
+                                    </button>
                                 </div>
                             </div>
                         ))}

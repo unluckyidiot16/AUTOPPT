@@ -371,8 +371,14 @@ export default function TeacherPage() {
                         .from("room_decks").select("deck_id").eq("room_id", ensuredRoomId).eq("slot", slot).maybeSingle();
                     deckId = rd?.deck_id ?? null;
                 } else {
-                    const { data: deckRow } = await supabase.from("decks").select("ext_id").eq("id", deckId).maybeSingle();
+                    // 기존 슬롯: 같은 덱 유지 + 파일만 교체 (ext_id 없으면 id를 사용)
+                    const { data: deckRow } = await supabase.from("decks").select("ext_id,title").eq("id", deckId).maybeSingle();
                     extForUpdate = deckRow?.ext_id ?? null;
+                    // 제목이 없거나 빈 경우엔 업로드 파일명 슬러그로 보강(선택)
+                    if (!deckRow?.title || deckRow.title.trim() === "") {
+                        // 제목 업데이트는 선택사항: assign_room_deck_by_ext로 새 덱을 만들지 않고 기존 덱 유지
+                        // (RLS 정책상 직접 UPDATE가 막혀 있을 수 있어, 여기서는 생략/유지)
+                    }
                 }
 
                 // 2) 업로드
