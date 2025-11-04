@@ -247,16 +247,19 @@ export default function TeacherPage() {
 
     useEffect(() => {
         (async () => {
-            if (!currentDeckId) { setDeckFileUrl(null); return; }
-            const { data, error } = await supabase
-                .from("decks")
-                .select("file_key")
-                .eq("id", currentDeckId)
-                .maybeSingle();
-            if (!error && data?.file_key) setDeckFileUrl(getPublicUrl(data.file_key));
-            else setDeckFileUrl(null);
-        })();
-    }, [currentDeckId]);
+            if (!currentDeckId || !roomId) { setDeckFileUrl(null); return; }
+            // RLS 안전 경로: room_decks → decks(file_key)
+                const { data: rd } = await supabase
+                    .from("room_decks")
+                    .select("decks(file_key)")
+                    .eq("room_id", roomId)
+                    .eq("deck_id", currentDeckId)
+                    .maybeSingle();
+                const fk = (rd as any)?.decks?.file_key;
+                if (fk) setDeckFileUrl(getPublicUrl(fk));
+                else setDeckFileUrl(null);
+            })();
+        }, [currentDeckId, roomId]);
 
     // ----- student URL -----
     const studentUrl = useMemo(() => {
@@ -282,6 +285,20 @@ export default function TeacherPage() {
             await goto(currSlide - 1, Math.max(0, prevSteps.length - 1));
         }
     };
+
+    const [focusStudent, setFocusStudent] = useState<string|null>(null);
+    const [focusList, setFocusList] = useState<any[]>([]);
+    useEffect(() => {
+              (async () => {
+                      if (!roomId || !focusStudent) return;
+                      const { data, error } = await supabase
+                          .from("answers_v2")
+                          .select("student_id, answer_value, answer, slide, step, created_at")
+                          .eq("room_id", roomId).eq("student_id", focusStudent)
+                          .order("created_at", { ascending: false }).limit(50);
+                      if (!error) setFocusList(data ?? []);
+                  })();
+          }, [roomId, focusStudent]);
 
     // 발표 모드 단축키
     useEffect(() => {
@@ -551,13 +568,37 @@ export default function TeacherPage() {
                             <p style={{ opacity: 0.6 }}>기록 없음</p>
                         ) : (
                             history.map((h, idx) => (
-                                <div key={idx} style={{ borderBottom: "1px solid rgba(148,163,184,0.12)", padding: "6px 0" }}>
-                                    <div style={{ fontSize: 13 }}><b>{h.student_id ?? "익명"}</b> → {h.answer_value ?? h.answer ?? ""}</div>
+                                <div key={idx}
+                                     onClick={()=> h.student_id && setFocusStudent(h.student_id)}
+                                        style={{ borderBottom:"1px solid rgba(148,163,184,0.12)", padding:"6px 0", cursor:"pointer" }}>                                    <div style={{ fontSize: 13 }}><b>{h.student_id ?? "익명"}</b> → {h.answer_value ?? h.answer ?? ""}</div>
                                     <div style={{ fontSize: 11, opacity: 0.65 }}>slide {h.slide} / step {h.step} · {h.created_at}</div>
                                 </div>
                             ))
                         )}
                     </div>
+                    {focusStudent && (
+                            <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.5)", display:"grid", placeItems:"center", zIndex:70 }}>
+                                  <div className="panel" style={{ width:720, maxWidth:"95vw", maxHeight:"85vh", overflow:"auto" }}>
+                                    <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                                      <h3 style={{ margin:0, flex:1 }}>제출 내역: {focusStudent}</h3>
+                                      <button className="btn" onClick={()=>setFocusStudent(null)}>닫기</button>
+                                    </div>
+                                    <div style={{ marginTop:8 }}>
+                                      {focusList.length===0 ? <div style={{opacity:.6}}>기록 없음</div> : (
+                                        <div style={{ display:"grid", gap:6 }}>
+                                                {focusList.map((r,i)=>(
+                                                 <div key={i} style={{ border:"1px solid rgba(148,163,184,.2)", borderRadius:8, padding:8 }}>
+                                                      <div style={{ fontSize:13 }}><b>slide {r.slide}</b> / step {r.step}</div>
+                                                      <div style={{ fontSize:14 }}>{r.answer_value ?? r.answer ?? ""}</div>
+                                                      <div style={{ fontSize:11, opacity:.65 }}>{r.created_at}</div>
+                                                    </div>
+                                              ))}
+                                            </div>
+                                      )}
+                                    </div>
+                                  </div>
+                                </div>
+                          )}
                 </div>
             </div>
         </div>

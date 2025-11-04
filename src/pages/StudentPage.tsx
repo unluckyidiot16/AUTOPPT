@@ -67,18 +67,45 @@ export default function StudentPage() {
         return supabase.storage.from("presentations").getPublicUrl(key).data.publicUrl;
     }
 
-    useEffect(() => {
-        (async () => {
-            if (!currentDeckId) { setDeckFileUrl(null); return; }
-            const { data, error } = await supabase
-                .from("decks")
-                .select("file_key")
-                .eq("id", currentDeckId)
-                .maybeSingle();
-            if (!error && data?.file_key) setDeckFileUrl(getPublicUrl(data.file_key));
-            else setDeckFileUrl(null);
-        })();
-    }, [currentDeckId]);
+    function getPublicUrl(key: string) {
+              return supabase.storage.from("presentations").getPublicUrl(key).data.publicUrl;
+          }
+      const [roomId, setRoomId] = useState<string|null>(null);
+      // rooms 최초 로딩 때 roomId도 확보
+          useEffect(() => {
+                  (async () => {
+                          if (!roomCode) return;
+                          const { data } = await supabase
+                              .from("rooms").select("id,current_deck_id,state")
+                              .eq("code", roomCode).maybeSingle();
+                          if (data) {
+                                  setRoomId(data.id ?? null);
+                                  setCurrentDeckId(data.current_deck_id ?? null);
+                                  setState((data.state as any) ?? {});
+                              }
+                      })();
+              }, [roomCode]);
+      // PDF URL 로딩: room_decks → decks(file_key)
+          useEffect(() => {
+                  (async () => {
+                          if (!currentDeckId || !roomId) { setDeckFileUrl(null); return; }
+                          const { data } = await supabase
+                              .from("room_decks")
+                              .select("decks(file_key)")
+                              .eq("room_id", roomId)
+                              .eq("deck_id", currentDeckId)
+                              .maybeSingle();
+                          const fk = (data as any)?.decks?.file_key;
+                          if (fk) setDeckFileUrl(getPublicUrl(fk));
+                          else setDeckFileUrl(null);
+                      })();
+                  }, [currentDeckId, roomId]);
+      // 탭 복귀 시 즉시 동기화(실시간 체감 개선)
+          useEffect(() => {
+                  const onVis = () => { if (document.visibilityState === "visible") refreshRoomNow(); };
+                  document.addEventListener("visibilitychange", onVis);
+                  return () => document.removeEventListener("visibilitychange", onVis);
+              }, []);
     
     useEffect(() => { DBG.info("StudentPage mount", { room: roomCode, studentId }); }, [roomCode, studentId]);
 
