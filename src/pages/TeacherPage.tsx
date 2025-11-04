@@ -389,17 +389,12 @@ export default function TeacherPage() {
                     .upload(key, file, { upsert: true, contentType: "application/pdf" });
                 if (up.error) { clearInterval(timer); setUploadPct(100, "업로드 실패"); console.error(up.error); return; }
 
-                // 3) decks.file_key 갱신 (ext_id → 실패 시 id → 마지막으로 extForUpdate 순서 폴백)
+                // 3) decks.file_key 갱신(슬롯 기준: RLS/식별자 혼선 없이 보장)
                 setUploadPct(92, "파일 링크 갱신 중...");
-                await rpc("upsert_deck_file", { p_ext_id: extOrId, p_file_key: key });
-                let upd = await rpc("upsert_deck_file", { p_ext_id: extOrId, p_file_key: key });
-                if (upd.error && deckId) {
-                    upd = await rpc("upsert_deck_file", { p_ext_id: deckId, p_file_key: key });
-                }
-                if (upd.error && extForUpdate) {
-                    upd = await rpc("upsert_deck_file", { p_ext_id: extForUpdate, p_file_key: key });
-                }
-                if (upd.error) { clearInterval(timer); setUploadPct(100, "파일 등록 실패"); toast.show("파일 등록 실패: upsert_deck_file"); return; }
+                const { error: updErr } = await rpc("upsert_deck_file_by_slot", {
+                    p_room_code: roomCode, p_slot: slot, p_file_key: key
+                });
+                if (updErr) { clearInterval(timer); setUploadPct(100, "파일 등록 실패"); toast.show("파일 등록 실패: upsert_deck_file_by_slot"); return; }
                 
                 // 4) 현재 교시에 반영(선택 사항이지만 편의상 유지)
                 const publicUrl = supabase.storage.from("presentations").getPublicUrl(key).data.publicUrl;
