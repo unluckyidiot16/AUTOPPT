@@ -340,9 +340,11 @@ export default function TeacherPage() {
 
             // ▶ 모달 열기 & 가짜 진행률 타이머 시작(실제 SDK가 퍼센트를 제공하지 않아 추정치 표시)
             openUploadDlg(file.name);
-            let timer: number | null = window.setInterval(() => {
-                setUploadPct((p) => (typeof p === "number" ? Math.min(90, p + 1) : 0), "업로드 중...");
-            }, 120);
+            let pct = 0;
+             const timer = window.setInterval(() => {
+                   pct = Math.min(90, pct + 1);
+                   setUploadPct(pct, "업로드 중...");
+                 }, 120);
 
             try {
                 const ensuredRoomId = await ensureAndGetRoomId(roomCode);
@@ -377,7 +379,7 @@ export default function TeacherPage() {
 
                 // 2) 업로드 (SDK는 진행률 콜백을 제공하지 않음 → 추정 진행률로 표시)
                 const key = `${deckId}/slides.pdf`;
-                setUploadPct(15, "업로드 시작...");
+                setUploadPct(file.name);
                 const { error: upErr } = await supabase.storage
                     .from("presentations")
                     .upload(key, file, { upsert: true, contentType: file.type });
