@@ -376,15 +376,16 @@ export default function TeacherPage() {
                 }
 
                 // 2) 업로드
-                let key = `rooms/${ensuredRoomId}/decks/${extForUpdate ?? deckId}/slides-${Date.now()}.pdf`;
+                const extOrId = (extForUpdate ?? deckId) as string;
+                let key = `rooms/${ensuredRoomId}/decks/${extOrId}/slides-${Date.now()}.pdf`;
                 let up = await supabase.storage.from("presentations")
                     .upload(key, file, { upsert: true, contentType: "application/pdf" });
                 if (up.error) { clearInterval(timer); setUploadPct(100, "업로드 실패"); console.error(up.error); return; }
 
                 // 3) decks.file_key 갱신
                 setUploadPct(92, "파일 링크 갱신 중...");
-                await rpc("upsert_deck_file", { p_ext_id: extForUpdate, p_file_key: key });
-
+                await rpc("upsert_deck_file", { p_ext_id: extOrId, p_file_key: key });
+                
                 // 4) 현재 교시에 반영(선택 사항이지만 편의상 유지)
                 const publicUrl = supabase.storage.from("presentations").getPublicUrl(key).data.publicUrl;
                 if (deckId && currentDeckId === deckId) setDeckFileUrl(publicUrl);
@@ -474,12 +475,14 @@ export default function TeacherPage() {
                                 <button
                                     className="btn" style={{ marginTop: 6 }}
                                     onClick={async () => {
-                                        const { data: newDeckId } = await supabase.rpc("set_room_deck", {
+                                        const { data: newDeckId, error } = await supabase.rpc("set_room_deck", {
                                             p_code: roomCode, p_slot: s.slot,
                                         });
-                                        if (newDeckId) setCurrentDeckId(String(newDeckId)); // 즉시 표시
-                                        await supabase.rpc("goto_slide", { p_code: roomCode, p_slide: 1, p_step: 0 });
-                                        await refreshRoomState(); // rooms 재조회(현재 교시/슬라이드)
+                                        if (error) { toast.show("전환 실패: " + error.message); return; }
+                                        if (newDeckId) setCurrentDeckId(String(newDeckId));
+                                        const { error: e2 } = await supabase.rpc("goto_slide", { p_code: roomCode, p_slide: 1, p_step: 0 });
+                                        if (e2) { toast.show("슬라이드 이동 실패: " + e2.message); }
+                                        await refreshRoomState();
                                     }}
                                     disabled={!isOwner}
                                 >전환</button>

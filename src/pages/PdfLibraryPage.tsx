@@ -36,14 +36,20 @@ export default function PdfLibraryPage() {
     const [decks, setDecks] = useState<DeckRow[]>([]);
     const [preview, setPreview] = useState<DeckRow | null>(null);
     const [loading, setLoading] = useState(false);
+    const [errMsg, setErrMsg] = useState<string | null>(null);
+
 
     // 목록 로드
     const loadDecks = async () => {
         setLoading(true);
+        setErrMsg(null);
+        // 권한 클레임(이미 클레임된 경우에도 문제 없음)
+        try { await rpc("claim_room_auth", { p_code: roomCode }); } catch (e) {}
         const { data, error } = await supabase.rpc("list_decks_by_room_owner", { p_room_code: roomCode });
         if (error) {
             console.error("[list_decks_by_room_owner]", error);
             setDecks([]); // 안전
+            setErrMsg("자료함을 불러오지 못했습니다. 로그인/권한을 확인해 주세요.");
         } else {
             setDecks((data as any) ?? []);
         }
@@ -111,6 +117,10 @@ export default function PdfLibraryPage() {
             <div className="panel">
                 {filt.length === 0 ? (
                     <div style={{ opacity: 0.6 }}>업로드된 PDF가 없습니다.</div>
+                    {errMsg ? (
+                        <div style={{ color:"#ef4444" }}>{errMsg}</div>
+                        ) : filt.length === 0 ? (
+                            <div style={{ opacity: 0.6 }}>{loading ? "불러오는 중..." : "업로드된 PDF가 없습니다."}</div>
                 ) : (
                     <div style={{ display: "grid", gap: 10, gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))" }}>
                         {filt.map(d => (
