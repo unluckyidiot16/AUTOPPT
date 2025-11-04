@@ -40,13 +40,17 @@ export default function PdfLibraryPage() {
     // 목록 로드
     const loadDecks = async () => {
         setLoading(true);
-        // 방 소유자 기준으로만 덱 목록 조회
         const { data, error } = await supabase.rpc("list_decks_by_room_owner", { p_room_code: roomCode });
-        if (!error && data) setDecks(data as any);
+        if (error) {
+            console.error("[list_decks_by_room_owner]", error);
+            setDecks([]); // 안전
+        } else {
+            setDecks((data as any) ?? []);
+        }
         setLoading(false);
     };
-    
-    useEffect(() => { loadDecks(); }, []);
+
+    useEffect(() => { if (roomCode) loadDecks(); }, [roomCode]);
 
     const filt = useMemo(
         () => decks.filter(d => {

@@ -474,10 +474,12 @@ export default function TeacherPage() {
                                 <button
                                     className="btn" style={{ marginTop: 6 }}
                                     onClick={async () => {
-                                        const { data: newDeckId } = await supabase.rpc("set_room_deck", { p_code: roomCode, p_slot: s.slot });
-                                        if (newDeckId) setCurrentDeckId(newDeckId as string); // 낙관적 갱신
+                                        const { data: newDeckId } = await supabase.rpc("set_room_deck", {
+                                            p_code: roomCode, p_slot: s.slot,
+                                        });
+                                        if (newDeckId) setCurrentDeckId(String(newDeckId)); // 즉시 표시
                                         await supabase.rpc("goto_slide", { p_code: roomCode, p_slide: 1, p_step: 0 });
-                                        await refreshRoomState(); // 서버 상태 즉시 동기화
+                                        await refreshRoomState(); // rooms 재조회(현재 교시/슬라이드)
                                     }}
                                     disabled={!isOwner}
                                 >전환</button>
