@@ -350,6 +350,23 @@ export default function TeacherPage() {
         return ensuredId as string;
     };
 
+    async function resolveDeckIdAfterAssign(roomId: string, slot: number, extId: string): Promise<string | null> {
+        const { data: rd } = await supabase
+            .from("room_decks")
+            .select("deck_id")
+            .eq("room_id", roomId)
+            .eq("slot", slot)
+            .maybeSingle();
+        if (rd?.deck_id) return rd.deck_id as string;
+
+        const { data: deckRow } = await supabase
+            .from("decks")
+            .select("id")
+            .eq("ext_id", extId)
+            .maybeSingle();
+        return deckRow?.id ?? null;
+    }
+
 
     async function uploadPdfForSlot(slot: number) {
         const s = slots.find((x) => x.slot === slot);
@@ -396,23 +413,17 @@ export default function TeacherPage() {
                     const { error: assignErr } = await rpc("assign_room_deck_by_ext", {
                         p_code: roomCode, p_slot: slot, p_ext_id: genExt, p_title: baseTitle,
                     });
-                    if (assignErr) { alert("덱 생성/배정에 실패했습니다."); throw new Error("assign failed"); }
-
-                    const { data: rd } = await supabase
-                        .from("room_decks")
-                        .select("deck_id")
-                        .eq("room_id", ensuredRoomId)
-                        .eq("slot", slot)
-                        .maybeSingle();
-                    deckId = rd?.deck_id ?? null;
-                    if (!deckId) { alert("덱 ID를 찾지 못했습니다."); throw new Error("no deck"); }
+                    if (assignErr) { clearInterval(timer); setUploadPct(100,"덱 배정 실패"); return; }
+                    // ▶ 배정 직후 deck_id 회수(실패해도 이후 ext 폴더로 업로드 가능)
+                            deckId = await resolveDeckIdAfterAssign(ensuredRoomId, slot, genExt);
                 } else {
                     const { data: deckRow } = await supabase.from("decks").select("ext_id").eq("id", deckId).maybeSingle();
                     extForUpdate = deckRow?.ext_id ?? null;
                 }
 
-                // 2) 업로드 (SDK는 진행률 콜백을 제공하지 않음 → 추정 진행률로 표시)
-                const key = `${deckId}/slides.pdf`;
+                // 2) 업로드 (deckId 없으면 ext 폴더를 사용해도 됨)
+                const folder = deckId ?? (extForUpdate as string);
+                const key = `${folder}/slides.pdf`;
                 setUploadPct(15, "업로드 시작...");
                 const { error: upErr } = await supabase.storage
                     .from("presentations")
@@ -428,8 +439,8 @@ export default function TeacherPage() {
 
                 // 4) 현재 교시에 반영 & 미리보기 URL
                 const publicUrl = supabase.storage.from("presentations").getPublicUrl(key).data.publicUrl;
-                if (currentDeckId === deckId) setDeckFileUrl(publicUrl);
-
+                if (deckId && currentDeckId === deckId) setDeckFileUrl(publicUrl);
+                
                 // 5) 슬롯 목록 리프레시
                 const { data } = await supabase
                     .from("room_decks")
