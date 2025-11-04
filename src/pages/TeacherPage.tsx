@@ -83,6 +83,22 @@ export default function TeacherPage() {
         nav(`/teacher?${next.toString()}`, { replace: true });
     };
 
+    // ----- upload dialog -----
+    const [uploadDlg, setUploadDlg] = useState<{
+        open: boolean;
+        name: string;
+        pct: number;              // 0~100 (추정 진행률)
+        previewUrl: string | null; // 업로드 완료 후 미리보기 URL
+        msg?: string;
+    }>({ open: false, name: "", pct: 0, previewUrl: null, msg: "" });
+
+    const openUploadDlg = (name: string) =>
+        setUploadDlg({ open: true, name, pct: 0, previewUrl: null, msg: "업로드 준비 중..." });
+    const setUploadPct = (pct: number, msg?: string) =>
+        setUploadDlg((u) => ({ ...u, pct: Math.max(0, Math.min(100, pct)), msg: msg ?? u.msg }));
+    const closeUploadDlg = () => setUploadDlg({ open: false, name: "", pct: 0, previewUrl: null, msg: "" });
+
+
     // room param 보장
     useEffect(() => {
         const hasRoom = new URLSearchParams(loc.search).has("room");
@@ -312,104 +328,98 @@ export default function TeacherPage() {
         const s = slots.find((x) => x.slot === slot);
 
         const input = document.createElement("input");
-        // PPTX를 선택해도 업로드는 가능하지만, 현재 뷰어는 PDF만 표시됩니다.
         input.type = "file";
         input.accept = "application/pdf";
 
-        // 파일명 → 슬러그
         const toSlug = (name: string) =>
-            name
-                .replace(/\.(pdf|pptx?)$/i, "")
-                .toLowerCase()
-                .replace(/[^a-z0-9]+/g, "-")
-                .replace(/(^-|-$)/g, "");
+            name.replace(/\.(pdf|pptx?)$/i, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
 
         input.onchange = async () => {
             const file = input.files?.[0];
             if (!file) return;
 
-            try {
+            // ▶ 모달 열기 & 가짜 진행률 타이머 시작(실제 SDK가 퍼센트를 제공하지 않아 추정치 표시)
+            openUploadDlg(file.name);
+            let timer: number | null = window.setInterval(() => {
+                setUploadPct((p) => (typeof p === "number" ? Math.min(90, p + 1) : 0), "업로드 중...");
+            }, 120);
 
+            try {
                 const ensuredRoomId = await ensureAndGetRoomId(roomCode);
-                if (!ensuredRoomId) { alert("방 정보를 찾지 못했습니다."); return; }
-                // 1) 덱 ID 확보 (없으면 자동 생성+배정)
+                if (!ensuredRoomId) { alert("방 정보를 찾지 못했습니다."); throw new Error("no room"); }
+
+                // 1) 덱 확보(없으면 자동 생성/배정)
                 let deckId = s?.deck_id ?? null;
                 let extForUpdate: string | null = null;
                 const baseTitle = toSlug(file.name) || `deck-${slot}`;
+
                 if (!deckId) {
                     const genExt = `deck-${baseTitle}-${Math.random().toString(36).slice(2, 6)}`;
                     extForUpdate = genExt;
 
-                    // ext가 없더라도 업로드만으로 덱 생성+슬롯 배정
                     const { error: assignErr } = await rpc("assign_room_deck_by_ext", {
-                        p_code: roomCode,
-                        p_slot: slot,
-                        p_ext_id: genExt,
-                        p_title: baseTitle,
+                        p_code: roomCode, p_slot: slot, p_ext_id: genExt, p_title: baseTitle,
                     });
-                    if (assignErr) { alert("덱 생성/배정에 실패했습니다."); return; }
-
-                    // 방 ID 조회 → 해당 슬롯의 deck_id 다시 가져오기
-                    const { data: roomRow } = await supabase
-                        .from("rooms").select("id").eq("code", roomCode).maybeSingle();
-                    if (!roomRow?.id) { alert("방 정보를 찾지 못했습니다."); return; }
+                    if (assignErr) { alert("덱 생성/배정에 실패했습니다."); throw new Error("assign failed"); }
 
                     const { data: rd } = await supabase
                         .from("room_decks")
-                        .select("deck_id").eq("room_id", ensuredRoomId).eq("slot", slot).maybeSingle();
-
+                        .select("deck_id")
+                        .eq("room_id", ensuredRoomId)
+                        .eq("slot", slot)
+                        .maybeSingle();
                     deckId = rd?.deck_id ?? null;
-                    if (!deckId) { alert("덱 ID를 찾지 못했습니다."); return; }
+                    if (!deckId) { alert("덱 ID를 찾지 못했습니다."); throw new Error("no deck"); }
                 } else {
-                    // 기존 덱이면 ext_id를 읽어서 upsert_deck_file에 넘겨줍니다(선택적).
-                    const { data: deckRow } = await supabase
-                        .from("decks").select("ext_id").eq("id", deckId).maybeSingle();
+                    const { data: deckRow } = await supabase.from("decks").select("ext_id").eq("id", deckId).maybeSingle();
                     extForUpdate = deckRow?.ext_id ?? null;
                 }
 
-                // 2) 스토리지 업로드 (slides.pdf로 고정)
+                // 2) 업로드 (SDK는 진행률 콜백을 제공하지 않음 → 추정 진행률로 표시)
                 const key = `${deckId}/slides.pdf`;
+                setUploadPct(15, "업로드 시작...");
                 const { error: upErr } = await supabase.storage
                     .from("presentations")
                     .upload(key, file, { upsert: true, contentType: file.type });
-                if (upErr) { alert("업로드 실패"); return; }
+                if (upErr) { alert("업로드 실패"); throw upErr; }
 
                 // 3) decks.file_key 갱신
+                setUploadPct(92, "파일 링크 갱신 중...");
                 await rpc("upsert_deck_file", { p_ext_id: extForUpdate, p_file_key: key });
 
-                // 4) 현재 교시가 방금 업로드한 덱이라면 즉시 반영
-                if (currentDeckId === deckId) setDeckFileUrl(getPublicUrl(key));
+                // 4) 현재 교시에 반영 & 미리보기 URL
+                const publicUrl = supabase.storage.from("presentations").getPublicUrl(key).data.publicUrl;
+                if (currentDeckId === deckId) setDeckFileUrl(publicUrl);
 
-                // 5) 슬롯 목록 리프레시(타이틀/배정 최신화)
-                const { data: roomRow2 } = await supabase
-                    .from("rooms").select("id").eq("code", roomCode).maybeSingle();
-                if (ensuredRoomId) {
-                    const { data } = await supabase
-                        .from("room_decks")
-                        .select("slot, deck_id, decks(title)").eq("room_id", ensuredRoomId).order("slot");
-                    if (data) {
-                        setSlots(
-                            Array.from({ length: 6 }, (_, i) => {
-                                const found = data.find((d: any) => d.slot === i + 1);
-                                return {
-                                    slot: i + 1,
-                                    deck_id: found?.deck_id ?? null,
-                                    title: (found as any)?.decks?.title ?? null,
-                                };
-                            })
-                        );
-                    }
+                // 5) 슬롯 목록 리프레시
+                const { data } = await supabase
+                    .from("room_decks")
+                    .select("slot, deck_id, decks(title)")
+                    .eq("room_id", ensuredRoomId)
+                    .order("slot");
+                if (data) {
+                    setSlots(Array.from({ length: 6 }, (_, i) => {
+                        const found = data.find((d: any) => d.slot === i + 1);
+                        return { slot: i + 1, deck_id: found?.deck_id ?? null, title: (found as any)?.decks?.title ?? null };
+                    }));
                 }
 
+                // ▶ 진행 UI 최종 업데이트
+                if (timer) { clearInterval(timer); timer = null; }
+                setUploadPct(100, "업로드 완료!");
+                setUploadDlg((u) => ({ ...u, previewUrl: publicUrl })); // 미리보기 표시
                 toast.show("업로드 완료");
             } catch (e) {
                 console.error(e);
-                alert("업로드 처리 중 오류가 발생했습니다.");
+                if (timer) { clearInterval(timer); timer = null; }
+                setUploadPct(100, "업로드 실패");
+                // 실패 시에도 닫기는 가능하도록 유지
             }
         };
 
         input.click();
     }
+
 
 
     // ----- views -----
@@ -537,6 +547,50 @@ export default function TeacherPage() {
             </div>
 
             {viewMode === "present" ? PresentView : SetupView}
+            {/* 업로드 진행/미리보기 모달 */}
+            {uploadDlg.open && (
+                <div style={{
+                    position:"fixed", inset:0, background:"rgba(0,0,0,0.5)", display:"grid",
+                    placeItems:"center", zIndex:70
+                }}>
+                    <div className="panel" style={{ width: 680, maxWidth: "92vw" }}>
+                        <h3 style={{ marginTop:0 }}>
+                            파일 업로드: <span style={{ opacity:.8 }}>{uploadDlg.name}</span>
+                        </h3>
+
+                        {/* 진행 바 */}
+                        {!uploadDlg.previewUrl && (
+                            <>
+                                <div style={{
+                                    height: 10, background:"rgba(148,163,184,0.2)", borderRadius: 8, overflow: "hidden"
+                                }}>
+                                    <div style={{
+                                        width: `${uploadDlg.pct}%`, height: "100%", background:"#60a5fa",
+                                        transition:"width .2s ease"
+                                    }}/>
+                                </div>
+                                <div style={{ marginTop: 8, fontSize: 13, opacity:.8 }}>
+                                    {uploadDlg.msg} {uploadDlg.pct}%
+                                </div>
+                            </>
+                        )}
+
+                        {/* 미리보기 */}
+                        {uploadDlg.previewUrl && (
+                            <div style={{ marginTop: 10 }}>
+                                <div style={{ fontSize:12, opacity:.7, marginBottom:6 }}>업로드가 완료되었습니다. 미리보기:</div>
+                                <div className="pdf-stage" style={{ maxHeight: 460, overflow:"auto" }}>
+                                    <PdfViewer fileUrl={uploadDlg.previewUrl} page={1} />
+                                </div>
+                            </div>
+                        )}
+
+                        <div style={{ display:"flex", gap:8, justifyContent:"flex-end", marginTop: 12 }}>
+                            <button className="btn" onClick={closeUploadDlg}>닫기</button>
+                        </div>
+                    </div>
+                </div>
+            )}
             {toast.node}
         </div>
     );
