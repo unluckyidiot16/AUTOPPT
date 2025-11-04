@@ -324,12 +324,28 @@ export default function TeacherPage() {
         }
     };
 
+
+    const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+
     const getOrEnsureRoomId = async (): Promise<string | null> => {
         if (roomId) return roomId;
-        const id = await ensureAndGetRoomId(roomCode);
-        return id;
-    };
 
+        // 서버에 방 보장 요청
+        await rpc("ensure_room", { p_code: roomCode });
+
+        // RLS/리플리케이션 타이밍을 고려해 짧게 재시도
+        for (let i = 0; i < 5; i++) {
+            const { data } = await supabase
+                .from("rooms")
+                .select("id")
+                .eq("code", roomCode)
+                .maybeSingle();
+            if (data?.id) return data.id;
+            await sleep(200);
+        }
+        return null;
+    };
+    
     async function uploadPdfForSlot(slot: number) {
         const s = slots.find((x) => x.slot === slot);
 
@@ -353,12 +369,14 @@ export default function TeacherPage() {
                 }, 120);
             
             try {
-                DBG.info("roomCode=", roomCode, "roomId(state)=", roomId);
+                // 방 보장/조회
+                setUploadPct(8, "방 확인 중...");
                 const ensuredRoomId = await getOrEnsureRoomId();
                 if (!ensuredRoomId) {
-                    setUploadPct(100, "방 정보를 찾지 못했습니다.");
                     clearInterval(timer);
-                    return; // 모달만 유지하고 종료 (alert 사용 X)
+                    setUploadPct(100, "방 정보를 찾지 못했습니다.");
+                    // 모달은 유지, 사용자는 '닫기'로 종료 가능
+                    return;
                 }
 
                 // 1) 덱 확보(없으면 자동 생성/배정)
