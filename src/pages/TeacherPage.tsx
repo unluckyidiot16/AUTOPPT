@@ -410,12 +410,11 @@ export default function TeacherPage() {
                     const genExt = `deck-${baseTitle}-${Math.random().toString(36).slice(2, 6)}`;
                     extForUpdate = genExt;
 
-                    const { error: assignErr } = await rpc("assign_room_deck_by_ext", {
+                    const { data: assignedDeckId, error: assignErr } = await rpc<string>("assign_room_deck_by_ext", {
                         p_code: roomCode, p_slot: slot, p_ext_id: genExt, p_title: baseTitle,
                     });
-                    if (assignErr) { clearInterval(timer); setUploadPct(100,"덱 배정 실패"); return; }
-                    // ▶ 배정 직후 deck_id 회수(실패해도 이후 ext 폴더로 업로드 가능)
-                            deckId = await resolveDeckIdAfterAssign(ensuredRoomId, slot, genExt);
+                    if (assignErr) { clearInterval(timer); setUploadPct(100, "덱 배정 실패"); return; }
+                    deckId = assignedDeckId ?? await resolveDeckIdAfterAssign(ensuredRoomId, slot, genExt);
                 } else {
                     const { data: deckRow } = await supabase.from("decks").select("ext_id").eq("id", deckId).maybeSingle();
                     extForUpdate = deckRow?.ext_id ?? null;
@@ -423,15 +422,17 @@ export default function TeacherPage() {
 
                 // 2) 업로드 (deckId 없으면 ext 폴더를 사용해도 됨)
                 const folder = deckId ?? (extForUpdate as string);
-                const key = `${folder}/slides.pdf`;
+                let keyBase = `rooms/${ensuredRoomId}/decks/${folder}`;
+                let key = `${keyBase}/slides-${Date.now()}.pdf`;
                 setUploadPct(15, "업로드 시작...");
-                const { error: upErr } = await supabase.storage
-                    .from("presentations")
-                    .upload(key, file, { upsert: true, contentType: file.type });
-                if (upErr) { clearInterval(timer);
-                    setUploadPct(100, "업로드 실패");
-                    console.error(upErr);
-                    return; }
+                let up = await supabase.storage.from("presentations").upload(key, file, { upsert: true, contentType: file.type });
+                // RLS로 막힌 경우(public/ 경로로 1회 대체 시도 – 필요 없으면 이 블록 삭제)
+                if (up.error && /row-level security/i.test(String(up.error.message))) {
+                    const altBase = `public/${folder}`;
+                    key = `${altBase}/slides-${Date.now()}.pdf`;
+                    up = await supabase.storage.from("presentations").upload(key, file, { upsert: true, contentType: file.type });
+                }
+                    if (up.error) { clearInterval(timer); setUploadPct(100, "업로드 실패"); console.error(up.error); return; }
 
                 // 3) decks.file_key 갱신
                 setUploadPct(92, "파일 링크 갱신 중...");
