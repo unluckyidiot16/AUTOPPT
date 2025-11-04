@@ -359,7 +359,7 @@ export default function TeacherPage() {
                     setUploadPct(100, "방 정보를 찾지 못했습니다.");
                     clearInterval(timer);
                     return; // 모달만 유지하고 종료 (alert 사용 X)
-                }}
+                }
 
                 // 1) 덱 확보(없으면 자동 생성/배정)
                 let deckId = s?.deck_id ?? null;
@@ -421,7 +421,6 @@ export default function TeacherPage() {
                 }
 
                 // ▶ 진행 UI 최종 업데이트
-                if (timer) { clearInterval(timer); timer = null; }
                 clearInterval(timer);
                 setUploadPct(100, "업로드 완료!");
                 setUploadDlg((u) => ({ ...u, previewUrl: publicUrl })); // 미리보기 표시
