@@ -40,15 +40,12 @@ export default function PdfLibraryPage() {
     // 목록 로드
     const loadDecks = async () => {
         setLoading(true);
-        const { data, error } = await supabase
-            .from("decks")
-            .select("id, ext_id, title, file_key, created_at")
-            .not("file_key", "is", null)
-            .order("created_at", { ascending: false })
-            .limit(300);
+        // 방 소유자 기준으로만 덱 목록 조회
+        const { data, error } = await supabase.rpc("list_decks_by_room_owner", { p_room_code: roomCode });
         if (!error && data) setDecks(data as any);
         setLoading(false);
     };
+    
     useEffect(() => { loadDecks(); }, []);
 
     const filt = useMemo(

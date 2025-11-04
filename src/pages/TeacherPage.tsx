@@ -226,11 +226,16 @@ export default function TeacherPage() {
     useEffect(() => {
         (async () => {
             if (!roomCode) return;
-            // v2로 변경
-            const { data, error } = await rpc<any[]>("fetch_history_by_code_v2", {
+            // v2 시도
+            const { data: d1, error: e1 } = await supabase.rpc("fetch_history_by_code_v2", {
                 p_room_code: roomCode, p_limit: 50, p_before: null,
             });
-            if (!error) setHistory(data ?? []);
+            if (!e1) { setHistory(d1 ?? []); return; }
+            // v1 폴백
+            const { data: d0, error: e0 } = await supabase.rpc("fetch_history_by_code", {
+                p_room_code: roomCode, p_limit: 50, p_before: null,
+            });
+            if (!e0) setHistory(d0 ?? []);
         })();
     }, [roomCode, state]);
 
@@ -469,9 +474,10 @@ export default function TeacherPage() {
                                 <button
                                     className="btn" style={{ marginTop: 6 }}
                                     onClick={async () => {
-                                        await rpc("set_room_deck", { p_code: roomCode, p_slot: s.slot });
-                                        await rpc("goto_slide", { p_code: roomCode, p_slide: 1, p_step: 0 });
-                                        await refreshRoomState(); // 전환 직후 즉시 동기화
+                                        const { data: newDeckId } = await supabase.rpc("set_room_deck", { p_code: roomCode, p_slot: s.slot });
+                                        if (newDeckId) setCurrentDeckId(newDeckId as string); // 낙관적 갱신
+                                        await supabase.rpc("goto_slide", { p_code: roomCode, p_slide: 1, p_step: 0 });
+                                        await refreshRoomState(); // 서버 상태 즉시 동기화
                                     }}
                                     disabled={!isOwner}
                                 >전환</button>
