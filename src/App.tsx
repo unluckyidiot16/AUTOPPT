@@ -4,6 +4,7 @@ import RequireTeacher from "./auth/RequireTeacher";
 import TeacherPage from "./pages/TeacherPage";
 import StudentPage from "./pages/StudentPage";
 import LoginPage from "./pages/LoginPage";
+import PdfLibraryPage from "./pages/PdfLibraryPage";
 
 export default function App() {
     return (
@@ -17,6 +18,14 @@ export default function App() {
                     <RequireTeacher>
                         <TeacherPage />
                     </RequireTeacher>
+                }
+            />
+            <Route
+                   path="/library"
+                   element={
+                      <RequireTeacher>
+                            <PdfLibraryPage />
+                          </RequireTeacher>
                 }
             />
         </Routes>

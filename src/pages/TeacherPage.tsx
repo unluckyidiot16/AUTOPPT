@@ -395,6 +395,12 @@ export default function TeacherPage() {
                     p_room_code: roomCode, p_slot: slot, p_file_key: key
                 });
                 if (updErr) { clearInterval(timer); setUploadPct(100, "파일 등록 실패"); toast.show("파일 등록 실패: upsert_deck_file_by_slot"); return; }
+
+                //  3.5) 업로드한 슬롯을 '현재 교시'로 즉시 선택 + 1/0으로 진입 (항상)
+                const { error: selErr } = await rpc("set_room_deck", { p_code: roomCode, p_slot: slot });
+                if (selErr) { clearInterval(timer); setUploadPct(100, "전환 실패"); toast.show("전환 실패: set_room_deck"); return; }
+                const { error: gotoErr } = await rpc("goto_slide", { p_code: roomCode, p_slide: 1, p_step: 0 });
+                if (gotoErr) { /* 치명적이진 않음 */ toast.show("슬라이드 이동 실패: goto_slide"); }
                 
                 // 4) 현재 교시에 반영(선택 사항이지만 편의상 유지)
                 const publicUrl = supabase.storage.from("presentations").getPublicUrl(key).data.publicUrl;
