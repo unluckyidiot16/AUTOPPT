@@ -240,10 +240,12 @@ export default function TeacherPage() {
     useEffect(() => {
         (async () => {
             if (!roomCode) return;
-            const { data, error } = await rpc<any[]>("fetch_history_by_code", { p_room_code: roomCode, p_limit: 50 });
+            const { data, error } = await rpc<any[]>("fetch_history_by_code", { p_code: roomCode, p_limit: 50 });
             if (!error) setHistory(data ?? []);
+            // 실패해도 화면 기능에 영향 없으니 조용히 패스
         })();
     }, [roomCode, state]);
+
 
     // ----- deck file (PDF) -----
     const [deckFileUrl, setDeckFileUrl] = useState<string | null>(null);
@@ -325,27 +327,30 @@ export default function TeacherPage() {
     };
 
 
+    // sleep 유틸
     const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
+    /** roomId가 있으면 즉시 사용, 없으면 ensure_room의 반환값(=room_id)을 그대로 채택 */
     const getOrEnsureRoomId = async (): Promise<string | null> => {
         if (roomId) return roomId;
 
-        // 서버에 방 보장 요청
-        await rpc("ensure_room", { p_code: roomCode });
+        // 먼저 한 번 조회 (있으면 즉시 반환)
+        const { data: existed } = await supabase
+            .from("rooms")
+            .select("id")
+            .eq("code", roomCode)
+            .maybeSingle();
+        if (existed?.id) { setRoomId(existed.id); return existed.id; }
 
-        // RLS/리플리케이션 타이밍을 고려해 짧게 재시도
-        for (let i = 0; i < 5; i++) {
-            const { data } = await supabase
-                .from("rooms")
-                .select("id")
-                .eq("code", roomCode)
-                .maybeSingle();
-            if (data?.id) return data.id;
-            await sleep(200);
-        }
-        return null;
+        // 없으면 보장(RPC) → RPC의 반환값이 바로 room_id
+        const { data: ensuredId, error } = await supabase.rpc("ensure_room", { p_code: roomCode });
+        if (error || !ensuredId) return null;
+
+        setRoomId(ensuredId as string);
+        return ensuredId as string;
     };
-    
+
+
     async function uploadPdfForSlot(slot: number) {
         const s = slots.find((x) => x.slot === slot);
 
