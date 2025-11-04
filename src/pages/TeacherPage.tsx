@@ -377,9 +377,9 @@ export default function TeacherPage() {
                 const baseTitle = toSlug(file.name) || `deck-${slot}`;
                 if (!deckId) {
                        // 우선 시도: create_deck_and_assign (권장)
-                           const { data: created, error: cErr } = await rpc<string>("create_deck_and_assign", {
-                             p_code: roomCode, p_slot: slot, p_title: baseTitle, p_slug: toSlug(file.name) // slug는 옵션
-                       });
+                    const { data: created, error: cErr } = await rpc<string>("create_deck_and_assign", {
+                           p_code: roomCode, p_slot: slot, p_title: baseTitle, p_slug: null   // ← slug 전달 안 함
+                     });
                        if (cErr || !created) {
                              // 폴백: 예전 ext기반 배정 (RPC 미배치 환경 대비)
                                  const fallbackSlug = `deck-${baseTitle}-${Math.random().toString(36).slice(2,6)}`;
