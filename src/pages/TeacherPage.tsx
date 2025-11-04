@@ -324,6 +324,12 @@ export default function TeacherPage() {
         }
     };
 
+    const getOrEnsureRoomId = async (): Promise<string | null> => {
+        if (roomId) return roomId;
+        const id = await ensureAndGetRoomId(roomCode);
+        return id;
+    };
+
     async function uploadPdfForSlot(slot: number) {
         const s = slots.find((x) => x.slot === slot);
 
@@ -345,10 +351,15 @@ export default function TeacherPage() {
                 pct = Math.min(90, pct + 1);
                 setUploadPct(pct, "업로드 중...");
                 }, 120);
-
+            
             try {
-                const ensuredRoomId = await ensureAndGetRoomId(roomCode);
-                if (!ensuredRoomId) { alert("방 정보를 찾지 못했습니다."); throw new Error("no room"); }
+                DBG.info("roomCode=", roomCode, "roomId(state)=", roomId);
+                const ensuredRoomId = await getOrEnsureRoomId();
+                if (!ensuredRoomId) {
+                    setUploadPct(100, "방 정보를 찾지 못했습니다.");
+                    clearInterval(timer);
+                    return; // 모달만 유지하고 종료 (alert 사용 X)
+                }}
 
                 // 1) 덱 확보(없으면 자동 생성/배정)
                 let deckId = s?.deck_id ?? null;
@@ -379,11 +390,14 @@ export default function TeacherPage() {
 
                 // 2) 업로드 (SDK는 진행률 콜백을 제공하지 않음 → 추정 진행률로 표시)
                 const key = `${deckId}/slides.pdf`;
-                setUploadPct(file.name);
+                setUploadPct(15, "업로드 시작...");
                 const { error: upErr } = await supabase.storage
                     .from("presentations")
                     .upload(key, file, { upsert: true, contentType: file.type });
-                if (upErr) { alert("업로드 실패"); throw upErr; }
+                if (upErr) { clearInterval(timer);
+                    setUploadPct(100, "업로드 실패");
+                    console.error(upErr);
+                    return; }
 
                 // 3) decks.file_key 갱신
                 setUploadPct(92, "파일 링크 갱신 중...");
@@ -408,12 +422,13 @@ export default function TeacherPage() {
 
                 // ▶ 진행 UI 최종 업데이트
                 if (timer) { clearInterval(timer); timer = null; }
+                clearInterval(timer);
                 setUploadPct(100, "업로드 완료!");
                 setUploadDlg((u) => ({ ...u, previewUrl: publicUrl })); // 미리보기 표시
                 toast.show("업로드 완료");
             } catch (e) {
                 console.error(e);
-                if (timer) { clearInterval(timer); timer = null; }
+                clearInterval(timer);
                 setUploadPct(100, "업로드 실패");
                 // 실패 시에도 닫기는 가능하도록 유지
             }
