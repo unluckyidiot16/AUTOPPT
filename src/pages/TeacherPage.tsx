@@ -170,7 +170,7 @@ export default function TeacherPage() {
     const currentStepMeta = stepsOfCurrent[currStep];
 
     // ----- deck slots (for setup) -----
-    const [slots, setSlots] = useState<{ slot: number; deck_id: string | null; title?: string | null }[]>(
+    const [slots, setSlots] = useState<{ slot: number; deck_id: string | null; title?: string | null; file_key?: string | null }[]>(
         Array.from({ length: 6 }, (_, i) => ({ slot: i + 1, deck_id: null }))
     );
     useEffect(() => {
@@ -181,13 +181,14 @@ export default function TeacherPage() {
             setRoomId(roomRow.id);
             const { data } = await supabase
                 .from("room_decks")
-                .select("slot, deck_id, decks(title)")
+                .select("slot, deck_id, decks(title,file_key)")
                 .eq("room_id", roomRow.id)
                 .order("slot", { ascending: true });
             if (data) {
                 setSlots(Array.from({ length: 6 }, (_, i) => {
                     const found = data.find((d: any) => d.slot === i + 1);
-                    return { slot: i + 1, deck_id: found?.deck_id ?? null, title: (found as any)?.decks?.title ?? null };
+                    return {
+                        slot: i + 1, deck_id: found?.deck_id ?? null, title: (found as any)?.decks?.title ?? null, file_key: (found as any)?.decks?.file_key ?? null,};
                 }));
             }
         })();
@@ -388,25 +389,38 @@ export default function TeacherPage() {
                     .upload(key, file, { upsert: true, contentType: "application/pdf" });
                 if (up.error) { clearInterval(timer); setUploadPct(100, "업로드 실패"); console.error(up.error); return; }
 
-                // 3) decks.file_key 갱신
+                // 3) decks.file_key 갱신 (ext_id → 실패 시 id → 마지막으로 extForUpdate 순서 폴백)
                 setUploadPct(92, "파일 링크 갱신 중...");
                 await rpc("upsert_deck_file", { p_ext_id: extOrId, p_file_key: key });
+                let upd = await rpc("upsert_deck_file", { p_ext_id: extOrId, p_file_key: key });
+                if (upd.error && deckId) {
+                    upd = await rpc("upsert_deck_file", { p_ext_id: deckId, p_file_key: key });
+                }
+                if (upd.error && extForUpdate) {
+                    upd = await rpc("upsert_deck_file", { p_ext_id: extForUpdate, p_file_key: key });
+                }
+                if (upd.error) { clearInterval(timer); setUploadPct(100, "파일 등록 실패"); toast.show("파일 등록 실패: upsert_deck_file"); return; }
                 
                 // 4) 현재 교시에 반영(선택 사항이지만 편의상 유지)
                 const publicUrl = supabase.storage.from("presentations").getPublicUrl(key).data.publicUrl;
                 if (deckId && currentDeckId === deckId) setDeckFileUrl(publicUrl);
 
-                // 5) 슬롯 목록 갱신 + rooms 상태 즉시 동기화
+                // 5) 슬롯 목록 갱신(+file_key) + rooms 상태 즉시 동기화
                 await refreshRoomState();
                 const { data } = await supabase
                     .from("room_decks")
-                    .select("slot, deck_id, decks(title)")
+                    .select("slot, deck_id, decks(title,file_key)")
                     .eq("room_id", ensuredRoomId)
                     .order("slot");
                 if (data) {
                     setSlots(Array.from({ length: 6 }, (_, i) => {
                         const found = data.find((d: any) => d.slot === i + 1);
-                        return { slot: i + 1, deck_id: found?.deck_id ?? null, title: (found as any)?.decks?.title ?? null };
+                        return {
+                            slot: i + 1,
+                                deck_id: found?.deck_id ?? null,
+                                title: (found as any)?.decks?.title ?? null,
+                                file_key: (found as any)?.decks?.file_key ?? null,
+                        };                    
                     }));
                 }
 
@@ -477,7 +491,14 @@ export default function TeacherPage() {
                                 <div style={{ fontWeight: 700, marginBottom: 6 }}>{s.slot}교시</div>
                                 <div style={{ fontSize: 12, opacity: 0.8, minHeight: 18 }}>
                                     {s.title || (s.deck_id ? s.deck_id.slice(0, 8) : "미배정")}
-                                </div>
+                                     </div>
+                                {s.file_key && (
+                                    <div className="pdf-thumb" style={{ marginTop: 6, borderRadius: 8, overflow: "hidden", border: "1px solid rgba(148,163,184,.25)" }}>
+                                        <div style={{ height: 120, maxWidth: "100%", background: "rgba(30,41,59,.35)" }}>
+                                            <PdfViewer fileUrl={getPublicUrl(s.file_key)} page={1} />
+                                        </div>
+                                       </div>
+                                )}
                                 <button
                                     className="btn" style={{ marginTop: 6 }}
                                     onClick={async () => {

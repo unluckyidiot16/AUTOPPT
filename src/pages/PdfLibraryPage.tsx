@@ -128,6 +128,13 @@ export default function PdfLibraryPage() {
                             <div key={d.id} className="card" style={{ padding: 10 }}>
                                 <div style={{ fontWeight: 700, marginBottom: 4 }}>{d.title ?? d.ext_id}</div>
                                 <div style={{ fontSize: 12, opacity: .7, marginBottom: 8 }}>{d.ext_id}</div>
+                                {d.file_key && (
+                                    <div className="pdf-thumb" style={{ borderRadius: 8, overflow: "hidden", marginBottom: 8, border: "1px solid rgba(148,163,184,.25)" }}>
+                                        <div style={{ height: 120, background: "rgba(30,41,59,.35)" }}>
+                                            <PdfViewer fileUrl={getPublicUrl(d.file_key)} page={1} />
+                                        </div>
+                                    </div>
+                                )}
                                 <div style={{ display:"flex", gap: 8, flexWrap:"wrap" }}>
                                     {d.file_key && <a className="btn" href={getPublicUrl(d.file_key)} target="_blank" rel="noreferrer">링크 열기</a>}
                                     <button className="btn" onClick={() => setPreview(d)}>미리보기</button>
