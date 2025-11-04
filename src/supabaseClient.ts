@@ -1,18 +1,21 @@
 // src/supabaseClient.ts
-import { createClient } from "@supabase/supabase-js";
+import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
-// 1) 우선 Vite env에서 읽는다
-const envUrl = import.meta.env.VITE_SUPABASE_URL;
-const envAnon = import.meta.env.VITE_SUPABASE_ANON_KEY;
+let _sb: SupabaseClient | null = null;
 
-// 2) CI나 GitHub Pages에서 env가 비어 있으면 여기 값으로 쓴다
-//    ↓↓↓ 여기는 네 실제 프로젝트 URL/anon으로 바꿔도 됨
-const fallbackUrl = "https://example.supabase.co";
-const fallbackAnon = "eyJhbGciOi...example...";
-
-// 3) 최종으로 쓸 값
-const supabaseUrl = envUrl ?? fallbackUrl;
-const supabaseAnonKey = envAnon ?? fallbackAnon;
-
-// 4) create 한 번만!
-export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+/** 교사용 앱: 싱글턴 Supabase 클라이언트 */
+export const supabase = (() => {
+    if (_sb) return _sb;
+    _sb = createClient(
+        import.meta.env.VITE_SUPABASE_URL!,
+        import.meta.env.VITE_SUPABASE_ANON_KEY!,
+        {
+            auth: {
+                persistSession: true,
+                // 학생 앱과 스토리지 키를 분리하면 세션 충돌이 없습니다.
+                storageKey: "autoppt-teacher",
+            },
+        }
+    );
+    return _sb;
+})();

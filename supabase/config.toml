@@ -1,4 +1,20 @@
-project_id = "ppt-sync"
-api_url = "http://localhost:54321"
-db_url = "postgresql://postgres:postgres@localhost:54322/postgres"
-studio_url = "http://localhost:54323"
+# supabase/config.toml
+project_id = "autoppt"
+
+[db]
+port = 54328   # 이미 넣어두신 값 유지
+
+[analytics]
+port = 54337   # <- 빈 포트 하나(예: 54337)로 지정
+
+[api]
+port = 54325
+
+[inbucket]
+enabled = true
+port = 54334               # ← 54324 대신 비는 포트 (웹 UI)
+smtp_port = 54335          # ← 기본 54325와 겹치면 바꿔주기
+pop3_port = 54336    
+
+[studio]
+port = 54333  

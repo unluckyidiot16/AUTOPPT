@@ -70,14 +70,85 @@ create table if not exists public.answers (
 
 alter table public.answers enable row level security;
 
--- 교사는 본인 방의 답안 읽기 가능
-create policy "answers_read_by_owner"
-on public.answers for select
-                                 to authenticated
-                                 using ( exists (
-                                 select 1 from public.rooms r
-                                 where r.id = answers.room_id and r.owner_id = auth.uid()
-                                 ));
+-- answers_read_by_owner: 스키마 차이를 자동 대응( room_code / room_id(uuid/text) )
+alter table public.answers enable row level security;
+drop policy if exists answers_read_by_owner on public.answers;
+
+do $$
+declare
+has_room_code boolean;
+  has_room_id   boolean;
+  room_id_type  text;
+begin
+select exists (
+    select 1 from information_schema.columns
+    where table_schema='public' and table_name='answers' and column_name='room_code'
+) into has_room_code;
+
+select exists (
+    select 1 from information_schema.columns
+    where table_schema='public' and table_name='answers' and column_name='room_id'
+) into has_room_id;
+
+select data_type
+from information_schema.columns
+where table_schema='public' and table_name='answers' and column_name='room_id'
+    into room_id_type;
+
+if has_room_code then
+    execute $sql$
+      create policy answers_read_by_owner
+      on public.answers for select
+                                                to authenticated
+                                                using (
+                                                exists (
+                                                select 1 from public.rooms r
+                                                where r.code = answers.room_code
+                                                and r.owner_id = auth.uid()
+                                                )
+                                                )
+                                                $sql$;
+
+elsif has_room_id then
+    if room_id_type = 'uuid' then
+      execute $sql$
+        create policy answers_read_by_owner
+        on public.answers for select
+                                                       to authenticated
+                                                       using (
+                                                       exists (
+                                                       select 1 from public.rooms r
+                                                       where r.id = answers.room_id
+                                                       and r.owner_id = auth.uid()
+                                                       )
+                                                       )
+                                                       $sql$;
+else
+      -- room_id 가 text 인 경우: 타입 충돌 방지 위해 uuid::text 로 비교
+      execute $sql$
+        create policy answers_read_by_owner
+        on public.answers for select
+                                                 to authenticated
+                                                 using (
+                                                 exists (
+                                                 select 1 from public.rooms r
+                                                 where r.id::text = answers.room_id
+                                                 and r.owner_id = auth.uid()
+                                                 )
+                                                 )
+                                                 $sql$;
+end if;
+
+else
+    -- 컬럼이 둘 다 없다면 일단 deny (나중에 스키마 표준화 후 교체)
+    execute $sql$
+      create policy answers_read_by_owner
+      on public.answers for select
+                                             to authenticated
+                                             using (false)
+                                             $sql$;
+end if;
+end $$;
 
 -- 익명/학생도 제출 가능(방 열림 & 유효기간 확인)
 create policy "answers_insert_when_room_open"

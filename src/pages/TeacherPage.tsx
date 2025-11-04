@@ -1,3 +1,4 @@
+// src/pages/TeacherPage.tsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { supabase } from "../supabaseClient";
@@ -52,20 +53,6 @@ function makeRoomCode(len = 6) {
     return out;
 }
 
-async function ensureAndGetRoomId(code: string): Promise<string | null> {
-    // 1) 있는지 먼저 조회
-    let { data: row, error: e1 } = await supabase.from("rooms").select("id").eq("code", code).maybeSingle();
-    if (row?.id) return row.id;
-
-    // 2) 없으면 생성 보장
-    await rpc("ensure_room", { p_code: code });
-
-    // 3) 재조회
-    const { data: row2 } = await supabase.from("rooms").select("id").eq("code", code).maybeSingle();
-    return row2?.id ?? null;
-}
-
-
 export default function TeacherPage() {
     const nav = useNavigate();
     const loc = useLocation();
@@ -82,22 +69,6 @@ export default function TeacherPage() {
         if (!next.get("room") && roomCode) next.set("room", roomCode);
         nav(`/teacher?${next.toString()}`, { replace: true });
     };
-
-    // ----- upload dialog -----
-    const [uploadDlg, setUploadDlg] = useState<{
-        open: boolean;
-        name: string;
-        pct: number;              // 0~100 (추정 진행률)
-        previewUrl: string | null; // 업로드 완료 후 미리보기 URL
-        msg?: string;
-    }>({ open: false, name: "", pct: 0, previewUrl: null, msg: "" });
-
-    const openUploadDlg = (name: string) =>
-        setUploadDlg({ open: true, name, pct: 0, previewUrl: null, msg: "업로드 준비 중..." });
-    const setUploadPct = (pct: number, msg?: string) =>
-        setUploadDlg((u) => ({ ...u, pct: Math.max(0, Math.min(100, pct)), msg: msg ?? u.msg }));
-    const closeUploadDlg = () => setUploadDlg({ open: false, name: "", pct: 0, previewUrl: null, msg: "" });
-
 
     // room param 보장
     useEffect(() => {
@@ -135,10 +106,18 @@ export default function TeacherPage() {
             setIsOwner(true);
         })();
 
-        const hb = setInterval(() => { rpc("heartbeat_room_auth", { p_code: roomCode }); }, 30_000);
-        const onBye = () => rpc("release_room_auth", { p_code: roomCode });
-        window.addEventListener("beforeunload", onBye);
-        return () => { cancelled = true; clearInterval(hb); window.removeEventListener("beforeunload", onBye); };
+        const hb = setInterval(() => { rpc("heartbeat_room_auth", { p_code: roomCode }).catch(() => {}); }, 30_000);
+        const onHide = () => { rpc("release_room_auth", { p_code: roomCode }).catch(() => {}); };
+        window.addEventListener("pagehide", onHide);
+        const onVis = () => { if (document.visibilityState === "visible") rpc("heartbeat_room_auth", { p_code: roomCode }).catch(() => {}); };
+        document.addEventListener("visibilitychange", onVis);
+
+        return () => {
+            clearInterval(hb);
+            window.removeEventListener("pagehide", onHide);
+            document.removeEventListener("visibilitychange", onVis);
+            cancelled = true;
+        };
     }, [roomCode, nav, viewMode]);
 
     // ----- room id / rooms state -----
@@ -146,24 +125,31 @@ export default function TeacherPage() {
     const [state, setState] = useState<{ slide?: number; step?: number }>({});
     const [currentDeckId, setCurrentDeckId] = useState<string | null>(null);
 
+    /** 서버 rooms 값을 강제 재조회해서 즉시 로컬 반영 */
+    const refreshRoomState = async () => {
+        if (!roomCode) return;
+        const { data, error } = await supabase
+            .from("rooms")
+            .select("id, current_deck_id, state")
+            .eq("code", roomCode)
+            .maybeSingle();
+        if (!error && data) {
+            setRoomId(data.id ?? null);
+            setCurrentDeckId(data.current_deck_id ?? null);
+            setState((data.state as any) ?? {});
+        }
+    };
+
     useEffect(() => {
         let cancelled = false;
         (async () => {
             if (!roomCode) return;
-            const { data, error } = await supabase
-                .from("rooms")
-                .select("id, current_deck_id, state")
-                .eq("code", roomCode)
-                .maybeSingle();
-            if (!cancelled && !error && data) {
-                setRoomId(data.id ?? null);
-                setCurrentDeckId(data.current_deck_id ?? null);
-                setState((data.state as any) ?? {});
-            }
+            await refreshRoomState(); // 최초 1회 강제 동기화
+
+            const filter = `code=eq.${roomCode}`;
             const ch = supabase
                 .channel(`rooms:${roomCode}`)
-                .on("postgres_changes",
-                    { event: "UPDATE", schema: "public", table: "rooms", filter: `code=eq.${roomCode}` },
+                .on("postgres_changes", { event: "UPDATE", schema: "public", table: "rooms", filter },
                     (payload) => {
                         const row: any = payload.new;
                         setCurrentDeckId(row.current_deck_id ?? null);
@@ -240,12 +226,13 @@ export default function TeacherPage() {
     useEffect(() => {
         (async () => {
             if (!roomCode) return;
-            const { data, error } = await rpc<any[]>("fetch_history_by_code", { p_code: roomCode, p_limit: 50 });
+            // v2로 변경
+            const { data, error } = await rpc<any[]>("fetch_history_by_code_v2", {
+                p_room_code: roomCode, p_limit: 50, p_before: null,
+            });
             if (!error) setHistory(data ?? []);
-            // 실패해도 화면 기능에 영향 없으니 조용히 패스
         })();
     }, [roomCode, state]);
-
 
     // ----- deck file (PDF) -----
     const [deckFileUrl, setDeckFileUrl] = useState<string | null>(null);
@@ -311,6 +298,10 @@ export default function TeacherPage() {
         const { error } = await rpc("assign_room_deck_by_ext", { p_code: roomCode, p_slot: slot, p_ext_id: ext, p_title: title });
         if (error) { alert("슬롯 배정 실패"); return; }
 
+        // 즉시 동기화
+        await refreshRoomState();
+
+        // 슬롯 목록도 갱신
         const { data: roomRow } = await supabase.from("rooms").select("id").eq("code", roomCode).maybeSingle();
         if (!roomRow?.id) return;
         const { data } = await supabase
@@ -326,51 +317,17 @@ export default function TeacherPage() {
         }
     };
 
+    // 업로드 다이얼로그 상태
+    const [uploadDlg, setUploadDlg] = useState<{ open: boolean; name: string; pct: number; previewUrl: string | null; msg?: string; }>
+    ({ open: false, name: "", pct: 0, previewUrl: null, msg: "" });
+    const openUploadDlg = (name: string) => setUploadDlg({ open: true, name, pct: 0, previewUrl: null, msg: "업로드 준비 중..." });
+    const setUploadPct = (pct: number, msg?: string) => setUploadDlg((u) => ({ ...u, pct: Math.max(0, Math.min(100, pct)), msg: msg ?? u.msg }));
+    const closeUploadDlg = () => setUploadDlg({ open: false, name: "", pct: 0, previewUrl: null, msg: "" });
 
-    // sleep 유틸
     const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
-
-    /** roomId가 있으면 즉시 사용, 없으면 ensure_room의 반환값(=room_id)을 그대로 채택 */
-    const getOrEnsureRoomId = async (): Promise<string | null> => {
-        if (roomId) return roomId;
-
-        // 먼저 한 번 조회 (있으면 즉시 반환)
-        const { data: existed } = await supabase
-            .from("rooms")
-            .select("id")
-            .eq("code", roomCode)
-            .maybeSingle();
-        if (existed?.id) { setRoomId(existed.id); return existed.id; }
-
-        // 없으면 보장(RPC) → RPC의 반환값이 바로 room_id
-        const { data: ensuredId, error } = await supabase.rpc("ensure_room", { p_code: roomCode });
-        if (error || !ensuredId) return null;
-
-        setRoomId(ensuredId as string);
-        return ensuredId as string;
-    };
-
-    async function resolveDeckIdAfterAssign(roomId: string, slot: number, extId: string): Promise<string | null> {
-        const { data: rd } = await supabase
-            .from("room_decks")
-            .select("deck_id")
-            .eq("room_id", roomId)
-            .eq("slot", slot)
-            .maybeSingle();
-        if (rd?.deck_id) return rd.deck_id as string;
-
-        const { data: deckRow } = await supabase
-            .from("decks")
-            .select("id")
-            .eq("ext_id", extId)
-            .maybeSingle();
-        return deckRow?.id ?? null;
-    }
-
 
     async function uploadPdfForSlot(slot: number) {
         const s = slots.find((x) => x.slot === slot);
-
         const input = document.createElement("input");
         input.type = "file";
         input.accept = "application/pdf";
@@ -382,26 +339,17 @@ export default function TeacherPage() {
             const file = input.files?.[0];
             if (!file) return;
 
-            // ▶ 모달 열기 & 가짜 진행률 타이머 시작(실제 SDK가 퍼센트를 제공하지 않아 추정치 표시)
             openUploadDlg(file.name);
             let pct = 0;
-            const timer = window.setInterval(() => {
-                pct = Math.min(90, pct + 1);
-                setUploadPct(pct, "업로드 중...");
-                }, 120);
-            
-            try {
-                // 방 보장/조회
-                setUploadPct(8, "방 확인 중...");
-                const ensuredRoomId = await getOrEnsureRoomId();
-                if (!ensuredRoomId) {
-                    clearInterval(timer);
-                    setUploadPct(100, "방 정보를 찾지 못했습니다.");
-                    // 모달은 유지, 사용자는 '닫기'로 종료 가능
-                    return;
-                }
+            const timer = window.setInterval(() => { pct = Math.min(90, pct + 1); setUploadPct(pct, "업로드 중..."); }, 120);
 
-                // 1) 덱 확보(없으면 자동 생성/배정)
+            try {
+                // rooms 보장
+                const { data: existed } = await supabase.from("rooms").select("id").eq("code", roomCode).maybeSingle();
+                const ensuredRoomId = existed?.id ?? (await rpc<string>("ensure_room", { p_code: roomCode })).data ?? null;
+                if (!ensuredRoomId) { clearInterval(timer); setUploadPct(100, "방 정보를 찾지 못했습니다."); return; }
+
+                // 1) 덱 확보
                 let deckId = s?.deck_id ?? null;
                 let extForUpdate: string | null = null;
                 const baseTitle = toSlug(file.name) || `deck-${slot}`;
@@ -409,40 +357,35 @@ export default function TeacherPage() {
                 if (!deckId) {
                     const genExt = `deck-${baseTitle}-${Math.random().toString(36).slice(2, 6)}`;
                     extForUpdate = genExt;
-
-                    const { data: assignedDeckId, error: assignErr } = await rpc<string>("assign_room_deck_by_ext", {
+                    const { error: assignErr } = await rpc<string>("assign_room_deck_by_ext", {
                         p_code: roomCode, p_slot: slot, p_ext_id: genExt, p_title: baseTitle,
                     });
                     if (assignErr) { clearInterval(timer); setUploadPct(100, "덱 배정 실패"); return; }
-                    deckId = assignedDeckId ?? await resolveDeckIdAfterAssign(ensuredRoomId, slot, genExt);
+                    // 방금 배정된 덱 id 확인
+                    const { data: rd } = await supabase
+                        .from("room_decks").select("deck_id").eq("room_id", ensuredRoomId).eq("slot", slot).maybeSingle();
+                    deckId = rd?.deck_id ?? null;
                 } else {
                     const { data: deckRow } = await supabase.from("decks").select("ext_id").eq("id", deckId).maybeSingle();
                     extForUpdate = deckRow?.ext_id ?? null;
                 }
 
-                // 2) 업로드 (deckId 없으면 ext 폴더를 사용해도 됨)
-                const folder = deckId ?? (extForUpdate as string);
-                let keyBase = `rooms/${ensuredRoomId}/decks/${folder}`;
-                let key = `${keyBase}/slides-${Date.now()}.pdf`;
-                setUploadPct(15, "업로드 시작...");
-                let up = await supabase.storage.from("presentations").upload(key, file, { upsert: true, contentType: file.type });
-                // RLS로 막힌 경우(public/ 경로로 1회 대체 시도 – 필요 없으면 이 블록 삭제)
-                if (up.error && /row-level security/i.test(String(up.error.message))) {
-                    const altBase = `public/${folder}`;
-                    key = `${altBase}/slides-${Date.now()}.pdf`;
-                    up = await supabase.storage.from("presentations").upload(key, file, { upsert: true, contentType: file.type });
-                }
-                    if (up.error) { clearInterval(timer); setUploadPct(100, "업로드 실패"); console.error(up.error); return; }
+                // 2) 업로드
+                let key = `rooms/${ensuredRoomId}/decks/${extForUpdate ?? deckId}/slides-${Date.now()}.pdf`;
+                let up = await supabase.storage.from("presentations")
+                    .upload(key, file, { upsert: true, contentType: "application/pdf" });
+                if (up.error) { clearInterval(timer); setUploadPct(100, "업로드 실패"); console.error(up.error); return; }
 
                 // 3) decks.file_key 갱신
                 setUploadPct(92, "파일 링크 갱신 중...");
                 await rpc("upsert_deck_file", { p_ext_id: extForUpdate, p_file_key: key });
 
-                // 4) 현재 교시에 반영 & 미리보기 URL
+                // 4) 현재 교시에 반영(선택 사항이지만 편의상 유지)
                 const publicUrl = supabase.storage.from("presentations").getPublicUrl(key).data.publicUrl;
                 if (deckId && currentDeckId === deckId) setDeckFileUrl(publicUrl);
-                
-                // 5) 슬롯 목록 리프레시
+
+                // 5) 슬롯 목록 갱신 + rooms 상태 즉시 동기화
+                await refreshRoomState();
                 const { data } = await supabase
                     .from("room_decks")
                     .select("slot, deck_id, decks(title)")
@@ -455,23 +398,19 @@ export default function TeacherPage() {
                     }));
                 }
 
-                // ▶ 진행 UI 최종 업데이트
                 clearInterval(timer);
                 setUploadPct(100, "업로드 완료!");
-                setUploadDlg((u) => ({ ...u, previewUrl: publicUrl })); // 미리보기 표시
+                setUploadDlg((u) => ({ ...u, previewUrl: publicUrl }));
                 toast.show("업로드 완료");
             } catch (e) {
                 console.error(e);
                 clearInterval(timer);
                 setUploadPct(100, "업로드 실패");
-                // 실패 시에도 닫기는 가능하도록 유지
             }
         };
 
         input.click();
     }
-
-
 
     // ----- views -----
     const PresentView = (
@@ -479,12 +418,11 @@ export default function TeacherPage() {
             <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
                 <div style={{ fontSize: 12, opacity: 0.7 }}>슬라이드 {currSlide} / 스텝 {currStep}</div>
                 <a className="btn" href={studentUrl} target="_blank" rel="noreferrer">학생 접속 링크</a>
+                <button className="btn" onClick={() => nav(`/library?room=${roomCode}`)}>자료함</button>
             </div>
             <div style={{ display: "grid", placeItems: "center" }}>
                 {deckFileUrl ? (
-                    <div className="pdf-stage">
-                        <PdfViewer fileUrl={deckFileUrl} page={currSlide} />
-                    </div>
+                    <div className="pdf-stage"><PdfViewer fileUrl={deckFileUrl} page={currSlide} /></div>
                 ) : currentStepMeta?.img ? (
                     <img src={currentStepMeta.img} alt="current" style={{ maxWidth: "100%", borderRadius: 12 }} />
                 ) : (
@@ -508,15 +446,14 @@ export default function TeacherPage() {
                         현재 교시: {currentDeckId ? "선택됨" : "미선택"} · 슬라이드 {currSlide} / 스텝 {currStep}
                     </div>
                     {deckFileUrl ? (
-                        <div className="pdf-stage">
-                            <PdfViewer fileUrl={deckFileUrl} page={currSlide} />
-                        </div>
+                        <div className="pdf-stage"><PdfViewer fileUrl={deckFileUrl} page={currSlide} /></div>
                     ) : currentStepMeta?.img ? (
                         <img src={currentStepMeta.img} alt="current" style={{ maxWidth: "100%", borderRadius: 12, marginBottom: 8 }} />
                     ) : null}
                     <div style={{ display: "flex", gap: 8 }}>
                         <button className="btn" onClick={next} disabled={!isOwner}>⏭ 다음</button>
                         <button className="btn" onClick={() => goto(currSlide, currStep)} disabled={!isOwner}>🔓 현재 스텝 해제</button>
+                        <button className="btn" onClick={() => nav(`/library?room=${roomCode}`)}>자료함</button>
                     </div>
                 </div>
 
@@ -529,9 +466,15 @@ export default function TeacherPage() {
                                 <div style={{ fontSize: 12, opacity: 0.8, minHeight: 18 }}>
                                     {s.title || (s.deck_id ? s.deck_id.slice(0, 8) : "미배정")}
                                 </div>
-                                <button className="btn" style={{ marginTop: 6 }} onClick={() => rpc("set_room_deck", { p_code: roomCode, p_slot: s.slot }).then(()=>rpc("goto_slide",{p_code:roomCode,p_slide:1,p_step:0}))} disabled={!isOwner}>
-                                    전환
-                                </button>
+                                <button
+                                    className="btn" style={{ marginTop: 6 }}
+                                    onClick={async () => {
+                                        await rpc("set_room_deck", { p_code: roomCode, p_slot: s.slot });
+                                        await rpc("goto_slide", { p_code: roomCode, p_slide: 1, p_step: 0 });
+                                        await refreshRoomState(); // 전환 직후 즉시 동기화
+                                    }}
+                                    disabled={!isOwner}
+                                >전환</button>
                                 <button className="btn" style={{ marginTop: 6 }} onClick={() => uploadPdfForSlot(s.slot)} disabled={!isOwner}>
                                     PDF 업로드
                                 </button>
@@ -570,12 +513,8 @@ export default function TeacherPage() {
                         ) : (
                             history.map((h, idx) => (
                                 <div key={idx} style={{ borderBottom: "1px solid rgba(148,163,184,0.12)", padding: "6px 0" }}>
-                                    <div style={{ fontSize: 13 }}>
-                                        <b>{h.student_id ?? "익명"}</b> → {h.answer_value ?? h.answer ?? ""}
-                                    </div>
-                                    <div style={{ fontSize: 11, opacity: 0.65 }}>
-                                        slide {h.slide} / step {h.step} · {h.created_at}
-                                    </div>
+                                    <div style={{ fontSize: 13 }}><b>{h.student_id ?? "익명"}</b> → {h.answer_value ?? h.answer ?? ""}</div>
+                                    <div style={{ fontSize: 11, opacity: 0.65 }}>slide {h.slide} / step {h.step} · {h.created_at}</div>
                                 </div>
                             ))
                         )}
@@ -594,39 +533,25 @@ export default function TeacherPage() {
                 <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
                     <button className={`btn ${viewMode==='present'?'btn-primary':''}`} onClick={() => setViewMode("present")}>발표</button>
                     <button className={`btn ${viewMode==='setup'?'btn-primary':''}`} onClick={() => setViewMode("setup")}>설정</button>
+                    <button className="btn" onClick={() => nav(`/library?room=${roomCode}`)}>자료함</button>
                 </div>
             </div>
 
             {viewMode === "present" ? PresentView : SetupView}
+
             {/* 업로드 진행/미리보기 모달 */}
             {uploadDlg.open && (
-                <div style={{
-                    position:"fixed", inset:0, background:"rgba(0,0,0,0.5)", display:"grid",
-                    placeItems:"center", zIndex:70
-                }}>
+                <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.5)", display:"grid", placeItems:"center", zIndex:70 }}>
                     <div className="panel" style={{ width: 680, maxWidth: "92vw" }}>
-                        <h3 style={{ marginTop:0 }}>
-                            파일 업로드: <span style={{ opacity:.8 }}>{uploadDlg.name}</span>
-                        </h3>
-
-                        {/* 진행 바 */}
+                        <h3 style={{ marginTop:0 }}>파일 업로드: <span style={{ opacity:.8 }}>{uploadDlg.name}</span></h3>
                         {!uploadDlg.previewUrl && (
                             <>
-                                <div style={{
-                                    height: 10, background:"rgba(148,163,184,0.2)", borderRadius: 8, overflow: "hidden"
-                                }}>
-                                    <div style={{
-                                        width: `${uploadDlg.pct}%`, height: "100%", background:"#60a5fa",
-                                        transition:"width .2s ease"
-                                    }}/>
+                                <div style={{ height: 10, background:"rgba(148,163,184,0.2)", borderRadius: 8, overflow: "hidden" }}>
+                                    <div style={{ width: `${uploadDlg.pct}%`, height: "100%", background:"#60a5fa", transition:"width .2s ease" }}/>
                                 </div>
-                                <div style={{ marginTop: 8, fontSize: 13, opacity:.8 }}>
-                                    {uploadDlg.msg} {uploadDlg.pct}%
-                                </div>
+                                <div style={{ marginTop: 8, fontSize: 13, opacity:.8 }}>{uploadDlg.msg} {uploadDlg.pct}%</div>
                             </>
                         )}
-
-                        {/* 미리보기 */}
                         {uploadDlg.previewUrl && (
                             <div style={{ marginTop: 10 }}>
                                 <div style={{ fontSize:12, opacity:.7, marginBottom:6 }}>업로드가 완료되었습니다. 미리보기:</div>
@@ -635,7 +560,6 @@ export default function TeacherPage() {
                                 </div>
                             </div>
                         )}
-
                         <div style={{ display:"flex", gap:8, justifyContent:"flex-end", marginTop: 12 }}>
                             <button className="btn" onClick={closeUploadDlg}>닫기</button>
                         </div>
