@@ -54,8 +54,13 @@ export default function StudentPage() {
 
     const NW: React.CSSProperties = { whiteSpace: "nowrap" };
 
-    const saveNick = () => { setNickname(nickInput.trim()); setNicknameState(nickInput.trim()); setEditNick(false); };
-
+    const saveNick = () => {
+        const v = nickInput.trim();
+        if (!v) { alert("닉네임을 입력하세요."); return; }
+        setNickname(v);        // localStorage
+        setNicknameState(v);   // 화면 즉시 갱신
+        setEditNick(false);
+    };
     const [deckFileUrl, setDeckFileUrl] = useState<string | null>(null);
 
     function getPublicUrl(key: string) {
@@ -195,7 +200,11 @@ export default function StudentPage() {
                 <button
                     className="btn"
                     style={{ marginLeft: 8, whiteSpace: "nowrap" }}
-                    onClick={() => { setNickInput(nickname); setEditNick(true); }}
+                    onClick={() => {
+                        setShowToast(false);         // 퀴즈 토스트 닫고
+                        setNickInput(nickname);      // 현재 값 프리로드
+                        setEditNick(true);           // 닉네임 토스트만 열기
+                    }}
                 >
                     닉네임 설정
                 </button>

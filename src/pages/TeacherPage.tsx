@@ -52,6 +52,20 @@ function makeRoomCode(len = 6) {
     return out;
 }
 
+async function ensureAndGetRoomId(code: string): Promise<string | null> {
+    // 1) 있는지 먼저 조회
+    let { data: row, error: e1 } = await supabase.from("rooms").select("id").eq("code", code).maybeSingle();
+    if (row?.id) return row.id;
+
+    // 2) 없으면 생성 보장
+    await rpc("ensure_room", { p_code: code });
+
+    // 3) 재조회
+    const { data: row2 } = await supabase.from("rooms").select("id").eq("code", code).maybeSingle();
+    return row2?.id ?? null;
+}
+
+
 export default function TeacherPage() {
     const nav = useNavigate();
     const loc = useLocation();
@@ -315,6 +329,9 @@ export default function TeacherPage() {
             if (!file) return;
 
             try {
+
+                const ensuredRoomId = await ensureAndGetRoomId(roomCode);
+                if (!ensuredRoomId) { alert("방 정보를 찾지 못했습니다."); return; }
                 // 1) 덱 ID 확보 (없으면 자동 생성+배정)
                 let deckId = s?.deck_id ?? null;
                 let extForUpdate: string | null = null;
@@ -339,10 +356,7 @@ export default function TeacherPage() {
 
                     const { data: rd } = await supabase
                         .from("room_decks")
-                        .select("deck_id")
-                        .eq("room_id", roomRow.id)
-                        .eq("slot", slot)
-                        .maybeSingle();
+                        .select("deck_id").eq("room_id", ensuredRoomId).eq("slot", slot).maybeSingle();
 
                     deckId = rd?.deck_id ?? null;
                     if (!deckId) { alert("덱 ID를 찾지 못했습니다."); return; }
@@ -369,12 +383,10 @@ export default function TeacherPage() {
                 // 5) 슬롯 목록 리프레시(타이틀/배정 최신화)
                 const { data: roomRow2 } = await supabase
                     .from("rooms").select("id").eq("code", roomCode).maybeSingle();
-                if (roomRow2?.id) {
+                if (ensuredRoomId) {
                     const { data } = await supabase
                         .from("room_decks")
-                        .select("slot, deck_id, decks(title)")
-                        .eq("room_id", roomRow2.id)
-                        .order("slot");
+                        .select("slot, deck_id, decks(title)").eq("room_id", ensuredRoomId).order("slot");
                     if (data) {
                         setSlots(
                             Array.from({ length: 6 }, (_, i) => {
