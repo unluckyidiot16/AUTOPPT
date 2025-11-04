@@ -70,9 +70,7 @@ export default function PdfLibraryPage() {
     const assignAndUse = async (d: DeckRow) => {
         if (!roomCode || !d.ext_id) return;
         if (!d.ext_id) { console.warn("[LIB] ext_id 없음: 지도로 배정 불가, PDF 재업로드로 식별자 생성 권장"); setErrMsg("이 자료는 식별자가 없어 바로 불러올 수 없습니다. 해당 PDF를 교사 화면에서 한 번만 다시 업로드해 주세요."); return; }
-        await rpc("assign_room_deck_by_ext", {
-            p_code: roomCode, p_slot: slotSel, p_ext_id: d.ext_id, p_title: d.title ?? d.ext_id
-        });
+        await rpc("assign_room_deck_by_id",  { p_code: roomCode, p_slot: slotSel, p_deck_id: d.id });
         await rpc("set_room_deck", { p_code: roomCode, p_slot: slotSel });
         await rpc("goto_slide", { p_code: roomCode, p_slide: 1, p_step: 0 });
         nav(`/teacher?room=${roomCode}&mode=present`);

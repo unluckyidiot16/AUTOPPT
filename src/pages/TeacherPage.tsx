@@ -374,29 +374,15 @@ export default function TeacherPage() {
 
                 // 1) 덱 확보
                 let deckId = s?.deck_id ?? null;
-                let extForUpdate: string | null = null;
                 const baseTitle = toSlug(file.name) || `deck-${slot}`;
-
                 if (!deckId) {
-                    const genExt = `deck-${baseTitle}-${Math.random().toString(36).slice(2, 6)}`;
-                    extForUpdate = genExt;
-                    const { error: assignErr } = await rpc<string>("assign_room_deck_by_ext", {
-                        p_code: roomCode, p_slot: slot, p_ext_id: genExt, p_title: baseTitle,
-                    });
-                    if (assignErr) { clearInterval(timer); setUploadPct(100, "덱 배정 실패"); return; }
-                    // 방금 배정된 덱 id 확인
-                    const { data: rd } = await supabase
-                        .from("room_decks").select("deck_id").eq("room_id", ensuredRoomId).eq("slot", slot).maybeSingle();
-                    deckId = rd?.deck_id ?? null;
-                } else {
-                    // 기존 슬롯: 같은 덱 유지 + 파일만 교체 (ext_id 없으면 id를 사용)
-                    const { data: deckRow } = await supabase.from("decks").select("ext_id,title").eq("id", deckId).maybeSingle();
-                    extForUpdate = deckRow?.ext_id ?? null;
-                    // 제목이 없거나 빈 경우엔 업로드 파일명 슬러그로 보강(선택)
-                    if (!deckRow?.title || deckRow.title.trim() === "") {
-                        // 제목 업데이트는 선택사항: assign_room_deck_by_ext로 새 덱을 만들지 않고 기존 덱 유지
-                        // (RLS 정책상 직접 UPDATE가 막혀 있을 수 있어, 여기서는 생략/유지)
-                    }
+                       const { data: created, error: cErr } = await rpc< string >("create_deck_and_assign", {
+                             p_code: roomCode, p_slot: slot, p_title: baseTitle, p_slug: toSlug(file.name)   // p_slug는 옵션
+                       });
+                       if (cErr) { clearInterval(timer); setUploadPct(100, "덱 생성 실패"); return; }
+                       deckId = created!;
+                     } else {
+                       // 기존 슬롯이면 그대로 유지(제목 변경 필요 없으면 패스)
                 }
 
                 // 2) 업로드
