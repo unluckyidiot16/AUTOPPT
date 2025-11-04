@@ -341,10 +341,10 @@ export default function TeacherPage() {
             // ▶ 모달 열기 & 가짜 진행률 타이머 시작(실제 SDK가 퍼센트를 제공하지 않아 추정치 표시)
             openUploadDlg(file.name);
             let pct = 0;
-             const timer = window.setInterval(() => {
-                   pct = Math.min(90, pct + 1);
-                   setUploadPct(pct, "업로드 중...");
-                 }, 120);
+            const timer = window.setInterval(() => {
+                pct = Math.min(90, pct + 1);
+                setUploadPct(pct, "업로드 중...");
+                }, 120);
 
             try {
                 const ensuredRoomId = await ensureAndGetRoomId(roomCode);
