@@ -4,7 +4,12 @@ import { supabase } from "../supabaseClient";
 
 export type SyncMessage =
     | { type: "hello"; role: "teacher" | "student" }
-    | { type: "goto"; slide: number; step: number };
+    | {
+    type: "goto";
+    page: number;         // ✅ 표준
+    slide?: number;       // (과도기) 구버전 호환용
+    step?: number;        // (과도기) 구버전 호환용
+};
 
 export function useRealtime(roomId: string, role: "teacher" | "student") {
     const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
@@ -25,12 +30,7 @@ export function useRealtime(roomId: string, role: "teacher" | "student") {
         ch.subscribe((status) => {
             if (status === "SUBSCRIBED") {
                 setConnected(true);
-                // 입장 알림
-                ch.send({
-                    type: "broadcast",
-                    event: "sync",
-                    payload: { type: "hello", role },
-                });
+                ch.send({ type: "broadcast", event: "sync", payload: { type: "hello", role } });
             }
         });
 
@@ -43,11 +43,7 @@ export function useRealtime(roomId: string, role: "teacher" | "student") {
     const send = useCallback((msg: SyncMessage) => {
         const ch = channelRef.current;
         if (!ch) return;
-        ch.send({
-            type: "broadcast",
-            event: "sync",
-            payload: msg,
-        });
+        ch.send({ type: "broadcast", event: "sync", payload: msg });
     }, []);
 
     return { connected, lastMessage, send };

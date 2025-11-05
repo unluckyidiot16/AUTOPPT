@@ -125,22 +125,13 @@ export default function PdfLibraryPage() {
     const assignAndUse = async (d: DeckRow) => {
         if (!roomCode) return;
         try {
-            // ✅ 방 생성/귀속 보장
             await rpc("claim_room_auth", { p_code: roomCode });
-
-            // 1) 슬롯에 덱 배정
             await rpc("assign_room_deck_by_id", { p_code: roomCode, p_slot: slotSel, p_deck_id: d.id });
-
-            // 2) 해당 슬롯을 현재 교시로
             await rpc("set_room_deck", { p_code: roomCode, p_slot: slotSel });
 
-            // (선택) 약간의 텀
-            await new Promise(r => setTimeout(r, 150));
+            // ✅ page 기준 첫 페이지로 이동 (과도기: goto_slide 제거)
+            await rpc("goto_page", { p_code: roomCode, p_page: 1 });
 
-            // 3) 첫 페이지로 이동
-            await rpc("goto_slide", { p_code: roomCode, p_slide: 1, p_step: 0 });
-
-            // 발표 화면으로
             nav(`/teacher?room=${roomCode}&mode=present`);
         } catch (error) {
             console.error("[assignAndUse] Error:", error);
