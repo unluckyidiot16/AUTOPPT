@@ -84,42 +84,49 @@ export default function StudentPage() {
                       })();
               }, [roomCode]);
     // PDF URL 로딩(조인 → 짧은 재시도 → decks 직접조회 폴백)
+    // PDF URL 로딩(조인 → 짧은 재시도 → decks 직접조회 폴백)
     useEffect(() => {
-           let cancelled = false;
-           (async () => {
-                 // 덱이 없어진 경우에만 지움. (있는데 file_key 미전파면 "그대로 유지")
-                if (!currentDeckId) { setDeckFileUrl(null); return; }
-                    if (!roomId) return;
-                    
-                const reqToken = `${currentDeckId}:${roomId}:${Date.now()}`;
-                    (window as any).__stuDeckReqToken = reqToken;
-                 const pick = async () => {
-                       const { data: rd } = await supabase
-                         .from("room_decks").select("decks(file_key)")
-                         .eq("room_id", roomId).eq("deck_id", currentDeckId).maybeSingle();
-                       return (rd as any)?.decks?.file_key ?? null;
-                     };
-                 let fk: string | null = null;
-                 // 최대 8회(≈1.5s) 재시도 후 폴백 조회
-                     for (let i = 0; i < 8 && !fk; i++) {
-                       fk = await pick();
-                       if (!fk) await new Promise(r => setTimeout(r, 150));
-                     }
-                 if (!fk) {
-                       const { data: d2 } = await supabase.from("decks")
-                         .select("file_key").eq("id", currentDeckId).maybeSingle();
-                       fk = (d2 as any)?.file_key ?? null;
-                     }
-                 if (cancelled) return;
-               if ((window as any).__stuDeckReqToken === reqToken) {
-                   setDeckFileUrl(urlOrNull);
-                    }
-               })();
-           return () => { cancelled = true; };
-         }, [currentDeckId, roomId]);
-          
-          
-      // 탭 복귀 시 즉시 동기화(실시간 체감 개선)
+        let cancelled = false;
+        (async () => {
+            // 덱이 사라진 경우에만 비움. (있는데 file_key 미전파면 기존 URL 유지)
+            if (!currentDeckId) { setDeckFileUrl(null); return; }
+            if (!roomId) return;
+
+            const reqToken = `${currentDeckId}:${roomId}:${Date.now()}`;
+            (window as any).__stuDeckReqToken = reqToken;
+
+            const pick = async () => {
+                const { data: rd } = await supabase
+                    .from("room_decks").select("decks(file_key)")
+                    .eq("room_id", roomId).eq("deck_id", currentDeckId).maybeSingle();
+                return (rd as any)?.decks?.file_key ?? null;
+            };
+
+            let fk: string | null = null;
+            // 최대 8회(≈1.5s) 재시도
+            for (let i = 0; i < 8 && !fk; i++) {
+                fk = await pick();
+                if (!fk) await new Promise(r => setTimeout(r, 150));
+            }
+            // 폴백: decks 직접 조회
+            if (!fk) {
+                const { data: d2 } = await supabase
+                    .from("decks").select("file_key").eq("id", currentDeckId).maybeSingle();
+                fk = (d2 as any)?.file_key ?? null;
+            }
+
+            if (cancelled) return;
+            // 토큰 일치 + fk가 있을 때만 갱신 → 없으면 기존 URL 유지
+            if ((window as any).__stuDeckReqToken === reqToken && fk) {
+                const url = supabase.storage.from("presentations").getPublicUrl(fk).data.publicUrl;
+                setDeckFileUrl(url);
+            }
+        })();
+        return () => { cancelled = true; };
+    }, [currentDeckId, roomId]);
+
+
+    // 탭 복귀 시 즉시 동기화(실시간 체감 개선)
           useEffect(() => {
                   const onVis = () => { if (document.visibilityState === "visible") refreshRoomNow(); };
                   document.addEventListener("visibilitychange", onVis);

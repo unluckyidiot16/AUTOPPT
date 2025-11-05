@@ -246,40 +246,41 @@ export default function TeacherPage() {
         supabase.storage.from("presentations").getPublicUrl(key).data.publicUrl;
 
     useEffect(() => {
-           let cancelled = false;
-           (async () => {
-               if (!currentDeckId) {
-                   if (!cancelled && (window as any).__deckReqToken === reqToken) {
-                       setDeckFileUrl(rd?.deck?.file_key ? getPublicUrl(rd.deck.file_key) : null);
-                   }
-                   return;
-               }
-               // roomId는 잠시 비어있을 수 있음 → 기존 URL 유지(깜빡임 방지)
-               if (!roomId) return;
-                 const pick = async () => {
-                     const reqToken = `${currentDeckId}:${roomId}:${Date.now()}`;
-                     (window as any).__deckReqToken = reqToken;
-                       const { data: rd } = await supabase
-                         .from("room_decks").select("decks(file_key)")
-                         .eq("room_id", roomId).eq("deck_id", currentDeckId).maybeSingle();
-                       return (rd as any)?.decks?.file_key ?? null;
-                     };
-                 let fk: string | null = null;
-                 // 최대 8회(≈1.5s) 재시도 후 폴백 조회
-                     for (let i = 0; i < 8 && !fk; i++) {
-                       fk = await pick();
-                       if (!fk) await new Promise(r => setTimeout(r, 150));
-                     }
-                 if (!fk) {
-                       const { data: d2 } = await supabase.from("decks")
-                         .select("file_key").eq("id", currentDeckId).maybeSingle();
-                       fk = (d2 as any)?.file_key ?? null;
-                     }
-                 if (cancelled) return;
-                 if (fk) setDeckFileUrl(getPublicUrl(fk)); // fk 없으면 기존 URL 유지
-               })();
-           return () => { cancelled = true; };
-         }, [currentDeckId, roomId]);
+        let cancelled = false;
+        (async () => {
+            // 덱이 해제된 경우에만 비움. (file_key 미전파면 기존 URL 유지)
+            if (!currentDeckId) { setDeckFileUrl(null); return; }
+            if (!roomId) return;
+
+            const reqToken = `${currentDeckId}:${roomId}:${Date.now()}`;
+            (window as any).__deckReqToken = reqToken;
+
+            const pick = async () => {
+                const { data: rd } = await supabase
+                    .from("room_decks").select("decks(file_key)")
+                    .eq("room_id", roomId).eq("deck_id", currentDeckId).maybeSingle();
+                return (rd as any)?.decks?.file_key ?? null;
+            };
+
+            let fk: string | null = null;
+            for (let i = 0; i < 8 && !fk; i++) {
+                fk = await pick();
+                if (!fk) await new Promise(r => setTimeout(r, 150));
+            }
+            if (!fk) {
+                const { data: d2 } = await supabase
+                    .from("decks").select("file_key").eq("id", currentDeckId).maybeSingle();
+                fk = (d2 as any)?.file_key ?? null;
+            }
+
+            if (cancelled) return;
+            if ((window as any).__deckReqToken === reqToken && fk) {
+                setDeckFileUrl(getPublicUrl(fk));
+            }
+        })();
+        return () => { cancelled = true; };
+    }, [currentDeckId, roomId]);
+
 
     useEffect(() => {
         if (!currentDeckId) return;
