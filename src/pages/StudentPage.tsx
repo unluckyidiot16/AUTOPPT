@@ -6,6 +6,9 @@ import { getBasePath } from "../utils/getBasePath";
 import { useRealtime } from "../hooks/useRealtime";
 import { loadSlides, type SlideMeta } from "../slideMeta";
 import PdfViewer from "../components/PdfViewer";
+import { getManifestByRoom } from "../api/overrides";
+import type { ManifestItem, ManifestPageItem, ManifestQuizItem } from "../types/manifest";
+import QuizOverlay from "../components/QuizOverlay";
 
 const DEBUG = true;
 const DBG = {
@@ -42,6 +45,8 @@ export default function StudentPage() {
     const [nickInput, setNickInput] = useState(nickname);
 
     const NW: React.CSSProperties = { whiteSpace: "nowrap" };
+    const [manifest, setManifest] = useState<ManifestItem[] | null>(null);
+
 
     // Slides metadata (폴백)
     useEffect(() => { loadSlides().then(setSlides).catch(() => setSlides([])); }, []);
@@ -61,6 +66,19 @@ export default function StudentPage() {
         })();
         return () => { cancel = true; };
     }, [roomCode]);
+
+    useEffect(() => {
+        let cancel = false;
+        (async () => {
+            if (!roomCode) { setManifest(null); return; }
+            try {
+                const m = await getManifestByRoom(roomCode);
+                if (!cancel) setManifest(m);
+            } catch { if (!cancel) setManifest(null); }
+        })();
+        return () => { cancel = true; };
+    }, [roomCode]);
+
 
     // Realtime sync channel (student)
     const { lastMessage } = useRealtime(roomCode, "student");
@@ -183,7 +201,36 @@ export default function StudentPage() {
                             페이지 {page}
                         </div>
                         {deckFileUrl ? (
-                            <PdfViewer key={`${deckFileUrl}|${currentDeckId}`} fileUrl={deckFileUrl} page={page} />
+                            (() => {
+                                const idx = Math.max(0, (page || 1) - 1);
+                                const item = manifest?.[idx] ?? null;
+
+                                if (item && item.type === "quiz") {
+                                    return (
+                                        <div style={{ display: "grid", placeItems: "center", minHeight: 300 }}>
+                                            <QuizOverlay
+                                                item={item as ManifestQuizItem}
+                                                mode="student"
+                                                onPassed={() => {
+                                                    // 기본은 교사 진행 대기. autoAdvance는 P2.5에서 브로드캐스트/집계로 붙이자.
+                                                }}
+                                            />
+                                        </div>
+                                    );
+                                }
+
+                                const p = (item && item.type === "page")
+                                    ? (item as ManifestPageItem).srcPage
+                                    : page;
+
+                                return (
+                                    <PdfViewer
+                                        key={`${deckFileUrl}|${currentDeckId}|${p}`}
+                                        fileUrl={deckFileUrl}
+                                        page={p}
+                                    />
+                                );
+                            })()
                         ) : (
                             (() => {
                                 const s = slides.find(x => x.slide === slide);
@@ -198,6 +245,7 @@ export default function StudentPage() {
                                 );
                             })()
                         )}
+
                     </div>
 
                     {isQuiz ? (

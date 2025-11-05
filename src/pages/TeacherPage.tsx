@@ -7,6 +7,11 @@ import { useRealtime } from "../hooks/useRealtime";
 import { useRoomDecksSubscription } from "../hooks/useRoomDecksSubscription";
 import PdfViewer from "../components/PdfViewer";
 import { getBasePath } from "../utils/getBasePath";
+import { getManifestByRoom } from "../api/overrides";
+import type { ManifestItem, ManifestPageItem, ManifestQuizItem } from "../types/manifest";
+import DeckEditor from "../components/DeckEditor";
+import QuizOverlay from "../components/QuizOverlay";
+
 
 type DeckSlot = { slot: number; deck_id: string | null; title?: string | null; file_key?: string | null };
 
@@ -16,6 +21,9 @@ const DBG = {
     ok:   (...a: any[]) => DEBUG && console.log("%c[AUTOPPT:OK]", "color:#16a34a", ...a),
     err:  (...a: any[]) => DEBUG && console.log("%c[AUTOPPT:ERR]", "color:#dc2626", ...a),
 };
+
+const [manifest, setManifest] = useState<ManifestItem[] | null>(null);
+const [editOpen, setEditOpen] = useState(false);
 
 async function rpc<T = any>(fn: string, args?: Record<string, any>) {
     const { data, error } = await supabase.rpc(fn, args ?? {});
@@ -102,6 +110,25 @@ export default function TeacherPage() {
             nav(`/teacher?${url.toString()}`, { replace: true });
         }
     }, [roomCode]);
+
+    useEffect(() => {
+        let cancel = false;
+        (async () => {
+            if (!roomCode || !currentDeckId) { setManifest(null); return; }
+            try {
+                const m = await getManifestByRoom(roomCode);
+                if (!cancel) setManifest(m);
+            } catch { if (!cancel) setManifest(null); }
+        })();
+        return () => { cancel = true; };
+    }, [roomCode, currentDeckId]);
+
+    function currentItem(): ManifestItem | null {
+        if (!manifest || !manifest.length) return null;
+        const idx = Math.max(0, page - 1);
+        return manifest[idx] ?? null;
+    }
+
 
     // ---- Room row ----
     const refreshRoomState = useCallback(async () => {
@@ -323,12 +350,32 @@ export default function TeacherPage() {
             </div>
             <div style={{ display: "grid", placeItems: "center" }}>
                 {deckFileUrl ? (
-                    <div className="pdf-stage" style={{ width: "100%" }}>
-                        <PdfViewer key={`${deckFileUrl}|${currentDeckId}`} fileUrl={deckFileUrl} page={page} />
+                    <div className="pdf-stage" style={{ width: "100%", display: "grid", placeItems: "center" }}>
+                        {(() => {
+                            const item = currentItem();
+                            if (item && item.type === "quiz") {
+                                return (
+                                    <div style={{ display: "grid", placeItems: "center", minHeight: 300 }}>
+                                        <QuizOverlay item={item as ManifestQuizItem} mode="teacher" />
+                                    </div>
+                                );
+                            }
+                            const p = (item && item.type === "page")
+                                ? (item as ManifestPageItem).srcPage
+                                : page;
+                            return (
+                                <PdfViewer
+                                    key={`${deckFileUrl}|${currentDeckId}|${p}`}
+                                    fileUrl={deckFileUrl}
+                                    page={p}
+                                />
+                            );
+                        })()}
                     </div>
                 ) : (
                     <div style={{ opacity: 0.6 }}>자료가 없습니다.</div>
                 )}
+
             </div>
             <div style={{ display: "flex", gap: 8, justifyContent: "center", marginTop: 10 }}>
                 <button className="btn" onClick={prev} disabled={page <= 1}>◀ 이전</button>
@@ -345,12 +392,33 @@ export default function TeacherPage() {
                     현재 교시: {currentDeckId ? "선택됨" : "미선택"} · 페이지 {page}{totalPages ? ` / ${totalPages}` : ""}
                 </div>
                 {deckFileUrl ? (
-                    <div className="pdf-stage">
-                        <PdfViewer key={`${deckFileUrl}|${page}`} fileUrl={deckFileUrl} page={page} maxHeight="500px" />
+                    <div className="pdf-stage" style={{ display: "grid", placeItems: "center" }}>
+                        {(() => {
+                            const item = currentItem();
+                            if (item && item.type === "quiz") {
+                                return (
+                                    <div style={{ display: "grid", placeItems: "center", minHeight: 240 }}>
+                                        <QuizOverlay item={item as ManifestQuizItem} mode="teacher" />
+                                    </div>
+                                );
+                            }
+                            const p = (item && item.type === "page")
+                                ? (item as ManifestPageItem).srcPage
+                                : page;
+                            return (
+                                <PdfViewer
+                                    key={`${deckFileUrl}|${currentDeckId}|${p}`}
+                                    fileUrl={deckFileUrl}
+                                    page={p}
+                                    maxHeight="500px"
+                                />
+                            );
+                        })()}
                     </div>
                 ) : (
                     <div style={{ opacity: 0.6 }}>자료가 없습니다.</div>
                 )}
+
                 <div style={{ display: "flex", gap: 8, justifyContent: "center", marginTop: 10 }}>
                     <button className="btn" onClick={prev} disabled={page <= 1}>◀ 이전</button>
                     <button className="btn" onClick={() => gotoPage(page)}>🔓 현재 페이지 재전송</button>
