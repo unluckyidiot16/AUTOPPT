@@ -42,7 +42,6 @@ function PreviewModal({
     const [totalPages, setTotalPages] = useState<number | null>(null);
     const fileUrl = preview.file_key ? getPublicUrl(preview.file_key) : "";
 
-    // decks.file_pages 조회
     useEffect(() => {
         let cancel = false;
         (async () => {
@@ -58,21 +57,14 @@ function PreviewModal({
                 if (!cancel) setTotalPages(null);
             }
         })();
-        return () => {
-            cancel = true;
-        };
+        return () => { cancel = true; };
     }, [preview.id]);
 
-    // 키보드(←/→, ESC) 지원
     useEffect(() => {
         const onKey = (e: KeyboardEvent) => {
             if (e.key === "Escape") onClose();
-            else if (e.key === "ArrowLeft")
-                setCurrentPage((p) => Math.max(1, p - 1));
-            else if (e.key === "ArrowRight")
-                setCurrentPage((p) =>
-                    totalPages ? Math.min(totalPages, p + 1) : p + 1
-                );
+            else if (e.key === "ArrowLeft") setCurrentPage((p) => Math.max(1, p - 1));
+            else if (e.key === "ArrowRight") setCurrentPage((p) => (totalPages ? Math.min(totalPages, p + 1) : p + 1));
         };
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);
@@ -82,83 +74,25 @@ function PreviewModal({
     const canNext = totalPages ? currentPage < totalPages : true;
 
     return (
-        <div
-            style={{
-                position: "fixed",
-                inset: 0,
-                background: "rgba(0,0,0,0.5)",
-                display: "grid",
-                placeItems: "center",
-                zIndex: 70,
-            }}
-            role="dialog"
-            aria-modal="true"
-            aria-label="PDF 미리보기"
-        >
-            <div
-                className="panel"
-                style={{
-                    width: "min(92vw, 920px)",
-                    maxWidth: "95vw",
-                    maxHeight: "90vh",
-                    display: "flex",
-                    flexDirection: "column",
-                }}
-            >
-                <div
-                    style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 8,
-                        marginBottom: 12,
-                    }}
-                >
-                    <h3 style={{ margin: 0, flex: 1 }}>
-                        {preview.title ?? preview.ext_id}
-                    </h3>
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "grid", placeItems: "center", zIndex: 70 }}
+             role="dialog" aria-modal="true" aria-label="PDF 미리보기">
+            <div className="panel" style={{ width: "min(92vw, 920px)", maxWidth: "95vw", maxHeight: "90vh", display: "flex", flexDirection: "column" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+                    <h3 style={{ margin: 0, flex: 1 }}>{preview.title ?? preview.ext_id}</h3>
                     <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                        <button
-                            className="btn"
-                            onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
-                            disabled={!canPrev}
-                        >
-                            이전
-                        </button>
+                        <button className="btn" onClick={() => setCurrentPage((p) => Math.max(1, p - 1))} disabled={!canPrev}>이전</button>
                         <span style={{ fontSize: 14, minWidth: 80, textAlign: "center" }}>
-              페이지 {currentPage}
-                            {totalPages ? `/${totalPages}` : ""}
+              페이지 {currentPage}{totalPages ? `/${totalPages}` : ""}
             </span>
-                        <button
-                            className="btn"
-                            onClick={() => setCurrentPage((p) => (canNext ? p + 1 : p))}
-                            disabled={!canNext}
-                        >
-                            다음
-                        </button>
-                        <button className="btn" onClick={onClose}>
-                            닫기
-                        </button>
+                        <button className="btn" onClick={() => setCurrentPage((p) => (canNext ? p + 1 : p))} disabled={!canNext}>다음</button>
+                        <button className="btn" onClick={onClose}>닫기</button>
                     </div>
                 </div>
-                <div
-                    className="pdf-stage"
-                    style={{
-                        flex: 1,
-                        overflow: "auto",
-                        borderRadius: 8,
-                        background: "#f3f4f6",
-                    }}
-                >
+                <div className="pdf-stage" style={{ flex: 1, overflow: "auto", borderRadius: 8, background: "#f3f4f6" }}>
                     {fileUrl ? (
-                        <PdfViewer
-                            fileUrl={fileUrl}
-                            page={currentPage}
-                            maxHeight="calc(90vh - 120px)"
-                        />
+                        <PdfViewer fileUrl={fileUrl} page={currentPage} maxHeight="calc(90vh - 120px)" />
                     ) : (
-                        <div style={{ padding: 16, textAlign: "center", opacity: 0.6 }}>
-                            파일이 없습니다.
-                        </div>
+                        <div style={{ padding: 16, textAlign: "center", opacity: 0.6 }}>파일이 없습니다.</div>
                     )}
                 </div>
             </div>
@@ -171,7 +105,6 @@ export default function PdfLibraryPage() {
     const nav = useNavigate();
     const roomCode = qs.get("room") ?? "";
 
-    // 검색/정렬/상태
     const [q, setQ] = useState("");
     const [slotSel, setSlotSel] = useState(1);
     const [decks, setDecks] = useState<DeckRow[]>([]);
@@ -183,13 +116,8 @@ export default function PdfLibraryPage() {
         setLoading(true);
         setErrMsg(null);
         try {
-            // 권한 클레임(중복 호출 안전)
-            try {
-                await rpc("claim_room_auth", { p_code: roomCode });
-            } catch {}
-            const { data, error } = await supabase.rpc("list_decks_by_room_owner", {
-                p_room_code: roomCode,
-            });
+            try { await rpc("claim_room_auth", { p_code: roomCode }); } catch {}
+            const { data, error } = await supabase.rpc("list_decks_by_room_owner", { p_room_code: roomCode });
             if (error) throw error;
             setDecks((data as any) ?? []);
         } catch (e) {
@@ -201,45 +129,48 @@ export default function PdfLibraryPage() {
         }
     }, [roomCode]);
 
-    useEffect(() => {
-        if (roomCode) loadDecks();
-    }, [roomCode, loadDecks]);
+    useEffect(() => { if (roomCode) loadDecks(); }, [roomCode, loadDecks]);
 
     const filt = useMemo(
-        () =>
-            decks.filter((d) => {
-                if (!q.trim()) return true;
-                const key = `${d.title ?? ""} ${d.ext_id ?? ""}`.toLowerCase();
-                return key.includes(q.toLowerCase());
-            }),
+        () => decks.filter((d) => {
+            if (!q.trim()) return true;
+            const key = `${d.title ?? ""} ${d.ext_id ?? ""}`.toLowerCase();
+            return key.includes(q.toLowerCase());
+        }),
         [q, decks]
     );
 
     const assignAndUse = async (d: DeckRow) => {
         if (!roomCode) return;
         try {
-            // 방 소유 권한 클레임 → 슬롯에 덱 배정 → 현재 교시로 선택
             await rpc("claim_room_auth", { p_code: roomCode });
-            await rpc("assign_room_deck_by_id", {
-                p_code: roomCode,
-                p_slot: slotSel,
-                p_deck_id: d.id,
-            });
+            await rpc("assign_room_deck_by_id", { p_code: roomCode, p_slot: slotSel, p_deck_id: d.id });
             await rpc("set_room_deck", { p_code: roomCode, p_slot: slotSel });
 
-            // ✅ P1: 슬롯 진행 페이지와 전역 page 모두 1로 맞춤
+            // 슬롯 페이지 초기화(있으면 사용)
             try {
-                await rpc("set_current_page_for_slot", {
-                    p_code: roomCode,
-                    p_slot: slotSel,
-                    p_page: 1,
-                });
-            } catch {
-                // 함수가 없거나 실패해도 치명적이지 않으니 무시(rooms.state.page로 최소 보정)
-            }
-            await rpc("goto_page", { p_code: roomCode, p_page: 1 });
+                await rpc("set_current_page_for_slot", { p_code: roomCode, p_slot: slotSel, p_page: 1 });
+            } catch {}
 
-            // 발표 화면으로 전환
+            // 페이지 이동: goto_page → goto_slide 폴백
+            let pageSetOk = false;
+            try {
+                await rpc("goto_page", { p_code: roomCode, p_page: 1 });
+                pageSetOk = true;
+            } catch (e1) {
+                console.warn("goto_page failed, fallback to goto_slide", e1);
+                try {
+                    await rpc("goto_slide", { p_code: roomCode, p_slide: 1, p_step: 0 });
+                    pageSetOk = true;
+                } catch (e2) {
+                    console.error("goto_slide fallback failed", e2);
+                }
+            }
+
+            // 실패해도 수업은 진행: 발표 화면으로 전환
+            if (!pageSetOk) {
+                alert("서버에 페이지 반영은 실패했지만, 발표 화면으로 이동합니다. (임시 동기화)");
+            }
             nav(`/teacher?room=${roomCode}&mode=present`);
         } catch (error) {
             console.error("[assignAndUse] Error:", error);
@@ -259,55 +190,20 @@ export default function PdfLibraryPage() {
                 <h1 style={{ margin: 0 }}>자료함</h1>
                 <span className="badge">room: {roomCode || "-"}</span>
                 <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
-                    <a className="btn" href={studentUrl} target="_blank" rel="noreferrer">
-                        학생 링크
-                    </a>
-                    <button
-                        className="btn"
-                        onClick={() => nav(`/teacher?room=${roomCode}&mode=setup`)}
-                    >
-                        교사 설정
-                    </button>
-                    <button
-                        className="btn btn-primary"
-                        onClick={() => nav(`/teacher?room=${roomCode}&mode=present`)}
-                    >
-                        발표로 이동
-                    </button>
+                    <a className="btn" href={studentUrl} target="_blank" rel="noreferrer">학생 링크</a>
+                    <button className="btn" onClick={() => nav(`/teacher?room=${roomCode}&mode=setup`)}>교사 설정</button>
+                    <button className="btn btn-primary" onClick={() => nav(`/teacher?room=${roomCode}&mode=present`)}>발표로 이동</button>
                 </div>
             </div>
 
             <div className="panel" style={{ marginBottom: 12 }}>
                 <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                    <input
-                        className="input"
-                        placeholder="제목 검색"
-                        value={q}
-                        onChange={(e) => setQ(e.target.value)}
-                        style={{ maxWidth: 360 }}
-                    />
-                    <button className="btn" onClick={loadDecks} disabled={loading}>
-                        {loading ? "새로고침…" : "새로고침"}
-                    </button>
-                    <div
-                        style={{
-                            marginLeft: "auto",
-                            display: "flex",
-                            gap: 8,
-                            alignItems: "center",
-                        }}
-                    >
+                    <input className="input" placeholder="제목 검색" value={q} onChange={(e) => setQ(e.target.value)} style={{ maxWidth: 360 }} />
+                    <button className="btn" onClick={loadDecks} disabled={loading}>{loading ? "새로고침…" : "새로고침"}</button>
+                    <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" }}>
                         <span style={{ fontSize: 13, opacity: 0.75 }}>불러올 슬롯</span>
-                        <select
-                            className="input"
-                            value={slotSel}
-                            onChange={(e) => setSlotSel(Number(e.target.value))}
-                        >
-                            {[1, 2, 3, 4, 5, 6].map((n) => (
-                                <option key={n} value={n}>
-                                    {n}교시
-                                </option>
-                            ))}
+                        <select className="input" value={slotSel} onChange={(e) => setSlotSel(Number(e.target.value))}>
+                            {[1,2,3,4,5,6].map((n) => <option key={n} value={n}>{n}교시</option>)}
                         </select>
                     </div>
                 </div>
@@ -317,79 +213,26 @@ export default function PdfLibraryPage() {
                 {errMsg ? (
                     <div style={{ color: "#ef4444" }}>{errMsg}</div>
                 ) : filt.length === 0 ? (
-                    <div style={{ opacity: 0.6 }}>
-                        {loading ? "불러오는 중..." : "업로드된 PDF가 없습니다."}
-                    </div>
+                    <div style={{ opacity: 0.6 }}>{loading ? "불러오는 중..." : "업로드된 PDF가 없습니다."}</div>
                 ) : (
-                    <div
-                        style={{
-                            display: "grid",
-                            gap: 10,
-                            gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))",
-                        }}
-                    >
+                    <div style={{ display: "grid", gap: 10, gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))" }}>
                         {filt.map((d) => (
                             <div key={d.id} className="card" style={{ padding: 10 }}>
-                                <div style={{ fontWeight: 700, marginBottom: 4 }}>
-                                    {d.title ?? d.ext_id}
-                                </div>
-                                <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 8 }}>
-                                    {d.ext_id}
-                                </div>
+                                <div style={{ fontWeight: 700, marginBottom: 4 }}>{d.title ?? d.ext_id}</div>
+                                <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 8 }}>{d.ext_id}</div>
                                 {d.file_key ? (
-                                    <div
-                                        className="pdf-thumb"
-                                        style={{
-                                            borderRadius: 8,
-                                            overflow: "hidden",
-                                            marginBottom: 8,
-                                            border: "1px solid rgba(148,163,184,.25)",
-                                            height: 120,
-                                            position: "relative",
-                                        }}
-                                        aria-label="PDF 썸네일"
-                                    >
-                                        <PdfViewer
-                                            fileUrl={getPublicUrl(d.file_key)}
-                                            page={1}
-                                            maxHeight="120px"
-                                        />
+                                    <div className="pdf-thumb" style={{ borderRadius: 8, overflow: "hidden", marginBottom: 8, border: "1px solid rgba(148,163,184,.25)", height: 120, position: "relative" }} aria-label="PDF 썸네일">
+                                        <PdfViewer fileUrl={getPublicUrl(d.file_key)} page={1} maxHeight="120px" />
                                     </div>
                                 ) : (
-                                    <div
-                                        style={{
-                                            height: 120,
-                                            marginBottom: 8,
-                                            borderRadius: 8,
-                                            display: "grid",
-                                            placeItems: "center",
-                                            border: "1px dashed rgba(148,163,184,.35)",
-                                            color: "#94a3b8",
-                                            fontSize: 12,
-                                        }}
-                                    >
+                                    <div style={{ height: 120, marginBottom: 8, borderRadius: 8, display: "grid", placeItems: "center", border: "1px dashed rgba(148,163,184,.35)", color: "#94a3b8", fontSize: 12 }}>
                                         파일 없음
                                     </div>
                                 )}
                                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                                    {d.file_key && (
-                                        <a
-                                            className="btn"
-                                            href={getPublicUrl(d.file_key)}
-                                            target="_blank"
-                                            rel="noreferrer"
-                                        >
-                                            링크 열기
-                                        </a>
-                                    )}
-                                    {d.file_key && (
-                                        <button className="btn" onClick={() => setPreview(d)}>
-                                            미리보기
-                                        </button>
-                                    )}
-                                    <button className="btn btn-primary" onClick={() => assignAndUse(d)}>
-                                        지금 불러오기
-                                    </button>
+                                    {d.file_key && <a className="btn" href={getPublicUrl(d.file_key)} target="_blank" rel="noreferrer">링크 열기</a>}
+                                    {d.file_key && <button className="btn" onClick={() => setPreview(d)}>미리보기</button>}
+                                    <button className="btn btn-primary" onClick={() => assignAndUse(d)}>지금 불러오기</button>
                                 </div>
                             </div>
                         ))}
@@ -397,9 +240,7 @@ export default function PdfLibraryPage() {
                 )}
             </div>
 
-            {preview && preview.file_key && (
-                <PreviewModal preview={preview} onClose={() => setPreview(null)} />
-            )}
+            {preview && preview.file_key && <PreviewModal preview={preview} onClose={() => setPreview(null)} />}
         </div>
     );
 }

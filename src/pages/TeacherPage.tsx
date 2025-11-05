@@ -22,10 +22,12 @@ async function rpc<T = any>(fn: string, args?: Record<string, any>) {
     if (error) { DBG.err("rpc error:", fn, error.message || error); throw error; }
     return data as T;
 }
+
 function useQS() {
     const { search } = useLocation();
     return useMemo(() => new URLSearchParams(search), [search]);
 }
+
 function useToast(ms = 2400) {
     const [open, setOpen] = useState(false);
     const [msg, setMsg] = useState("");
@@ -38,6 +40,44 @@ function useToast(ms = 2400) {
         }}>{msg}</div>
     ) : null;
     return { show, node };
+}
+
+/** P1 호환용: page 이동을 안전하게 시도 (goto_page → goto_slide → rooms.state 직접업데이트 → 브로드캐스트로만 진행) */
+async function gotoPageSafe(
+    roomCode: string,
+    nextPage: number
+): Promise<"ok" | "fallback-slide" | "local-only" | "fail"> {
+    const p = Math.max(1, nextPage);
+
+    // 1) 신버전 RPC
+    try {
+        await rpc("goto_page", { p_code: roomCode, p_page: p });
+        return "ok";
+    } catch (e1) {
+        DBG.err("goto_page failed", e1);
+    }
+
+    // 2) 구버전 RPC 폴백
+    try {
+        await rpc("goto_slide", { p_code: roomCode, p_slide: p, p_step: 0 });
+        return "fallback-slide";
+    } catch (e2) {
+        DBG.err("goto_slide fallback failed", e2);
+    }
+
+    // 3) 최후의 수단: rooms.state.page 직접 업데이트(소유자 RLS 허용 시)
+    try {
+        const { data: r } = await supabase.from("rooms").select("id,state").eq("code", roomCode).maybeSingle();
+        if (r?.id) {
+            const nextState = { ...(r.state ?? {}), page: p };
+            const { error: uerr } = await supabase.from("rooms").update({ state: nextState }).eq("id", r.id);
+            if (!uerr) return "local-only";
+        }
+    } catch (e3) {
+        DBG.err("rooms.state direct update failed", e3);
+    }
+
+    return "fail";
 }
 
 export default function TeacherPage() {
@@ -141,7 +181,6 @@ export default function TeacherPage() {
         (async () => {
             if (!roomCode || !currentDeckId) { setDeckFileUrl(null); setTotalPages(null); return; }
 
-            // 1) 현재 교시 파일 키 조회 (서버 RPC)
             try {
                 const key = await rpc<string | null>("get_current_deck_file_key", { p_code: roomCode });
                 if (cancelled) return;
@@ -156,7 +195,6 @@ export default function TeacherPage() {
                 setDeckFileUrl(null);
             }
 
-            // 2) 총 페이지 수 (decks.file_pages) → 네비 한계 표시용
             try {
                 const { data } = await supabase.from("decks").select("file_pages").eq("id", currentDeckId).maybeSingle();
                 setTotalPages(Number(data?.file_pages) || null);
@@ -167,10 +205,14 @@ export default function TeacherPage() {
         return () => { cancelled = true; };
     }, [roomCode, currentDeckId]);
 
-    // ---- Controls ----
+    // ---- Controls (안전 폴백 버전) ----
     const gotoPage = useCallback(async (nextPage: number) => {
         const p = Math.max(1, nextPage);
-        await rpc("goto_page", { p_code: roomCode, p_page: p });
+        const mode = await gotoPageSafe(roomCode, p);
+        if (mode === "fail") {
+            // 그래도 수업은 흘러가도록 브로드캐스트만이라도
+            toast.show("서버 갱신 실패: 임시 동기화로 진행합니다");
+        }
         setPage(p);
         // 과도기: slide/step도 함께 브로드캐스트
         send({ type: "goto", page: p, slide: p, step: 0 });
@@ -187,7 +229,7 @@ export default function TeacherPage() {
         await gotoPage(page - 1);
     }, [page, gotoPage]);
 
-    // ---- Upload (변경 없음) ----
+    // ---- Upload (기존) ----
     const [uploading, setUploading] = useState<{ open: boolean; name?: string; pct?: number; previewUrl?: string | null; msg?: string }>({
         open: false, name: "", pct: 0, previewUrl: null, msg: ""
     });
@@ -336,7 +378,8 @@ export default function TeacherPage() {
                                     onClick={async () => {
                                         if (!s.deck_id) return;
                                         await rpc("set_room_deck", { p_code: roomCode, p_slot: s.slot });
-                                        // 슬롯별 저장된 current_page 복원 → rooms.state.page 반영
+                                        // 슬롯별 저장된 current_page 복원 → rooms.state.page 반영 (안전 폴백)
+                                        let restored = 1;
                                         if (roomId) {
                                             const { data: rd } = await supabase
                                                 .from("room_decks")
@@ -344,11 +387,11 @@ export default function TeacherPage() {
                                                 .eq("room_id", roomId)
                                                 .eq("slot", s.slot)
                                                 .maybeSingle();
-                                            const p = Number(rd?.current_page ?? 1) || 1;
-                                            await rpc("goto_page", { p_code: roomCode, p_page: p });
-                                            setPage(p);
-                                            send({ type: "goto", page: p, slide: p, step: 0 });
+                                            restored = Number(rd?.current_page ?? 1) || 1;
                                         }
+                                        await gotoPageSafe(roomCode, restored);
+                                        setPage(restored);
+                                        send({ type: "goto", page: restored, slide: restored, step: 0 });
                                         await refreshRoomState();
                                     }}
                                 >
