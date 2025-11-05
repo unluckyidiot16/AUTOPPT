@@ -28,22 +28,52 @@ async function rpc<T=any>(name: string, params: Record<string, any>) {
 // 미리보기 모달 컴포넌트
 function PreviewModal({ preview, onClose }: { preview: DeckRow; onClose: () => void }) {
     const [currentPage, setCurrentPage] = useState(1);
+    const [totalPages, setTotalPages] = useState(0);
     const fileUrl = preview.file_key ? getPublicUrl(preview.file_key) : "";
     
     return (
         <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.5)", display:"grid", placeItems:"center", zIndex:70 }}>
-            <div className="panel" style={{ width: 920, maxWidth: "95vw", maxHeight: "90vh", overflow:"auto" }}>
+            <div className="panel" style={{ 
+                width: "min(92vw, 920px)", 
+                maxWidth: "95vw", 
+                maxHeight: "90vh", 
+                display: "flex",
+                flexDirection: "column"
+            }}>
                 <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom: 12 }}>
                     <h3 style={{ margin:0, flex:1 }}>{preview.title ?? preview.ext_id}</h3>
                     <div style={{ display:"flex", gap:8, alignItems:"center" }}>
-                        <button className="btn" onClick={() => setCurrentPage(p => Math.max(1, p - 1))}>이전</button>
-                        <span style={{ fontSize: 14 }}>페이지 {currentPage}</span>
-                        <button className="btn" onClick={() => setCurrentPage(p => p + 1)}>다음</button>
+                        <button 
+                            className="btn" 
+                            onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                            disabled={currentPage <= 1}
+                        >
+                            이전
+                        </button>
+                        <span style={{ fontSize: 14, minWidth: 80, textAlign: "center" }}>
+                            페이지 {currentPage}{totalPages > 0 && `/${totalPages}`}
+                        </span>
+                        <button 
+                            className="btn" 
+                            onClick={() => setCurrentPage(p => p + 1)}
+                            disabled={totalPages > 0 && currentPage >= totalPages}
+                        >
+                            다음
+                        </button>
                         <button className="btn" onClick={onClose}>닫기</button>
                     </div>
                 </div>
-                <div className="pdf-stage" style={{ marginTop: 8 }}>
-                    <PdfViewer fileUrl={fileUrl} page={currentPage} />
+                <div className="pdf-stage" style={{ 
+                    flex: 1,
+                    overflow: "auto",
+                    borderRadius: 8,
+                    background: "#f3f4f6"
+                }}>
+                    <PdfViewer 
+                        fileUrl={fileUrl} 
+                        page={currentPage} 
+                        maxHeight="calc(90vh - 120px)"
+                    />
                 </div>
             </div>
         </div>
@@ -166,10 +196,15 @@ export default function PdfLibraryPage() {
                                 <div style={{ fontWeight: 700, marginBottom: 4 }}>{d.title ?? d.ext_id}</div>
                                 <div style={{ fontSize: 12, opacity: .7, marginBottom: 8 }}>{d.ext_id}</div>
                                 {d.file_key && (
-                                    <div className="pdf-thumb" style={{ borderRadius: 8, overflow: "hidden", marginBottom: 8, border: "1px solid rgba(148,163,184,.25)" }}>
-                                        <div style={{ height: 120, background: "rgba(30,41,59,.35)" }}>
-                                            <PdfViewer fileUrl={getPublicUrl(d.file_key)} page={1} />
-                                        </div>
+                                    <div className="pdf-thumb" style={{ 
+                                        borderRadius: 8, 
+                                        overflow: "hidden", 
+                                        marginBottom: 8, 
+                                        border: "1px solid rgba(148,163,184,.25)",
+                                        height: 120,
+                                        position: "relative"
+                                    }}>
+                                        <PdfViewer fileUrl={getPublicUrl(d.file_key)} page={1} maxHeight="120px" />
                                     </div>
                                 )}
                                 <div style={{ display:"flex", gap: 8, flexWrap:"wrap" }}>

@@ -547,15 +547,27 @@ export default function TeacherPage() {
                     </div>
                     {deckFileUrl ? (
                         <div className="pdf-stage">
-                            <PdfViewer key={deckFileUrl} fileUrl={deckFileUrl} page={currSlide} />
+                            <PdfViewer fileUrl={deckFileUrl} page={currSlide} maxHeight="500px" />
                         </div>
-                    ) : currentStepMeta?.img ? (
-                        <img
-                            src={`${getBasePath()}${currentStepMeta.img ?? ""}`}
-                            alt="current"
-                            style={{ maxWidth: "100%", borderRadius: 12, marginBottom: 8 }}
-                        />
-                    ) : null}
+                    ) : (
+                        currentStepMeta?.img ? (
+                            <img
+                                src={`${getBasePath()}${currentStepMeta.img ?? ""}`}
+                                alt="current"
+                                style={{ maxWidth: "100%", borderRadius: 12, marginBottom: 8 }}
+                            />
+                        ) : (
+                            <div style={{ 
+                                padding: 40, 
+                                textAlign: "center", 
+                                background: "#f3f4f6", 
+                                borderRadius: 12,
+                                color: "#6b7280"
+                            }}>
+                                PDF를 업로드하거나 교시를 선택해주세요
+                            </div>
+                        )
+                    )}
                     <div style={{ display: "flex", gap: 8 }}>
                         <button className="btn" onClick={next} disabled={!isOwner}>⏭ 다음</button>
                         <button className="btn" onClick={() => goto(currSlide, currStep)} disabled={!isOwner}>🔓 현재 스텝 해제</button>
@@ -686,8 +698,8 @@ export default function TeacherPage() {
                         {uploadDlg.previewUrl && (
                             <div style={{ marginTop: 12 }}>
                                 <div style={{ fontWeight: 700, marginBottom: 6 }}>미리보기(1페이지)</div>
-                                <div className="pdf-stage">
-                                    <PdfViewer fileUrl={uploadDlg.previewUrl} page={1} />
+                                <div className="pdf-stage" style={{ maxHeight: "300px", overflow: "auto" }}>
+                                    <PdfViewer fileUrl={uploadDlg.previewUrl} page={1} maxHeight="280px" />
                                 </div>
                             </div>
                         )}

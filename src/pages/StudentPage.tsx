@@ -265,7 +265,7 @@ export default function StudentPage() {
                             슬라이드 {slide} / 스텝 {step} {isQuiz ? <span style={{ color: "#f97316" }}>(문제)</span> : <span>(설명)</span>}
                         </div>
                         {deckFileUrl ? (
-                            <PdfViewer key={deckFileUrl} fileUrl={deckFileUrl} page={slide} />
+                            <PdfViewer fileUrl={deckFileUrl} page={slide} maxHeight="450px" />
                         ) : currentMeta?.img ? (
                             <img src={`${getBasePath()}${currentMeta.img ?? ""}`} alt="slide"
                                  style={{ maxWidth: "100%", borderRadius: 14, marginBottom: 4 }} />
