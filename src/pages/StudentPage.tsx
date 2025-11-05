@@ -86,46 +86,26 @@ export default function StudentPage() {
     return () => { supabase.removeChannel(ch); };
   }, [roomId]);
 
-  // Resolve file_key → public URL whenever deck changes
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      if (!roomId || !currentDeckId) { setDeckFileUrl(null); return; }
-      const { data: rd } = await supabase
-        .from("room_decks")
-        .select("decks(file_key)")
-        .eq("room_id", roomId)
-        .eq("deck_id", currentDeckId)
-        .maybeSingle();
-      let fk = (rd as any)?.decks?.file_key ?? null;
-
-      if (!fk) {
-        const { data: d2 } = await supabase.from("decks").select("file_key").eq("id", currentDeckId).maybeSingle();
-        fk = (d2 as any)?.file_key ?? null;
-      }
-      if (cancelled) return;
-      if (fk) {
-        const url = supabase.storage.from("presentations").getPublicUrl(fk).data.publicUrl;
-        setDeckFileUrl(url);
-      } else {
-        setDeckFileUrl(null);
-      }
-    })();
-
-    // Also live-update if decks.file_key changes
-    if (currentDeckId) {
-      const ch = supabase
-        .channel(`decks:${currentDeckId}`)
-        .on("postgres_changes", { event: "UPDATE", schema: "public", table: "decks", filter: `id=eq.${currentDeckId}` }, (ev: any) => {
-          const fk = ev.new?.file_key ?? null;
-          if (!fk) return;
-          const url = supabase.storage.from("presentations").getPublicUrl(fk).data.publicUrl;
-          setDeckFileUrl(url);
-        })
-        .subscribe();
-      return () => { cancelled = true; supabase.removeChannel(ch); };
-    }
-  }, [roomId, currentDeckId]);
+    // Resolve file_key safely via RPC (student-safe)
+    useEffect(() => {
+            let cancelled = false;
+            (async () => {
+                  if (!currentDeckId) { setDeckFileUrl(null); return; }
+                  try {
+                        const key: string | null = await supabase.rpc("get_current_deck_file_key_public", { p_code: roomCode }).then(r => (r.error ? null : (r.data as any)));
+                        if (cancelled) return;
+                        if (key) {
+                              const url = supabase.storage.from("presentations").getPublicUrl(key).data.publicUrl;
+                              setDeckFileUrl(url);
+                            } else {
+                              setDeckFileUrl(null);
+                            }
+                      } catch {
+                        if (!cancelled) setDeckFileUrl(null);
+                      }
+                })();
+            return () => { cancelled = true; };
+          }, [roomCode, currentDeckId]);
 
   const slide = Number(state?.slide ?? 1);
   const step  = Number(state?.step ?? 0);
@@ -185,7 +165,7 @@ export default function StudentPage() {
             </div>
             {deckFileUrl ? (
               // key helps ensure page re-render across some browsers
-              <PdfViewer key={`${deckFileUrl}|${slide}`} fileUrl={deckFileUrl} page={slide} maxHeight="450px" />
+                <PdfViewer key={`${deckFileUrl}|${currentDeckId}|${slide}`} fileUrl={deckFileUrl} page={slide} maxHeight="450px" />
             ) : (
               (() => {
                 const s = slides.find(x => x.slide === slide);

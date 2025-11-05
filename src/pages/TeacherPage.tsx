@@ -340,7 +340,7 @@ export default function TeacherPage() {
             <div style={{ display: "grid", placeItems: "center" }}>
                 {deckFileUrl ? (
                     <div className="pdf-stage" style={{ width: "100%" }}>
-                        <PdfViewer key={`${deckFileUrl}|${currSlide}`} fileUrl={deckFileUrl} page={currSlide} />
+                        <PdfViewer key={`${deckFileUrl}|${currentDeckId}|${currSlide}`} fileUrl={deckFileUrl} page={currSlide} />
                     </div>
                 ) : currentStepMeta?.img ? (
                     <img
