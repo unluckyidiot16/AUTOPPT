@@ -246,20 +246,36 @@ export default function TeacherPage() {
         supabase.storage.from("presentations").getPublicUrl(key).data.publicUrl;
 
     useEffect(() => {
-        (async () => {
-            if (!currentDeckId || !roomId) { setDeckFileUrl(null); return; }
-            // RLS 안전 경로: room_decks → decks(file_key)
-                const { data: rd } = await supabase
-                    .from("room_decks")
-                    .select("decks(file_key)")
-                    .eq("room_id", roomId)
-                    .eq("deck_id", currentDeckId)
-                    .maybeSingle();
-                const fk = (rd as any)?.decks?.file_key;
-                if (fk) setDeckFileUrl(getPublicUrl(fk));
-                else setDeckFileUrl(null);
-            })();
-        }, [currentDeckId, roomId]);
+           let cancelled = false;
+           (async () => {
+                 if (!currentDeckId || !roomId) { if (!cancelled) setDeckFileUrl(null); return; }
+                 // 1) room_decks join 우선
+                     const pick = async () => {
+                       const { data: rd } = await supabase
+                         .from("room_decks")
+                         .select("decks(file_key)")
+                         .eq("room_id", roomId)
+                         .eq("deck_id", currentDeckId)
+                         .maybeSingle();
+                       return (rd as any)?.decks?.file_key ?? null;
+                     };
+                 let fk = await pick();
+                 // 2) 아주 짧은 재시도(갱신 레이턴시 대비)
+                     if (!fk) { await new Promise(r => setTimeout(r, 120)); fk = await pick(); }
+                 // 3) 최종 폴백: decks 직접 조회
+                     if (!fk) {
+                       const { data: d2 } = await supabase
+                         .from("decks")
+                         .select("file_key")
+                         .eq("id", currentDeckId)
+                         .maybeSingle();
+                       fk = (d2 as any)?.file_key ?? null;
+                     }
+                 if (cancelled) return;
+                 setDeckFileUrl(fk ? getPublicUrl(fk) : null);
+               })();
+           return () => { cancelled = true; };
+         }, [currentDeckId, roomId]);
 
     // ----- student URL -----
     const studentUrl = useMemo(() => {
@@ -416,10 +432,11 @@ export default function TeacherPage() {
                 if (selErr) { clearInterval(timer); setUploadPct(100, "전환 실패"); toast.show("전환 실패: set_room_deck"); return; }
                 const { error: gotoErr } = await rpc("goto_slide", { p_code: roomCode, p_slide: 1, p_step: 0 });
                 if (gotoErr) { /* 치명적이진 않음 */ toast.show("슬라이드 이동 실패: goto_slide"); }
-                
-                // 4) 현재 교시에 반영(선택 사항이지만 편의상 유지)
+
                 const publicUrl = supabase.storage.from("presentations").getPublicUrl(key).data.publicUrl;
-                if (deckId && currentDeckId === deckId) setDeckFileUrl(publicUrl);
+                // 업로드/전환 직후 곧바로 발표 URL 고정
+                setDeckFileUrl(publicUrl);
+                setCurrentDeckId(deckId);
 
                 // 5) 슬롯 목록 갱신(+file_key) + rooms 상태 즉시 동기화
                 await refreshRoomState();
@@ -533,12 +550,6 @@ export default function TeacherPage() {
                                     PDF 업로드
                                 </button>
                                 <div style={{ marginTop: 8 }}>
-                                    <input
-                                        className="input"
-                                        placeholder="ext_id(파일ID/slug)"
-                                        value={slotEdit[s.slot]?.ext ?? ""}
-                                        onChange={(e) => setSlotEdit((prev) => ({ ...prev, [s.slot]: { ...prev[s.slot], ext: e.target.value } }))}
-                                    />
                                     <input
                                         className="input"
                                         style={{ marginTop: 6 }}
