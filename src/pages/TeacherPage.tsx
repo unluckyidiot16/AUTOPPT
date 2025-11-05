@@ -242,42 +242,57 @@ export default function TeacherPage() {
 
     // ----- deck file (PDF) -----
     const [deckFileUrl, setDeckFileUrl] = useState<string | null>(null);
-    const getPublicUrl = (key: string) =>
-        supabase.storage.from("presentations").getPublicUrl(key).data.publicUrl;
+    const getPublicUrl = (key: string) => supabase.storage.from("presentations").getPublicUrl(key).data.publicUrl;
 
     useEffect(() => {
         let cancelled = false;
+
         (async () => {
-            // 덱이 해제된 경우에만 비움. (file_key 미전파면 기존 URL 유지)
+            // 덱 해제된 경우에만 즉시 비움(깜빡임 최소화)
             if (!currentDeckId) { setDeckFileUrl(null); return; }
             if (!roomId) return;
 
-            const reqToken = `${currentDeckId}:${roomId}:${Date.now()}`;
-            (window as any).__deckReqToken = reqToken;
-
-            const pick = async () => {
+            // 1) room_decks ↔ decks 조인 우선 탐색 + 짧은 재시도(전파 지연 흡수)
+            const tryPick = async () => {
                 const { data: rd } = await supabase
-                    .from("room_decks").select("decks(file_key)")
-                    .eq("room_id", roomId).eq("deck_id", currentDeckId).maybeSingle();
+                    .from("room_decks")
+                    .select("decks(file_key)")
+                    .eq("room_id", roomId).eq("deck_id", currentDeckId)
+                    .maybeSingle();
                 return (rd as any)?.decks?.file_key ?? null;
             };
 
             let fk: string | null = null;
-            for (let i = 0; i < 8 && !fk; i++) {
-                fk = await pick();
-                if (!fk) await new Promise(r => setTimeout(r, 150));
+            for (let i = 0; i < 18 && !fk; i++) { // ~3.6s
+                fk = await tryPick();
+                if (!fk) await new Promise(r => setTimeout(r, 200));
             }
+
+            // 2) 폴백: decks 직접 조회
             if (!fk) {
                 const { data: d2 } = await supabase
-                    .from("decks").select("file_key").eq("id", currentDeckId).maybeSingle();
+                    .from("decks").select("file_key")
+                    .eq("id", currentDeckId)
+                    .maybeSingle();
                 fk = (d2 as any)?.file_key ?? null;
             }
 
             if (cancelled) return;
-            if ((window as any).__deckReqToken === reqToken && fk) {
-                setDeckFileUrl(getPublicUrl(fk));
-            }
+            if (fk) setDeckFileUrl(getPublicUrl(fk));
         })();
+
+        // decks.file_key 바뀌면 즉시 반영
+        if (currentDeckId) {
+            const ch = supabase.channel(`decks:${currentDeckId}`)
+                .on("postgres_changes", {
+                    event: "UPDATE", schema: "public", table: "decks", filter: `id=eq.${currentDeckId}`
+                }, (ev: any) => {
+                    const fk = ev.new?.file_key;
+                    if (fk) setDeckFileUrl(getPublicUrl(fk));
+                })
+                .subscribe();
+            return () => { cancelled = true; supabase.removeChannel(ch); };
+        }
         return () => { cancelled = true; };
     }, [currentDeckId, roomId]);
 

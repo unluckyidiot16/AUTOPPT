@@ -83,7 +83,7 @@ export default function StudentPage() {
                               }
                       })();
               }, [roomCode]);
-    // PDF URL 로딩(조인 → 짧은 재시도 → decks 직접조회 폴백)
+          
     // PDF URL 로딩(조인 → 짧은 재시도 → decks 직접조회 폴백)
     useEffect(() => {
         let cancelled = false;
@@ -92,8 +92,6 @@ export default function StudentPage() {
             if (!currentDeckId) { setDeckFileUrl(null); return; }
             if (!roomId) return;
 
-            const reqToken = `${currentDeckId}:${roomId}:${Date.now()}`;
-            (window as any).__stuDeckReqToken = reqToken;
 
             const pick = async () => {
                 const { data: rd } = await supabase
@@ -117,10 +115,7 @@ export default function StudentPage() {
 
             if (cancelled) return;
             // 토큰 일치 + fk가 있을 때만 갱신 → 없으면 기존 URL 유지
-            if ((window as any).__stuDeckReqToken === reqToken && fk) {
-                const url = supabase.storage.from("presentations").getPublicUrl(fk).data.publicUrl;
-                setDeckFileUrl(url);
-            }
+            
         })();
         return () => { cancelled = true; };
     }, [currentDeckId, roomId]);
@@ -136,43 +131,54 @@ export default function StudentPage() {
     useEffect(() => { DBG.info("StudentPage mount", { room: roomCode, studentId }); }, [roomCode, studentId]);
 
     useEffect(() => { loadSlides().then(setSlides).catch(() => setSlides([])); }, []);
-
-    // rooms(state/current_deck_id) 구독
+    
     useEffect(() => {
         let cancelled = false;
-        (async () => {
-            if (!roomCode) return;
-            const { data, error } = await supabase
-                .from("rooms")
-                .select("current_deck_id, state")
-                .eq("code", roomCode)
-                .maybeSingle();
 
-            if (!cancelled && !error && data) {
-                setCurrentDeckId(data.current_deck_id ?? null);
-                setState((data.state as any) ?? {});
+        (async () => {
+            if (!currentDeckId) { setDeckFileUrl(null); return; }
+            if (!roomId) return;
+
+            const pick = async () => {
+                const { data: rd } = await supabase
+                    .from("room_decks").select("decks(file_key)")
+                    .eq("room_id", roomId).eq("deck_id", currentDeckId).maybeSingle();
+                return (rd as any)?.decks?.file_key ?? null;
+            };
+
+            let fk: string | null = null;
+            for (let i = 0; i < 18 && !fk; i++) {
+                fk = await pick();
+                if (!fk) await new Promise(r => setTimeout(r, 200));
             }
 
-            const channel = supabase
-                .channel(`rooms:${roomCode}`)
-                .on(
-                    "postgres_changes",
-                    { event: "UPDATE", schema: "public", table: "rooms", filter: `code=eq.${roomCode}` },
-                    (payload) => {
-                        const row: any = payload.new;
-                        setCurrentDeckId(row.current_deck_id ?? null);
-                        setState(row.state ?? {});
-                        setSubmitted(false);
-                        setAnswer("");
-                        setShowToast(false); // 진행이 바뀌면 입력창 닫힘
-                    }
-                )
-                .subscribe();
+            if (!fk) {
+                const { data: d2 } = await supabase
+                    .from("decks").select("file_key").eq("id", currentDeckId).maybeSingle();
+                fk = (d2 as any)?.file_key ?? null;
+            }
 
-            return () => { supabase.removeChannel(channel); };
+            if (cancelled) return;
+            if (fk) {
+                const url = supabase.storage.from("presentations").getPublicUrl(fk).data.publicUrl;
+                setDeckFileUrl(url);
+            }
         })();
+
+        if (currentDeckId) {
+            const ch = supabase.channel(`decks:${currentDeckId}`)
+                .on("postgres_changes", {
+                    event: "UPDATE", schema: "public", table: "decks", filter: `id=eq.${currentDeckId}`
+                }, (ev: any) => {
+                    const fk = ev.new?.file_key;
+                    if (fk) setDeckFileUrl(supabase.storage.from("presentations").getPublicUrl(fk).data.publicUrl);
+                })
+                .subscribe();
+            return () => { cancelled = true; supabase.removeChannel(ch); };
+        }
         return () => { cancelled = true; };
-    }, [roomCode]);
+    }, [currentDeckId, roomId]);
+
 
     const slide = Number(state?.slide ?? 1);
     const step  = Number(state?.step  ?? 0);
