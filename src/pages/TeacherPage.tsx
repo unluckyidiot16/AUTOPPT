@@ -122,6 +122,18 @@ export default function TeacherPage() {
     }, [roomCode]);
     useEffect(() => { refreshRoomState(); }, [refreshRoomState]);
 
+    useEffect(() => {
+        (async () => {
+            if (!roomCode) return;
+            try {
+                await rpc("claim_room_auth", { p_code: roomCode });
+                await refreshRoomState(); // id, current_deck_id, state 동기화
+            } catch (e) {
+                DBG.err("claim_room_auth failed", e);
+            }
+        })();
+    }, [roomCode, refreshRoomState]);
+    
     // ---- Slots ----
     const [slots, setSlots] = useState<DeckSlot[]>(() => Array.from({ length: 6 }, (_, i) => ({ slot: i+1, deck_id: null })));
     useEffect(() => {
@@ -239,7 +251,10 @@ export default function TeacherPage() {
             const timer = window.setInterval(() => { pct = Math.min(90, pct + 1); setPct(pct, "업로드 중..."); }, 120);
 
             try {
-                // room id ensure
+                // ✅ 방 생성/귀속 보장
+                await rpc("claim_room_auth", { p_code: roomCode });
+
+                // ✅ room id 재조회(여기서 무조건 존재)
                 let ensuredRoomId = roomId;
                 if (!ensuredRoomId) {
                     const { data } = await supabase.from("rooms").select("id").eq("code", roomCode).maybeSingle();

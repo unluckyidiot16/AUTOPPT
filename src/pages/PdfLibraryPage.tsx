@@ -125,25 +125,29 @@ export default function PdfLibraryPage() {
     const assignAndUse = async (d: DeckRow) => {
         if (!roomCode) return;
         try {
-            // 1. 슬롯에 덱 배정
+            // ✅ 방 생성/귀속 보장
+            await rpc("claim_room_auth", { p_code: roomCode });
+
+            // 1) 슬롯에 덱 배정
             await rpc("assign_room_deck_by_id", { p_code: roomCode, p_slot: slotSel, p_deck_id: d.id });
-            
-            // 2. 현재 교시로 설정
+
+            // 2) 해당 슬롯을 현재 교시로
             await rpc("set_room_deck", { p_code: roomCode, p_slot: slotSel });
-            
-            // 잠시 대기 (상태 업데이트를 위해)
-            await new Promise(resolve => setTimeout(resolve, 200));
-            
-            // 3. 첫 페이지로 이동
+
+            // (선택) 약간의 텀
+            await new Promise(r => setTimeout(r, 150));
+
+            // 3) 첫 페이지로 이동
             await rpc("goto_slide", { p_code: roomCode, p_slide: 1, p_step: 0 });
-            
-            // 발표 모드로 이동
+
+            // 발표 화면으로
             nav(`/teacher?room=${roomCode}&mode=present`);
         } catch (error) {
             console.error("[assignAndUse] Error:", error);
             alert("자료를 불러오는 중 오류가 발생했습니다.");
         }
     };
+
 
     const studentUrl = useMemo(() => {
         const origin = window.location.origin;
