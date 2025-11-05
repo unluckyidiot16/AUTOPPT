@@ -47,6 +47,7 @@ async function ensureDeckFileKey(opts: { roomCode: string; slot: number; deckId:
     const { error } = await supabase.from("decks").update({ file_key: fileKey }).eq("id", deckId);
     if (!error) { DBG.ok("file_key via direct update"); return; }
     DBG.err("file_key set failed", error?.message || error);
+    try { await tryRpc("upsert_deck_file_by_id", { p_deck_id: deckId, p_file_key: fileKey }); DBG.ok("file_key via by_id"); return; } catch {}
     throw error;
 }
 
@@ -179,33 +180,46 @@ export default function TeacherPage() {
     useEffect(() => {
         let cancelled = false;
         (async () => {
-            if (!roomId || !currentDeckId) { setDeckFileUrl(null); return; }
-            // room_decks -> decks.file_key (RLS 회피)
-            const { data: rd } = await supabase
-                .from("room_decks")
-                .select("decks(file_key)")
-                .eq("room_id", roomId)
-                .eq("deck_id", currentDeckId)
-                .maybeSingle();
-            const fk = (rd as any)?.decks?.file_key;
-            if (cancelled) return;
-            if (fk) {
-                const url = supabase.storage.from("presentations").getPublicUrl(fk).data.publicUrl;
-                setDeckFileUrl(url);
-            } else {
-                // 폴백: decks에서 직접
-                const { data: d2 } = await supabase.from("decks").select("file_key").eq("id", currentDeckId).maybeSingle();
-                const fk2 = (d2 as any)?.file_key;
-                if (fk2) {
-                    const url = supabase.storage.from("presentations").getPublicUrl(fk2).data.publicUrl;
-                    if (!cancelled) setDeckFileUrl(url);
+            if (!roomCode || !currentDeckId) { setDeckFileUrl(null); return; }
+
+            // 1) 서버에서 안전하게 현재 교시의 file_key 조회
+            try {
+                const key = await rpc("get_current_deck_file_key", { p_code: roomCode });
+                if (cancelled) return;
+                if (key) {
+                    const url = supabase.storage.from("presentations").getPublicUrl(key).data.publicUrl;
+                    setDeckFileUrl(url);
+                    return;
+                }
+            } catch (e) {
+                DBG.err("get_current_deck_file_key", e);
+            }
+
+            // 2) key가 비어 있으면: 스토리지에서 추정 경로의 최신 파일을 찾아 자동 복구
+            //    rooms/<roomId>/decks/<currentDeckId>/ 아래 최신 파일을 1개 조회 → file_key 백필
+            if (!roomId) { setDeckFileUrl(null); return; }
+            const basePath = `rooms/${roomId}/decks/${currentDeckId}`;
+            try {
+                const listed = await supabase.storage.from("presentations").list(basePath, { limit: 1, sortBy: { column: "created_at", order: "desc" } });
+                const name = listed.data?.[0]?.name;
+                if (name) {
+                    const guessKey = `${basePath}/${name}`;
+                    // 백엔드에 by_id로 file_key 저장 → 이후부터는 정상 경로로 동작
+                    try { await rpc("upsert_deck_file_by_id", { p_deck_id: currentDeckId, p_file_key: guessKey }); } catch {}
+                    if (!cancelled) {
+                        const url = supabase.storage.from("presentations").getPublicUrl(guessKey).data.publicUrl;
+                        setDeckFileUrl(url);
+                    }
                 } else {
                     if (!cancelled) setDeckFileUrl(null);
                 }
+            } catch {
+                if (!cancelled) setDeckFileUrl(null);
             }
         })();
         return () => { cancelled = true; };
-    }, [roomId, currentDeckId]);
+    }, [roomCode, roomId, currentDeckId]);
+
 
     // ---- Controls ----
     const goto = useCallback(async (nextSlide: number, nextStep: number) => {
