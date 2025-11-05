@@ -248,34 +248,44 @@ export default function TeacherPage() {
     useEffect(() => {
            let cancelled = false;
            (async () => {
-                 if (!currentDeckId || !roomId) { if (!cancelled) setDeckFileUrl(null); return; }
-                 // 1) room_decks join 우선
-                     const pick = async () => {
+                 // 덱이 없어진 경우에만 지움. (있는데 file_key 미전파면 "그대로 유지")
+                     if (!currentDeckId || !roomId) { if (!cancelled) setDeckFileUrl(null); return; }
+                 const pick = async () => {
                        const { data: rd } = await supabase
-                         .from("room_decks")
-                         .select("decks(file_key)")
-                         .eq("room_id", roomId)
-                         .eq("deck_id", currentDeckId)
-                         .maybeSingle();
+                         .from("room_decks").select("decks(file_key)")
+                         .eq("room_id", roomId).eq("deck_id", currentDeckId).maybeSingle();
                        return (rd as any)?.decks?.file_key ?? null;
                      };
-                 let fk = await pick();
-                 // 2) 아주 짧은 재시도(갱신 레이턴시 대비)
-                     if (!fk) { await new Promise(r => setTimeout(r, 120)); fk = await pick(); }
-                 // 3) 최종 폴백: decks 직접 조회
-                     if (!fk) {
-                       const { data: d2 } = await supabase
-                         .from("decks")
-                         .select("file_key")
-                         .eq("id", currentDeckId)
-                         .maybeSingle();
+                 let fk: string | null = null;
+                 // 최대 8회(≈1.5s) 재시도 후 폴백 조회
+                     for (let i = 0; i < 8 && !fk; i++) {
+                       fk = await pick();
+                       if (!fk) await new Promise(r => setTimeout(r, 150));
+                     }
+                 if (!fk) {
+                       const { data: d2 } = await supabase.from("decks")
+                         .select("file_key").eq("id", currentDeckId).maybeSingle();
                        fk = (d2 as any)?.file_key ?? null;
                      }
                  if (cancelled) return;
-                 setDeckFileUrl(fk ? getPublicUrl(fk) : null);
+                 if (fk) setDeckFileUrl(getPublicUrl(fk)); // fk 없으면 기존 URL 유지
                })();
            return () => { cancelled = true; };
          }, [currentDeckId, roomId]);
+
+    useEffect(() => {
+        if (!currentDeckId) return;
+        const ch = supabase.channel(`decks:${currentDeckId}`)
+            .on('postgres_changes', {
+                event: 'UPDATE', schema: 'public', table: 'decks', filter: `id=eq.${currentDeckId}`
+            }, (ev: any) => {
+                const fk = ev.new?.file_key;
+                if (fk) setDeckFileUrl(supabase.storage.from("presentations").getPublicUrl(fk).data.publicUrl);
+            })
+            .subscribe();
+        return () => { supabase.removeChannel(ch); };
+    }, [currentDeckId]);
+
 
     // ----- student URL -----
     const studentUrl = useMemo(() => {
