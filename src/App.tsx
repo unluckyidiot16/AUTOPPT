@@ -28,6 +28,8 @@ export default function App() {
                           </RequireTeacher>
                 }
             />
+            {/* ✅ 추가: 알 수 없는 경로 방어 */}
+            <Route path="*" element={<Navigate to="/student" replace />} />
         </Routes>
     );
 }
