@@ -248,9 +248,17 @@ export default function TeacherPage() {
     useEffect(() => {
            let cancelled = false;
            (async () => {
-                 // 덱이 없어진 경우에만 지움. (있는데 file_key 미전파면 "그대로 유지")
-                     if (!currentDeckId || !roomId) { if (!cancelled) setDeckFileUrl(null); return; }
+               if (!currentDeckId) {
+                   if (!cancelled && (window as any).__deckReqToken === reqToken) {
+                       setDeckFileUrl(rd?.deck?.file_key ? getPublicUrl(rd.deck.file_key) : null);
+                   }
+                   return;
+               }
+               // roomId는 잠시 비어있을 수 있음 → 기존 URL 유지(깜빡임 방지)
+               if (!roomId) return;
                  const pick = async () => {
+                     const reqToken = `${currentDeckId}:${roomId}:${Date.now()}`;
+                     (window as any).__deckReqToken = reqToken;
                        const { data: rd } = await supabase
                          .from("room_decks").select("decks(file_key)")
                          .eq("room_id", roomId).eq("deck_id", currentDeckId).maybeSingle();

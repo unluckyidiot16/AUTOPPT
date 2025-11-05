@@ -88,7 +88,11 @@ export default function StudentPage() {
            let cancelled = false;
            (async () => {
                  // 덱이 없어진 경우에만 지움. (있는데 file_key 미전파면 "그대로 유지")
-                     if (!currentDeckId || !roomId) { if (!cancelled) setDeckFileUrl(null); return; }
+                if (!currentDeckId) { setDeckFileUrl(null); return; }
+                    if (!roomId) return;
+                    
+                const reqToken = `${currentDeckId}:${roomId}:${Date.now()}`;
+                    (window as any).__stuDeckReqToken = reqToken;
                  const pick = async () => {
                        const { data: rd } = await supabase
                          .from("room_decks").select("decks(file_key)")
@@ -107,7 +111,9 @@ export default function StudentPage() {
                        fk = (d2 as any)?.file_key ?? null;
                      }
                  if (cancelled) return;
-                 if (fk) setDeckFileUrl(getPublicUrl(fk)); // fk 없으면 기존 URL 유지
+               if ((window as any).__stuDeckReqToken === reqToken) {
+                   setDeckFileUrl(urlOrNull);
+                    }
                })();
            return () => { cancelled = true; };
          }, [currentDeckId, roomId]);
