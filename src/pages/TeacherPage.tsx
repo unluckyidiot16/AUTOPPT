@@ -481,7 +481,9 @@ export default function TeacherPage() {
             </div>
             <div style={{ display: "grid", placeItems: "center" }}>
                 {deckFileUrl ? (
-                    <div className="pdf-stage"><PdfViewer fileUrl={deckFileUrl} page={currSlide} /></div>
+                    <div className="pdf-stage">
+                        <PdfViewer key={`${deckFileUrl}|${currSlide}`} fileUrl={deckFileUrl} page={currSlide} />
+                    </div>
                 ) : currentStepMeta?.img ? (
                     <img src={currentStepMeta.img} alt="current" style={{ maxWidth: "100%", borderRadius: 12 }} />
                 ) : (
@@ -505,8 +507,10 @@ export default function TeacherPage() {
                         현재 교시: {currentDeckId ? "선택됨" : "미선택"} · 슬라이드 {currSlide} / 스텝 {currStep}
                     </div>
                     {deckFileUrl ? (
-                        <div className="pdf-stage"><PdfViewer fileUrl={deckFileUrl} page={currSlide} /></div>
-                    ) : currentStepMeta?.img ? (
+                           <div className="pdf-stage">
+                                 <PdfViewer key={`${deckFileUrl}|${currSlide}`} fileUrl={deckFileUrl} page={currSlide} />
+                               </div>
+                         ) : currentStepMeta?.img ? (
                         <img src={currentStepMeta.img} alt="current" style={{ maxWidth: "100%", borderRadius: 12, marginBottom: 8 }} />
                     ) : null}
                     <div style={{ display: "flex", gap: 8 }}>

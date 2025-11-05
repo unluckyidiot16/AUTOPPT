@@ -63,13 +63,11 @@ export default function StudentPage() {
     };
     const [deckFileUrl, setDeckFileUrl] = useState<string | null>(null);
 
+
     function getPublicUrl(key: string) {
         return supabase.storage.from("presentations").getPublicUrl(key).data.publicUrl;
     }
-
-    function getPublicUrl(key: string) {
-              return supabase.storage.from("presentations").getPublicUrl(key).data.publicUrl;
-          }
+    
       const [roomId, setRoomId] = useState<string|null>(null);
       // rooms 최초 로딩 때 roomId도 확보
           useEffect(() => {
@@ -85,21 +83,35 @@ export default function StudentPage() {
                               }
                       })();
               }, [roomCode]);
-      // PDF URL 로딩: room_decks → decks(file_key)
-          useEffect(() => {
-                  (async () => {
-                          if (!currentDeckId || !roomId) { setDeckFileUrl(null); return; }
-                          const { data } = await supabase
-                              .from("room_decks")
-                              .select("decks(file_key)")
-                              .eq("room_id", roomId)
-                              .eq("deck_id", currentDeckId)
-                              .maybeSingle();
-                          const fk = (data as any)?.decks?.file_key;
-                          if (fk) setDeckFileUrl(getPublicUrl(fk));
-                          else setDeckFileUrl(null);
-                      })();
-                  }, [currentDeckId, roomId]);
+    // PDF URL 로딩(조인 → 짧은 재시도 → decks 직접조회 폴백)
+    useEffect(() => {
+           let cancelled = false;
+           (async () => {
+                 if (!currentDeckId || !roomId) { if (!cancelled) setDeckFileUrl(null); return; }
+                 const pick = async () => {
+                       const { data } = await supabase
+                         .from("room_decks")
+                         .select("decks(file_key)")
+                         .eq("room_id", roomId)
+                         .eq("deck_id", currentDeckId)
+                         .maybeSingle();
+                       return (data as any)?.decks?.file_key ?? null;
+                     };
+                 let fk = await pick();
+                 if (!fk) { await new Promise(r => setTimeout(r, 120)); fk = await pick(); }
+                 if (!fk) {
+                       const { data: d2 } = await supabase
+                         .from("decks").select("file_key").eq("id", currentDeckId).maybeSingle();
+                       fk = (d2 as any)?.file_key ?? null;
+                     }
+                 if (cancelled) return;
+                 setDeckFileUrl(fk ? getPublicUrl(fk) : null);
+               })();
+           return () => { cancelled = true; };
+         }, [currentDeckId, roomId]);
+          
+          
+          
       // 탭 복귀 시 즉시 동기화(실시간 체감 개선)
           useEffect(() => {
                   const onVis = () => { if (document.visibilityState === "visible") refreshRoomNow(); };
@@ -277,7 +289,7 @@ export default function StudentPage() {
                             슬라이드 {slide} / 스텝 {step} {isQuiz ? <span style={{ color: "#f97316" }}>(문제)</span> : <span>(설명)</span>}
                         </div>
                         {deckFileUrl ? (
-                            <PdfViewer fileUrl={deckFileUrl} page={slide} />
+                            <PdfViewer key={`${deckFileUrl}|${slide}`} fileUrl={deckFileUrl} page={slide} />
                         ) : currentMeta?.img ? (
                             <img src={currentMeta.img} alt="slide" style={{ maxWidth: "100%", borderRadius: 14, marginBottom: 4 }} />
                         ) : null}
