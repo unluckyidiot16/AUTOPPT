@@ -165,7 +165,7 @@ export default function StudentPage() {
             </div>
             {deckFileUrl ? (
               // key helps ensure page re-render across some browsers
-                <PdfViewer key={`${deckFileUrl}|${currentDeckId}|${slide}`} fileUrl={deckFileUrl} page={slide} maxHeight="450px" />
+                <PdfViewer key={`${deckFileUrl}|${currentDeckId}`} fileUrl={deckFileUrl} page={slide} />
             ) : (
               (() => {
                 const s = slides.find(x => x.slide === slide);
