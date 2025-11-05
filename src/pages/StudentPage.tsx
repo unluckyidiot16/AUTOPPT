@@ -117,7 +117,38 @@ export default function StudentPage() {
 
   useEffect(() => { if (isQuiz && !submitted) setShowToast(true); }, [isQuiz, slide, step, submitted]);
 
-  const saveNick = () => {
+    // (기존 위치 그대로 교체)
+    useEffect(() => {
+        let cancelled = false;
+        (async () => {
+            if (!roomCode) return;
+
+            // 이미 다른 경로로 state가 세팅되어 있다면(rooms 구독 등) 스킵
+            // 초기 진입/늦게 입장 복구용 1회성 호출로 운용
+            if (state?.slide != null && state?.step != null) return;
+
+            try {
+                const { data, error } = await supabase.rpc("get_room_state_public", { p_code: roomCode });
+                if (error || !data || cancelled) return;
+
+                const slideInit = Number((data as any).slide) || 1;
+                const stepInit  = Number((data as any).step)  || 0;
+
+                setState((prev) => ({ ...prev, slide: slideInit, step: stepInit }));
+            } catch {
+                // noop: 실시간 신호로 곧 동기화됨
+            }
+        })();
+
+        return () => {
+            cancelled = true;
+        };
+        // state를 의존성에 넣지 말아야 최초 1회 동작합니다.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [roomCode]);
+
+
+    const saveNick = () => {
     const v = nickInput.trim();
     if (!v) { alert("닉네임을 입력하세요."); return; }
     setNicknameLS(v); setNicknameState(v); setEditNick(false);
