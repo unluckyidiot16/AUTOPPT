@@ -22,9 +22,6 @@ const DBG = {
     err:  (...a: any[]) => DEBUG && console.log("%c[AUTOPPT:ERR]", "color:#dc2626", ...a),
 };
 
-const [manifest, setManifest] = useState<ManifestItem[] | null>(null);
-const [editOpen, setEditOpen] = useState(false);
-
 async function rpc<T = any>(fn: string, args?: Record<string, any>) {
     const { data, error } = await supabase.rpc(fn, args ?? {});
     if (error) { DBG.err("rpc error:", fn, error.message || error); throw error; }
@@ -101,6 +98,9 @@ export default function TeacherPage() {
     const [currentDeckId, setCurrentDeckId] = useState<string | null>(null);
     const [totalPages, setTotalPages] = useState<number | null>(null);
     const viewMode: "present" | "setup" = qs.get("mode") === "setup" ? "setup" : "present";
+
+    const [manifest, setManifest] = useState<ManifestItem[] | null>(null);
+    const [editOpen, setEditOpen] = useState(false);
 
     useEffect(() => {
         const url = new URLSearchParams(qs.toString());
