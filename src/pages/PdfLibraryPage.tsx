@@ -25,6 +25,31 @@ async function rpc<T=any>(name: string, params: Record<string, any>) {
     return data as T;
 }
 
+// 미리보기 모달 컴포넌트
+function PreviewModal({ preview, onClose }: { preview: DeckRow; onClose: () => void }) {
+    const [currentPage, setCurrentPage] = useState(1);
+    const fileUrl = preview.file_key ? getPublicUrl(preview.file_key) : "";
+    
+    return (
+        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.5)", display:"grid", placeItems:"center", zIndex:70 }}>
+            <div className="panel" style={{ width: 920, maxWidth: "95vw", maxHeight: "90vh", overflow:"auto" }}>
+                <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom: 12 }}>
+                    <h3 style={{ margin:0, flex:1 }}>{preview.title ?? preview.ext_id}</h3>
+                    <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+                        <button className="btn" onClick={() => setCurrentPage(p => Math.max(1, p - 1))}>이전</button>
+                        <span style={{ fontSize: 14 }}>페이지 {currentPage}</span>
+                        <button className="btn" onClick={() => setCurrentPage(p => p + 1)}>다음</button>
+                        <button className="btn" onClick={onClose}>닫기</button>
+                    </div>
+                </div>
+                <div className="pdf-stage" style={{ marginTop: 8 }}>
+                    <PdfViewer fileUrl={fileUrl} page={currentPage} />
+                </div>
+            </div>
+        </div>
+    );
+}
+
 export default function PdfLibraryPage() {
     const qs = useQS();
     const nav = useNavigate();
@@ -69,10 +94,25 @@ export default function PdfLibraryPage() {
 
     const assignAndUse = async (d: DeckRow) => {
         if (!roomCode) return;
-        await rpc("assign_room_deck_by_id", { p_code: roomCode, p_slot: slotSel, p_deck_id: d.id });
-        await rpc("set_room_deck",          { p_code: roomCode, p_slot: slotSel });
-        await rpc("goto_slide",             { p_code: roomCode, p_slide: 1, p_step: 0 });
-        nav(`/teacher?room=${roomCode}&mode=present`);
+        try {
+            // 1. 슬롯에 덱 배정
+            await rpc("assign_room_deck_by_id", { p_code: roomCode, p_slot: slotSel, p_deck_id: d.id });
+            
+            // 2. 현재 교시로 설정
+            await rpc("set_room_deck", { p_code: roomCode, p_slot: slotSel });
+            
+            // 잠시 대기 (상태 업데이트를 위해)
+            await new Promise(resolve => setTimeout(resolve, 200));
+            
+            // 3. 첫 페이지로 이동
+            await rpc("goto_slide", { p_code: roomCode, p_slide: 1, p_step: 0 });
+            
+            // 발표 모드로 이동
+            nav(`/teacher?room=${roomCode}&mode=present`);
+        } catch (error) {
+            console.error("[assignAndUse] Error:", error);
+            alert("자료를 불러오는 중 오류가 발생했습니다.");
+        }
     };
 
     const studentUrl = useMemo(() => {
@@ -145,19 +185,7 @@ export default function PdfLibraryPage() {
                 )}
             </div>
 
-            {preview && preview.file_key && (
-                <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.5)", display:"grid", placeItems:"center", zIndex:70 }}>
-                    <div className="panel" style={{ width: 920, maxWidth: "95vw", maxHeight: "90vh", overflow:"auto" }}>
-                        <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-                            <h3 style={{ margin:0, flex:1 }}>{preview.title ?? preview.ext_id}</h3>
-                            <button className="btn" onClick={() => setPreview(null)}>닫기</button>
-                        </div>
-                        <div className="pdf-stage" style={{ marginTop: 8 }}>
-                            <PdfViewer fileUrl={getPublicUrl(preview.file_key)} page={1} />
-                        </div>
-                    </div>
-                </div>
-            )}
+            {preview && preview.file_key && <PreviewModal preview={preview} onClose={() => setPreview(null)} />}
         </div>
     );
 }

@@ -260,14 +260,20 @@ export default function StudentPage() {
             ) : (
                 <>
                     <div className="panel" style={{ marginBottom: 14 }}>
-                        <div style={{ fontSize: 12, opacity: 0.7 }}>현재 문제</div>
+                        <div style={{ fontSize: 12, opacity: 0.7 }}>현재 자료</div>
                         <div style={{ fontSize: 26, fontWeight: 700, marginBottom: 6 }}>
                             슬라이드 {slide} / 스텝 {step} {isQuiz ? <span style={{ color: "#f97316" }}>(문제)</span> : <span>(설명)</span>}
                         </div>
-                        {currentMeta?.img ? (
+                        {deckFileUrl ? (
+                            <PdfViewer key={deckFileUrl} fileUrl={deckFileUrl} page={slide} />
+                        ) : currentMeta?.img ? (
                             <img src={`${getBasePath()}${currentMeta.img ?? ""}`} alt="slide"
                                  style={{ maxWidth: "100%", borderRadius: 14, marginBottom: 4 }} />
-                        ) : null}
+                        ) : (
+                            <div style={{ padding: 20, textAlign: "center", opacity: 0.6 }}>
+                                자료가 준비되지 않았습니다.
+                            </div>
+                        )}
                     </div>
 
                     {isQuiz ? (
@@ -279,19 +285,6 @@ export default function StudentPage() {
                     ) : (
                         <div className="lock-banner">교사가 아직 이 스텝을 열지 않았습니다. 잠시 기다려 주세요.</div>
                     )}
-
-                    <div className="panel" style={{ marginBottom: 14 }}>
-                        <div style={{ fontSize: 12, opacity: 0.7 }}>현재 자료</div>
-                        <div style={{ fontSize: 26, fontWeight: 700, marginBottom: 6 }}>
-                            슬라이드 {slide} / 스텝 {step} {isQuiz ? <span style={{ color: "#f97316" }}>(문제)</span> : <span>(설명)</span>}
-                        </div>
-                        {deckFileUrl ? (
-                            <PdfViewer key={`${deckFileUrl}|${slide}`} fileUrl={deckFileUrl} page={slide} />
-                        ) : currentMeta?.img ? (
-                            <img src={`${getBasePath()}${currentMeta.img ?? ""}`} alt="slide"
-                                 style={{ maxWidth: "100%", borderRadius: 14, marginBottom: 4 }} />
-                        ) : null}
-                    </div>
 
                     {/* 정답 입력 토스트 */}
                     {showToast && !submitted && isQuiz && (
