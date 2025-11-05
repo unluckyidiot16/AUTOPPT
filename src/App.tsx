@@ -1,4 +1,4 @@
-// src/App.tsx
+// src/App.tsx (핵심만 확인)
 import { Routes, Route, Navigate } from "react-router-dom";
 import RequireTeacher from "./auth/RequireTeacher";
 import TeacherPage from "./pages/TeacherPage";
@@ -21,14 +21,13 @@ export default function App() {
                 }
             />
             <Route
-                   path="/library"
-                   element={
-                      <RequireTeacher>
-                            <PdfLibraryPage />
-                          </RequireTeacher>
+                path="/library"
+                element={
+                    <RequireTeacher>
+                        <PdfLibraryPage />
+                    </RequireTeacher>
                 }
             />
-            {/* ✅ 추가: 알 수 없는 경로 방어 */}
             <Route path="*" element={<Navigate to="/student" replace />} />
         </Routes>
     );
