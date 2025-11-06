@@ -1,7 +1,8 @@
 // src/components/PdfViewer.tsx  (full replace)
 import React from "react";
 import * as pdfjsLib from "pdfjs-dist";
-import workerUrl from "pdfjs-dist/build/pdf.worker.min.js?url";
+import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url"; 
+
 
 // 워커 경로 지정 (Vite)
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
