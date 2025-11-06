@@ -30,8 +30,22 @@ export default function App() {
                     </RequireTeacher>
                 }
             />
-            <Route path="/editor"  element={<DeckEditorPage />} />
-            <Route path="/admin" element={<AdminPage />} />
+            <Route
+                path="/editor"
+                element={
+                    <RequireTeacher>
+                        <DeckEditorPage />
+                    </RequireTeacher>
+                }
+            />
+            <Route
+                path="/admin"
+                element={
+                    <RequireTeacher>
+                        <AdminPage />
+                    </RequireTeacher>
+                }
+            />
             <Route path="*" element={<Navigate to="/student" replace />} />
         </Routes>
     );
