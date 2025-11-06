@@ -2,15 +2,32 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { supabase } from "../supabaseClient";
 import { useRoomId } from "../hooks/useRoomId";
-import { getBasePath } from "../utils/getBasePath";
 import { useRealtime } from "../hooks/useRealtime";
-import { loadSlides, type SlideMeta } from "../slideMeta";
-import PdfViewer from "../components/PdfViewer";
-import { getManifestByRoom } from "../api/overrides";
-import type { ManifestItem, ManifestPageItem, ManifestQuizItem } from "../types/manifest";
-import QuizOverlay from "../components/QuizOverlay";
 import { usePresence } from "../hooks/usePresence";
+import SlideStage, { type Overlay } from "../components/SlideStage";
 
+type RpcOverlay = { id: string; z: number; type: string; payload: any };
+type RpcSlide = {
+    index: number;
+    kind: string; // "material" | "quiz" | ...
+    material_id: string | null;
+    page_index: number | null;
+    image_key: string | null; // slides 버킷 내부 경로
+    overlays: RpcOverlay[];
+};
+
+type RpcSlot = {
+    slot: number;
+    lesson_id: string;
+    current_index: number;
+    slides: RpcSlide[];
+};
+
+type RpcManifest = {
+    room_code: string;
+    slots: RpcSlot[];
+    error?: string;
+};
 
 const DEBUG = true;
 const DBG = {
@@ -31,256 +48,138 @@ function setNicknameLS(v: string) { localStorage.setItem("autoppt:nickname", v);
 export default function StudentPage() {
     const roomCode = useRoomId("CLASS-XXXXXX");
     const studentId = useMemo(() => getOrSetStudentId(), []);
-
-    const [slides, setSlides] = useState<SlideMeta[]>([]);
-    const [pageRaw, setPageRaw] = useState<number | null>(null); // ✅ page 단일
-    const page = Number(pageRaw ?? 1) > 0 ? Number(pageRaw ?? 1) : 1;
-
-    const [currentDeckId, setCurrentDeckId] = useState<string | null>(null);
-    const [roomId, setRoomId] = useState<string | null>(null);
-    const [deckFileUrl, setDeckFileUrl] = useState<string | null>(null);
-
-    const [answer, setAnswer] = useState("");
-    const [submitted, setSubmitted] = useState(false);
-    const [showToast, setShowToast] = useState(false);
-
     const [nickname, setNicknameState] = useState(getNickname());
     const [editNick, setEditNick] = useState(false);
     const [nickInput, setNickInput] = useState(nickname);
 
-    const NW: React.CSSProperties = { whiteSpace: "nowrap" };
-    const [manifest, setManifest] = useState<ManifestItem[] | null>(null);
+    // 페이지 인덱스(1-base). 신호는 기존 realtime과 rooms.state.page를 그대로 이용
+    const [pageRaw, setPageRaw] = useState<number | null>(null);
+    const page = Number(pageRaw ?? 1) > 0 ? Number(pageRaw ?? 1) : 1;
 
-    // Slides metadata (폴백)
-    useEffect(() => { loadSlides().then(setSlides).catch(() => setSlides([])); }, []);
+    // 매니페스트 (RPC)
+    const [manifest, setManifest] = useState<RpcManifest | null>(null);
+    const [activeSlot, setActiveSlot] = useState<number>(1); // 필요 시 slot=1 우선
 
-    // 초기 rooms 로우
-    useEffect(() => {
-        let cancel = false;
-        (async () => {
-            const { data } = await supabase
-                .from("rooms")
-                .select("id, current_deck_id, state")
-                .eq("code", roomCode)
-                .maybeSingle();
-            if (cancel) return;
-            if (data) {
-                setRoomId(data.id);
-                setCurrentDeckId(data.current_deck_id ?? null);
-                const pg = Number(data.state?.page ?? 1);
-                setPageRaw(pg > 0 ? pg : 1);
-            }
-        })();
-        return () => { cancel = true; };
-    }, [roomCode]);
-
-    // manifest
-    useEffect(() => {
-        let cancel = false;
-        (async () => {
-            if (!roomCode) { setManifest(null); return; }
-            try { const m = await getManifestByRoom(roomCode); if (!cancel) setManifest(m); }
-            catch { if (!cancel) setManifest(null); }
-        })();
-        return () => { cancel = true; };
-    }, [roomCode]);
-
-    // Realtime sync channel (student)
-    const { lastMessage } = useRealtime(roomCode, "student");
-    useEffect(() => {
-        if (!lastMessage) return;
-        if (lastMessage.type === "goto" && typeof lastMessage.page === "number") {
-            setPageRaw(Math.max(1, lastMessage.page));
-            setSubmitted(false);
-        }
-    }, [lastMessage]);
-
-    // rooms.current_deck_id / state.page 구독
-    useEffect(() => {
-        if (!roomId) return;
-        const ch = supabase
-            .channel(`rooms:${roomId}`)
-            .on("postgres_changes",
-                { event: "UPDATE", schema: "public", table: "rooms", filter: `id=eq.${roomId}` },
-                (ev: any) => {
-                    setCurrentDeckId(ev.new?.current_deck_id ?? null);
-                    const pg = Number(ev.new?.state?.page ?? 1);
-                    setPageRaw(pg > 0 ? pg : 1);
-                })
-            .subscribe();
-        return () => { supabase.removeChannel(ch); };
-    }, [roomId]);
-
-    // 파일 키 → public URL
-    useEffect(() => {
-        let cancelled = false;
-        (async () => {
-            if (!currentDeckId) { setDeckFileUrl(null); return; }
-            try {
-                const key: string | null = await supabase
-                    .rpc("get_current_deck_file_key_public", { p_code: roomCode })
-                    .then(r => (r.error ? null : (r.data as any)));
-                if (cancelled) return;
-                if (key) {
-                    const url = supabase.storage.from("presentations").getPublicUrl(key).data.publicUrl;
-                    setDeckFileUrl(url);
-                } else setDeckFileUrl(null);
-            } catch { if (!cancelled) setDeckFileUrl(null); }
-        })();
-        return () => { cancelled = true; };
-    }, [roomCode, currentDeckId]);
-
-    // 초기 보강: page 없을 때 1회 RPC로 동기화
-    useEffect(() => {
-        let cancelled = false;
-        (async () => {
-            if (!roomCode) return;
-            if (pageRaw != null) return; // 이미 세팅됨
-            try {
-                const p = await supabase
-                    .rpc("get_current_page_public", { p_code: roomCode })
-                    .then(r => (r.error ? null : (r.data as number)));
-                if (!cancelled && p) setPageRaw(Number(p) || 1);
-            } catch { /* noop */ }
-        })();
-        return () => { cancelled = true; };
-    }, [roomCode, pageRaw]);
-
-    // 퀴즈 판별 (slide=page, step=0)
-    const slide = page;
-    const step = 0;
-    const isQuiz = useMemo(() => {
-        const s = slides.find((x) => x.slide === slide);
-        const meta = s?.steps?.[step];
-        return meta?.kind === "quiz";
-    }, [slides, slide, step]);
-    useEffect(() => { if (isQuiz && !submitted) setShowToast(true); }, [isQuiz, page, submitted]);
-
+    // Presence
     const presence = usePresence(roomCode, "student", {
         studentId,
         nickname,
         heartbeatSec: 10,
     });
 
+    // 초기 rooms row → page 동기화
+    useEffect(() => {
+        let cancel = false;
+        (async () => {
+            const { data } = await supabase
+                .from("rooms")
+                .select("id, state")
+                .eq("code", roomCode)
+                .maybeSingle();
+            if (cancel) return;
+            const pg = Number(data?.state?.page ?? 1);
+            setPageRaw(pg > 0 ? pg : 1);
+        })();
+        return () => { cancel = true; };
+    }, [roomCode]);
+
+    // 매니페스트 로드
+    useEffect(() => {
+        let cancel = false;
+        (async () => {
+            if (!roomCode) return setManifest(null);
+            const { data, error } = await supabase.rpc("get_student_manifest_by_code", { p_room_code: roomCode });
+            if (!cancel) {
+                if (error) { DBG.err("manifest rpc", error.message || error); setManifest(null); }
+                else setManifest(data as RpcManifest);
+            }
+        })();
+        return () => { cancel = true; };
+    }, [roomCode]);
+
+    // realtime goto
+    const { lastMessage } = useRealtime(roomCode, "student");
+    useEffect(() => {
+        if (!lastMessage) return;
+        if (lastMessage.type === "goto" && typeof lastMessage.page === "number") {
+            setPageRaw(Math.max(1, lastMessage.page));
+        }
+    }, [lastMessage]);
+
+    // 닉 저장
     const saveNick = () => {
         const v = nickInput.trim();
         if (!v) { alert("닉네임을 입력하세요."); return; }
         setNicknameLS(v); setNicknameState(v); setEditNick(false);
-        presence.track({ nick: v }); // ← 닉 변경 즉시 presence 반영
+        presence.track({ nick: v });
     };
 
-    const handleSubmit = async () => {
-        if (!isQuiz) return;
-        const userAns = answer.trim();
-        const payload = { p_room_code: roomCode, p_slide: slide, p_step: step, p_student_id: studentId, p_answer: userAns };
-        DBG.info("answer.submit click", payload);
-        const { error } = await supabase.rpc("submit_answer_v2", payload);
-        if (!error) { setSubmitted(true); setShowToast(false); }
-    };
+    // 활성 슬라이드 계산
+    const totalPages = useMemo(() => {
+        const slot = manifest?.slots?.find(s => s.slot === activeSlot) ?? manifest?.slots?.[0];
+        return slot?.slides?.length ?? 0;
+    }, [manifest, activeSlot]);
 
-    const onKeyDown: React.KeyboardEventHandler<HTMLInputElement> = (e) => {
-        if (e.key === "Enter" && !submitted) { e.preventDefault(); handleSubmit(); }
+    const active = useMemo(() => {
+        if (!manifest) return null;
+        const slot = manifest.slots.find(s => s.slot === activeSlot) ?? manifest.slots[0];
+        if (!slot) return null;
+        const idx = Math.max(0, page - 1);
+        const s = slot.slides[idx] as RpcSlide | undefined;
+        if (!s) return null;
+        const bgUrl = s.image_key ? supabase.storage.from("slides").getPublicUrl(s.image_key).data.publicUrl : null;
+        const overlays: Overlay[] = (s.overlays || []).map(o => ({ id: String(o.id), z: o.z, type: o.type, payload: o.payload }));
+        return { bgUrl, overlays };
+    }, [manifest, activeSlot, page]);
+
+    const submitAnswer = async (val: any) => {
+        try {
+            const payload = {
+                p_room_code: roomCode,
+                p_slide: page,
+                p_step: 0,
+                p_student_id: studentId,
+                p_answer: typeof val?.value === "string" ? val.value : JSON.stringify(val),
+            };
+            await supabase.rpc("submit_answer_v2", payload);
+        } catch (e: any) {
+            alert(e?.message ?? String(e));
+        }
     };
 
     return (
         <div className="app-shell" style={{ maxWidth: 1080 }}>
             <div className="topbar" style={{ marginBottom: 14 }}>
                 <h1 style={{ fontSize: 18, margin: 0 }}>학생 화면</h1>
-                <span className="badge" style={NW}>room: {roomCode}</span>
-                <span className="badge" style={NW}>내 ID: {studentId}</span>
-                <span className="badge" style={NW}>교시: {currentDeckId ? "선택됨" : "미선택"}</span>
+                <span className="badge">room: {roomCode}</span>
+                <span className="badge">내 ID: {studentId}</span>
+                <span className="badge">페이지: {page}{totalPages ? ` / ${totalPages}` : ""}</span>
                 {nickname ? (
-                    <span className="badge" style={NW}>닉네임: {nickname}</span>
+                    <span className="badge">닉네임: {nickname}</span>
                 ) : (
-                    <span className="badge" style={NW}>닉네임: 설정 안 됨</span>
+                    <span className="badge">닉네임: 설정 안 됨</span>
                 )}
-                <button className="btn" style={{ marginLeft: 8, whiteSpace: "nowrap" }}
-                        onClick={() => { setEditNick(v => !v); setNickInput(nickname); }}>
+                <button className="btn" style={{ marginLeft: 8 }} onClick={() => { setEditNick(v => !v); setNickInput(nickname); }}>
                     닉네임
                 </button>
             </div>
 
-            {!currentDeckId ? (
-                <div className="panel">수업이 아직 시작되지 않았습니다. 조금만 기다려 주세요.</div>
+            {!manifest ? (
+                <div className="panel">수업 자료를 불러오는 중입니다…</div>
             ) : (
-                <>
-                    <div className="panel" style={{ marginBottom: 14 }}>
-                        <div style={{ fontSize: 12, opacity: 0.7 }}>현재 자료</div>
-                        <div style={{ fontSize: 26, fontWeight: 700, marginBottom: 6 }}>
-                            페이지 {page}
-                        </div>
-                        {deckFileUrl ? (
-                            (() => {
-                                const idx = Math.max(0, (page || 1) - 1);
-                                const item = manifest?.[idx] ?? null;
-
-                                if (item && item.type === "quiz") {
-                                    return (
-                                        <div style={{ display: "grid", placeItems: "center", minHeight: 300 }}>
-                                            <QuizOverlay item={item as ManifestQuizItem} mode="student" />
-                                        </div>
-                                    );
-                                }
-
-                                const p = (item && item.type === "page") ? (item as ManifestPageItem).srcPage : page;
-                                const viewerUrl = `${deckFileUrl}?v=${currentDeckId || "none"}-${p}`;   // ✅ 캐시버스터
-                                return (
-                                       <div style={{ display:"grid", placeItems:"center" }}>
-                                             <PdfViewer
-                                               key={`${deckFileUrl}|${currentDeckId}|p-${p}|student`}
-                                               fileUrl={viewerUrl}
-                                               page={p}
-                                               maxHeight="76vh"
-                                             />
-                                       </div>
-                                );
-                            })()
-                        ) : (
-                            (() => {
-                                const s = slides.find(x => x.slide === slide);
-                                const m = s?.steps?.[step];
-                                return m?.img ? (
-                                    <img src={`${getBasePath()}${m.img}`} alt="slide"
-                                         style={{ maxWidth: "100%", borderRadius: 14, marginBottom: 4 }} />
-                                ) : (
-                                    <div style={{ padding: 20, textAlign: "center", opacity: 0.6 }}>
-                                        자료가 준비되지 않았습니다.
-                                    </div>
-                                );
-                            })()
-                        )}
-
-                    </div>
-
-                    {isQuiz ? (
-                        <div style={{ display: "flex", justifyContent: "center" }}>
-                            <button className="btn" onClick={() => setShowToast(true)} disabled={submitted}>
-                                {submitted ? "제출됨" : "정답 입력"}
-                            </button>
-                        </div>
-                    ) : (
-                        <div className="panel" style={{ textAlign: "center", opacity: 0.7 }}>교사의 진행을 따라주세요.</div>
-                    )}
-                </>
-            )}
-
-            {/* Quiz toast */}
-            {showToast && (
-                <div style={{
-                    position: "fixed", left: "50%", bottom: 72, transform: "translateX(-50%)",
-                    background: "rgba(17,24,39,0.98)", border: "1px solid rgba(148,163,184,0.25)",
-                    borderRadius: 12, padding: "10px", width: "min(92vw, 360px)", zIndex: 55
-                }} role="dialog" aria-label="정답 입력">
-                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                        <input className="input" value={answer} onChange={(e)=>setAnswer(e.target.value)} onKeyDown={onKeyDown}
-                               placeholder="정답을 입력하세요" style={{ flex: 1 }} />
-                        <button className="btn" onClick={handleSubmit} disabled={submitted}>제출</button>
-                        <button className="btn" onClick={() => setShowToast(false)} aria-label="닫기" title="닫기">×</button>
+                <div className="panel" style={{ display: "grid", placeItems: "center" }}>
+                    <div style={{ width: "100%", height: "76vh", display: "grid", placeItems: "center" }}>
+                        <SlideStage
+                            bgUrl={active?.bgUrl ?? null}
+                            overlays={active?.overlays ?? []}
+                            mode="student"
+                            onSubmit={submitAnswer}
+                        />
                     </div>
                 </div>
             )}
 
-            {/* Nickname toast */}
+            {/* 닉네임 토스트 */}
             {editNick && (
                 <div style={{
                     position:"fixed", left:"50%", bottom:72, transform:"translateX(-50%)",
