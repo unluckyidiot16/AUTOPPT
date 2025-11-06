@@ -13,7 +13,7 @@ import QuizOverlay from "../components/QuizOverlay";
 import { usePresence } from "../hooks/usePresence";
 import PresenceSidebar from "../components/PresenceSidebar";
 import { useArrowNav } from "../hooks/useArrowNav";
-import RoomQR from "../components/RoomQR";
+import { RoomQR } from "../components/RoomQR";
 
 type DeckSlot = { slot: number; deck_id: string | null; title?: string | null; file_key?: string | null };
 
