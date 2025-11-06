@@ -474,7 +474,13 @@ export default function TeacherPage() {
                 <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
                     <button className="btn" onClick={() => nav(`/teacher?room=${roomCode}&mode=present`)} aria-pressed={viewMode === "present"}>발표</button>
                     <button className="btn" onClick={() => nav(`/teacher?room=${roomCode}&mode=setup`)} aria-pressed={viewMode === "setup"}>설정</button>
-                    <button className="btn" disabled={!currentDeckId} onClick={() => setEditOpen(true)}>자료 편집</button>
+                    <button
+                        className="btn"
+                        disabled={!currentDeckId}
+                        onClick={() => nav(`/editor?room=${roomCode}${currentDeckId ? `&deck=${currentDeckId}` : ""}`)}
+                    >
+                        자료 편집
+                    </button>
                 </div>
             </div>
 
@@ -510,19 +516,6 @@ export default function TeacherPage() {
                 </div>
             )}
             {toast.node}
-            {editOpen && currentDeckId && (
-                <DeckEditor
-                    roomCode={roomCode}
-                    deckId={currentDeckId}
-                    totalPages={totalPages}
-                    fileUrl={viewerUrl}
-                    onClose={() => setEditOpen(false)}
-                    onSaved={async () => {
-                        const m = await getManifestByRoom(roomCode);
-                        setManifest(m);
-                    }}
-                />
-            )}
         </div>
     );
 }
