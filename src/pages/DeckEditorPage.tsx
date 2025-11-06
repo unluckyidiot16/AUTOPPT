@@ -7,7 +7,6 @@ import EditorPreviewPane from "../components/EditorPreviewPane";
 import type { ManifestItem, ManifestQuizItem } from "../types/manifest";
 import { getManifestByRoom } from "../api/overrides";
 import { getPdfUrlFromKey } from "../utils/supaFiles";
-import { ensureEditingDeckFromSource } from "../utils/tempDeck";
 
 
 const TEMPLATE_KEY = "_templates/blank-1p.pdf"; // presentations 버킷에 미리 올려둔 1p 빈 PDF
@@ -98,6 +97,7 @@ export default function DeckEditorPage() {
             setFileUrl(null);
 
             try {
+                if (srcKey) { setLoading(false); return; }
                 if (!roomCode && !deckFromQS && !sourceDeckId) throw new Error("room 또는 deck/src 파라미터가 필요합니다.");
 
                 // room 조회
@@ -109,12 +109,20 @@ export default function DeckEditorPage() {
                 setRoomIdState(roomId);
 
                 if (sourceDeckId) {
-                    // 1) 라이브러리 → 편집: 원본을 복제 편집용 임시 덱으로
-                    const ensured = await ensureEditingDeckFromSource({ roomCode, sourceDeckId, slot: 1 });
+                    // 1) 라이브러리 → 편집: 원본 덱의 file_key 조회 → 파일키 기반 복제
+                    const { data: src, error: eSrc } = await supabase
+                        .from("decks")
+                        .select("file_key, file_pages")
+                        .eq("id", sourceDeckId)
+                        .maybeSingle();
+                    if (eSrc) throw eSrc;
+                    if (!src?.file_key) throw new Error("원본 덱에 파일이 없습니다.");
+                    
+                    const ensured = await ensureEditingDeckFromFileKey({ roomCode, fileKey: src.file_key, slot: 1 });
                     if (cancel) return;
                     setDeckId(ensured.deckId);
                     setFileUrl(ensured.signedUrl);
-                    setTotalPages(ensured.filePages);
+                    setTotalPages(ensured.totalPages || Number(src.file_pages || 0));
                 } else {
                     // 2) 기존: deck 직접 열기
                     const pickedDeck = (deckFromQS as string | null) ?? roomRow?.current_deck_id ?? null;
@@ -145,7 +153,7 @@ export default function DeckEditorPage() {
             }
         })();
         return () => { cancel = true; };
-    }, [roomCode, deckFromQS, sourceDeckId]);
+    }, [roomCode, deckFromQS, sourceDeckId, srcKey]);
 
 
     // ✅ srcKey로 들어온 경우: 파일키 기반 복제 편집 플로우
@@ -173,7 +181,7 @@ export default function DeckEditorPage() {
                 if (!cancel) setErr(e?.message || "로드 실패");
             } finally {
                 if (!cancel) setLoading(false);
-            }
+            }   
         })();
 
         return () => { cancel = true; };
