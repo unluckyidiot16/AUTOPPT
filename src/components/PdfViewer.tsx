@@ -21,6 +21,7 @@ export default function PdfViewer({ fileUrl, page = 1, maxHeight }: Props) {
         let mounted = true;
         let loadingTask: any = null;
         let pdfDoc: any = null;
+        let renderTask: any = null;
 
         async function load() {
             setErr(null);
@@ -64,7 +65,7 @@ export default function PdfViewer({ fileUrl, page = 1, maxHeight }: Props) {
                 const ctx = canvas.getContext("2d", { alpha: false });
                 if (!ctx) throw new Error("Canvas 2D context not available");
 
-                const renderTask = pdfPage.render({ canvasContext: ctx, viewport: vp });
+                renderTask = pdfPage.render({ canvasContext: ctx, viewport: vp });
                 await renderTask.promise;
             } catch (e: any) {
                 const msg = String(e?.message || e?.toString?.() || e);
@@ -86,6 +87,7 @@ export default function PdfViewer({ fileUrl, page = 1, maxHeight }: Props) {
 
         return () => {
             mounted = false;
+            try { renderTask?.cancel?.(); } catch {}
             try { loadingTask?.destroy?.(); } catch {}
             try { pdfDoc?.destroy?.(); } catch {}
         };

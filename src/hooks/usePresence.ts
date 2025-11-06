@@ -50,10 +50,10 @@ export function usePresence(
         });
         chRef.current = ch;
 
-        ch.on("presence", { event: "sync" }, () => {
-            const s = ch.presenceState() as PresenceState;
-            setRawState(s);
-        });
+        const onSync = () => setRawState(ch.presenceState() as PresenceState);
+        ch.on("presence", { event: "sync" }, onSync);
+        ch.on("presence", { event: "join" }, onSync);
+        ch.on("presence", { event: "leave" }, onSync);
 
         ch.subscribe(async (status) => {
             if (status === "SUBSCRIBED" && role === "student") {
@@ -88,6 +88,15 @@ export function usePresence(
         return () => clearInterval(t);
     }, [role, opts?.studentId, opts?.nickname, heartbeatSec]);
 
+    useEffect(() => {
+        if (role !== "teacher") return;
+        const t = setInterval(() => {
+            // rawState는 그대로 두고 렌더만 유도 → unfocused 재계산
+            setRawState((s) => ({ ...s }));
+            }, Math.max(6, heartbeatSec) * 1000);
+        return () => clearInterval(t);
+        }, [role, heartbeatSec]);
+    
     // 학생 전용: 포커스 이벤트 반영
     useEffect(() => {
         if (role !== "student") return;

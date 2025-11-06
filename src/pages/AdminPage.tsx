@@ -29,6 +29,7 @@ export default function AdminDataHealth() {
     const [filter, setFilter] = React.useState("");
     const [editRoomCode, setEditRoomCode] = React.useState(""); // 에디터 테스트용 room 코드
 
+
     // 계산 필드
     const roomMap = React.useMemo(() => new Map(rooms.map(r => [r.id, r])), [rooms]);
     const deckMap = React.useMemo(() => new Map(decks.map(d => [d.id, d])), [decks]);
@@ -53,7 +54,7 @@ export default function AdminDataHealth() {
         try {
             const [{ data: r, error: er }, { data: d, error: ed }, { data: rd, error: erd }] =
                 await Promise.all([
-                    supabase.from("rooms").select("id,code,title,created_at").order("created_at", { ascending: false }),
+                    supabase.from("rooms_public").select("code,is_open").order("code"),
                     supabase.from("decks").select("id,title,is_temp,file_key,file_pages,created_at,archived_at").order("created_at", { ascending: false }).limit(500),
                     supabase.from("room_decks").select("room_id,deck_id,slot").limit(2000),
                 ]);
