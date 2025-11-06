@@ -9,16 +9,10 @@ import { getManifestByRoom } from "../api/overrides";
 
 type RoomRow = { id: string; current_deck_id: string | null };
 
-async function rpc<T = any>(fn: string, args?: Record<string, any>) {
-    const { data, error } = await supabase.rpc(fn, args ?? {});
-    if (error) throw error;
-    return data as T;
-}
-
-// 읽기 가능한 PDF URL(Signed URL 우선) + 분단위 캐시버스터
 async function getReadablePdfUrlFromKey(key: string): Promise<string> {
+    // 서명 URL 우선, 실패 시 public URL
     try {
-        const { data, error } = await supabase.storage.from("presentations").createSignedUrl(key, 60);
+        const { data, error } = await supabase.storage.from("presentations").createSignedUrl(key, 300);
         if (!error && data?.signedUrl) {
             const u = new URL(data.signedUrl);
             u.searchParams.set("v", String(Math.floor(Date.now() / 60000)));
@@ -34,18 +28,15 @@ async function getReadablePdfUrlFromKey(key: string): Promise<string> {
 export default function DeckEditorPage() {
     const nav = useNavigate();
     const { search } = useLocation();
-    const qs = useMemo(() => new URLSearchParams(search), [search]); // ✅ 선언 순서 고정(ReferenceError 방지)
+    const qs = useMemo(() => new URLSearchParams(search), [search]); // ✅ 먼저 선언
 
     const roomCode = qs.get("room") || "";
     const deckFromQS = qs.get("deck");
 
-    // 에디터 ↔ 프리뷰 공유 상태
     const [items, setItems] = useState<ManifestItem[]>([]);
     const [previewPage, _setPreviewPage] = useState<number | null>(null);
-    const previewSetOnceRef = useRef(false);
-    const applyPatchRef = useRef<null | ((fn: (cur: ManifestItem[]) => ManifestItem[]) => void)>(null);
+    const previewOnce = useRef(false);
 
-    // 파일/덱 메타
     const [deckId, setDeckId] = useState<string | null>(deckFromQS || null);
     const [fileUrl, setFileUrl] = useState<string | null>(null);
     const [totalPages, setTotalPages] = useState<number>(0);
@@ -54,17 +45,6 @@ export default function DeckEditorPage() {
 
     const setPreviewPage = (p: number) => _setPreviewPage(prev => (prev === p ? prev : p));
 
-    const attachedQuizzes = useMemo(() => {
-        const page = Math.max(0, previewPage ?? 0);
-        const qs: ManifestQuizItem[] = [];
-        for (let i = 0; i < items.length; i++) {
-            const it: any = items[i];
-            if (it?.type === "quiz" && (it.attachToSrcPage ?? 0) === page) qs.push(it as ManifestQuizItem);
-        }
-        return qs;
-    }, [items, previewPage]);
-
-    // 파일/메타 로드
     useEffect(() => {
         let cancel = false;
         (async () => {
@@ -75,10 +55,10 @@ export default function DeckEditorPage() {
             try {
                 if (!roomCode && !deckFromQS) throw new Error("room 또는 deck 파라미터가 필요합니다.");
 
-                // 1) deck 파라미터가 있으면 decks 직조회(자료함→편집 직행)
+                // 1) 자료함 → 편집 직행: deck 파라미터로 decks 직조회
                 let pickedDeck = deckFromQS as string | null;
                 if (!pickedDeck) {
-                    // 2) 없으면 room의 current_deck_id 사용
+                    // 2) 교사화면 경유: room.current_deck_id 사용
                     const { data: r } = await supabase
                         .from("rooms")
                         .select("id,current_deck_id")
@@ -91,13 +71,13 @@ export default function DeckEditorPage() {
 
                 setDeckId(pickedDeck);
 
-                // decks에서 file_key, page 수 조회
-                const { data: d, error: de } = await supabase
+                // ✅ updated_at 없이 file_key, file_pages만 조회
+                const { data: d, error: eDeck } = await supabase
                     .from("decks")
-                    .select("file_key,file_pages,updated_at")
+                    .select("file_key,file_pages")
                     .eq("id", pickedDeck)
                     .maybeSingle();
-                if (de) throw de;
+                if (eDeck) throw eDeck;
                 if (!d?.file_key) throw new Error("deck file not found");
 
                 const url = await getReadablePdfUrlFromKey(d.file_key);
@@ -105,12 +85,12 @@ export default function DeckEditorPage() {
 
                 setFileUrl(url);
                 setTotalPages(Number(d.file_pages || 0));
+
                 // 초기 manifest
                 try {
                     const m = await getManifestByRoom(roomCode);
                     if (!cancel) setItems(m || []);
                 } catch {}
-
             } catch (e: any) {
                 if (!cancel) setErr(e?.message || "로드 실패");
             } finally {
@@ -120,13 +100,14 @@ export default function DeckEditorPage() {
         return () => { cancel = true; };
     }, [roomCode, deckFromQS]);
 
-    // 최초 1회 previewPage 확정
+    // 최초 1회 미리보기 페이지 지정
     useEffect(() => {
-        if (previewSetOnceRef.current) return;
-        if (loading) return;
-        const first = (items.find(x => (x as any).type === "page") as any)?.srcPage;
-        setPreviewPage(typeof first === "number" ? first : (totalPages > 0 ? 1 : 0));
-        previewSetOnceRef.current = true;
+        if (previewOnce.current || loading) return;
+        const firstPage =
+            (items.find(x => (x as any).type === "page") as any)?.srcPage ??
+            (totalPages > 0 ? 1 : 0);
+        setPreviewPage(firstPage);
+        previewOnce.current = true;
     }, [loading, items, totalPages]);
 
     const maxPage = Math.max(0, Number(totalPages || 0));
@@ -155,14 +136,12 @@ export default function DeckEditorPage() {
                 <div className="panel">현재 선택된 자료가 없습니다. 교사 화면에서 교시를 먼저 선택하세요.</div>
             ) : (
                 <div style={{ display: "grid", gridTemplateColumns: "minmax(420px, 1fr) minmax(520px, 680px)", gap: 12 }}>
-                    {/* 좌: 프리뷰 */}
                     <EditorPreviewPane
                         key={`${fileUrl}|prev|p=${previewPage ?? 0}`}
                         fileUrl={fileUrl}
                         page={Math.max(0, previewPage ?? 0)}
                         height="82vh"
                     />
-                    {/* 우: 에디터 */}
                     <DeckEditor
                         roomCode={roomCode}
                         deckId={deckId}
@@ -172,7 +151,6 @@ export default function DeckEditorPage() {
                         onSaved={() => nav(`/teacher?room=${roomCode}&mode=setup`)}
                         onItemsChange={(next) => setItems(next)}
                         onSelectPage={(p) => setPreviewPage(Math.max(0, p))}
-                        applyPatchRef={applyPatchRef}
                     />
                 </div>
             )}
