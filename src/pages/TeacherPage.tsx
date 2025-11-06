@@ -233,9 +233,9 @@ export default function TeacherPage() {
 
     // ---- Student URL ----
     const studentUrl = useMemo(() => {
-        const base = getBasePath();
-        return `${base}/#/student?room=${roomCode}`;
-    }, [roomCode]);
+        const base = getBasePath(); // 배포 BasePath (예: /AUTOPPT)
+        return `${location.origin}${base}/#/student?room=${roomCode}`;
+        }, [roomCode]);
 
     // ---- Current deck file url + total pages ----
     const [deckFileUrl, setDeckFileUrl] = useState<string | null>(null);
@@ -492,16 +492,25 @@ export default function TeacherPage() {
                 {/* 학생 링크 & QR */}
                 <div>
                     <div style={{ fontWeight: 700, marginBottom: 6 }}>학생 접속</div>
-                    <div style={{ display: "grid", gridTemplateColumns: "160px 1fr", gap: 12, alignItems: "center" }}>
-                        <div style={{ background: "#fff", borderRadius: 8, padding: 8 }}>
-                            <RoomQR url={studentUrl} size={144} />
+                    <div style={{ display: "grid", gridTemplateColumns: "180px 1fr", gap: 12, alignItems: "center" }}>
+                        <div style={{ background: "#fff", borderRadius: 12, padding: 12, width: 180, height: 180, overflow: "hidden", display: "grid", placeItems: "center" }}>
+                            {/* QR은 박스보다 작게(여백 포함) */}
+                            <RoomQR url={studentUrl} size={156} />
                         </div>
-                        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                        <div style={{ display: "flex", gap: 8, alignItems: "center", minWidth: 0 }}>
                             <a className="btn" href={studentUrl} target="_blank" rel="noreferrer">링크 열기</a>
-                            <span style={{ fontSize: 12, opacity: 0.8 }}>{studentUrl}</span>
+                            <span style={{ fontSize: 12, opacity: 0.8, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+        {studentUrl}
+      </span>
+                            <button
+                                className="btn"
+                                onClick={() => { navigator.clipboard?.writeText(studentUrl); }}
+                                title="주소 복사"
+                            >복사</button>
                         </div>
                     </div>
                 </div>
+
 
                 {/* 최근 제출 */}
                 <div>
