@@ -3,6 +3,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import type { PDFDocumentProxy, PDFPageProxy, RenderTask, PDFDocumentLoadingTask } from "pdfjs-dist";
 import { getDocument, GlobalWorkerOptions } from "pdfjs-dist";
 import PdfJsWorker from "pdfjs-dist/build/pdf.worker.min.mjs?worker";
+import { usePdfPrefetch } from "../hooks/usePdfPrefetch";
 
 // Bind a dedicated worker once
 const worker = new PdfJsWorker();
@@ -22,11 +23,13 @@ export default function PdfViewer({ fileUrl, page, className, maxHeight }: Props
     const loadingTaskRef = useRef<PDFDocumentLoadingTask<any> | null>(null);
     const renderTaskRef = useRef<RenderTask | null>(null);
 
+    const [doc, setDoc] = useState<PDFDocumentProxy | null>(null); // ✅ prefetch용 state
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [totalPages, setTotalPages] = useState(0);
-
-    const [pixelRatio, setPixelRatio] = useState(typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1);
+    const [pixelRatio, setPixelRatio] = useState(
+        typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1
+    );
 
     // ---- Load PDF only when fileUrl changes ----
     useEffect(() => {
@@ -37,6 +40,7 @@ export default function PdfViewer({ fileUrl, page, className, maxHeight }: Props
             setLoading(false);
             setError("자료가 없습니다");
             setTotalPages(0);
+            setDoc(null); // ✅ doc 정리
             // 이미 열려 있던 것들 정리
             try { renderTaskRef.current?.cancel(); } catch {}
             renderTaskRef.current = null;
@@ -52,6 +56,7 @@ export default function PdfViewer({ fileUrl, page, className, maxHeight }: Props
         setLoading(true);
         setError(null);
         setTotalPages(0);
+        setDoc(null); // 새 문서 로딩 전 초기화
 
         (async () => {
             // 1) 이전 작업 모두 중단
@@ -70,6 +75,7 @@ export default function PdfViewer({ fileUrl, page, className, maxHeight }: Props
                 const pdf = await task.promise;
                 if (cancelled) { try { await pdf.destroy(); } catch {}; return; }
                 pdfRef.current = pdf;
+                setDoc(pdf);                    // ✅ prefetch용 state 연결
                 setTotalPages(pdf.numPages);
                 setError(null);
             } catch (e) {
@@ -82,6 +88,9 @@ export default function PdfViewer({ fileUrl, page, className, maxHeight }: Props
 
         return () => { cancelled = true; };
     }, [fileUrl]);
+
+    // ✅ 현재 문서 & 페이지 기반 ±1 프리패치
+    usePdfPrefetch(doc, page);
 
     // ---- Render current page whenever page / DPR or pdf changes ----
     const renderPage = useMemo(() => {
@@ -149,6 +158,7 @@ export default function PdfViewer({ fileUrl, page, className, maxHeight }: Props
         return () => {
             try { renderTaskRef.current?.cancel(); } catch {}
             renderTaskRef.current = null;
+            setDoc(null); // ✅ doc state 정리
             (async () => {
                 try { await loadingTaskRef.current?.destroy(); } catch {}
                 loadingTaskRef.current = null;

@@ -12,6 +12,7 @@ import type { ManifestItem, ManifestPageItem, ManifestQuizItem } from "../types/
 import DeckEditor from "../components/DeckEditor";
 import QuizOverlay from "../components/QuizOverlay";
 import { usePresence } from "../hooks/usePresence";
+import PresenceSidebar from "../components/PresenceSidebar";
 
 
 type DeckSlot = { slot: number; deck_id: string | null; title?: string | null; file_key?: string | null };
@@ -476,6 +477,8 @@ export default function TeacherPage() {
 
             {viewMode === "present" ? PresentView : SetupView}
 
+            <PresenceSidebar members={presence.members} unfocused={presence.unfocused} />
+            
             {uploading.open && (
                 <div style={{ position: "fixed", inset: 0, display: "grid", placeItems: "center", background: "rgba(0,0,0,0.5)", zIndex: 70 }}>
                     <div className="panel" style={{ width: "min(92vw, 720px)", maxWidth: "95vw", maxHeight: "90vh", display: "flex", flexDirection: "column" }}>
