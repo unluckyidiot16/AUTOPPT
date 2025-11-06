@@ -356,7 +356,6 @@ export default function TeacherPage() {
                 <div style={{ fontSize: 12, opacity: 0.7 }}>페이지 {page}{totalPages ? ` / ${totalPages}` : ""}</div>
                 <a className="btn" href={studentUrl} target="_blank" rel="noreferrer">학생 접속 링크</a>
                 <button className="btn" onClick={() => nav(`/library?room=${roomCode}`)}>자료함</button>
-                <button className="btn" disabled={!currentDeckId} onClick={() => setEditOpen(true)}>자료 편집</button>
             </div>
             <div style={{ display: "grid", placeItems: "center" }}>
                 {deckFileUrl ? (
@@ -491,6 +490,7 @@ export default function TeacherPage() {
                 <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
                     <button className="btn" onClick={() => nav(`/teacher?room=${roomCode}&mode=present`)} aria-pressed={viewMode === "present"}>발표</button>
                     <button className="btn" onClick={() => nav(`/teacher?room=${roomCode}&mode=setup`)} aria-pressed={viewMode === "setup"}>설정</button>
+                    <button className="btn" disabled={!currentDeckId} onClick={() => setEditOpen(true)}>자료 편집</button>
                 </div>
             </div>
 
