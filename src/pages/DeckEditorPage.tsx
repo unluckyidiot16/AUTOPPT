@@ -7,10 +7,12 @@ import EditorPreviewPane from "../components/EditorPreviewPane";
 import type { ManifestItem, ManifestQuizItem } from "../types/manifest";
 import { getManifestByRoom } from "../api/overrides";
 import { getPdfUrlFromKey } from "../utils/supaFiles";
+import { ensureEditingDeckFromSource } from "../utils/tempDeck";
 
 
 const TEMPLATE_KEY = "_templates/blank-1p.pdf"; // presentations 버킷에 미리 올려둔 1p 빈 PDF
 const TEMPLATE_PAGES = 1;                        // 템플릿 페이지 수
+const [deckId, setDeckId] = useState<string | null>(deckFromQS || null);
 
 type RoomRow = { id: string; current_deck_id: string | null };
 
@@ -70,12 +72,14 @@ export default function DeckEditorPage() {
 
     const roomCode = qs.get("room") || "";
     const deckFromQS = qs.get("deck");
+    const sourceDeckId = qs.get("src");
 
     const [items, setItems] = useState<ManifestItem[]>([]);
     const [previewPage, _setPreviewPage] = useState<number | null>(null);
     const previewOnce = useRef(false);
 
-    const [deckId, setDeckId] = useState<string | null>(deckFromQS || null);
+    const [roomIdState, setRoomIdState] = useState<string | null>(null);
+    const isClone = !!sourceDeckId;    
     const [fileUrl, setFileUrl] = useState<string | null>(null);
     const [totalPages, setTotalPages] = useState<number>(0);
     const [loading, setLoading] = useState(true);
@@ -91,56 +95,46 @@ export default function DeckEditorPage() {
             setFileUrl(null);
 
             try {
-                if (!roomCode && !deckFromQS) throw new Error("room 또는 deck 파라미터가 필요합니다.");
+                if (!roomCode && !deckFromQS && !sourceDeckId) throw new Error("room 또는 deck/src 파라미터가 필요합니다.");
 
-                // 항상 방 정보(id, current_deck_id) 조회해 roomId 확보(임시 파일 업로드 경로에 필요)
+                // room 조회
                 const { data: roomRow, error: eRoom } = await supabase
-                    .from("rooms")
-                    .select("id,current_deck_id")
-                    .eq("code", roomCode)
-                    .maybeSingle<RoomRow>();
+                    .from("rooms").select("id,current_deck_id")
+                    .eq("code", roomCode).maybeSingle<RoomRow>();
                 if (eRoom) throw eRoom;
                 const roomId = roomRow?.id || null;
+                setRoomIdState(roomId);
 
-                // 1) 자료함 직행: deck 파라미터 우선, 없으면 room.current_deck_id 사용
-                let pickedDeck = (deckFromQS as string | null) ?? roomRow?.current_deck_id ?? null;
-                if (!pickedDeck) throw new Error("현재 선택된 자료(교시)가 없습니다. 교사 화면에서 먼저 선택하세요.");
-                if (cancel) return;
+                if (sourceDeckId) {
+                    // 1) 라이브러리 → 편집: 원본을 복제 편집용 임시 덱으로
+                    const ensured = await ensureEditingDeckFromSource({ roomCode, sourceDeckId, slot: 1 });
+                    if (cancel) return;
+                    setDeckId(ensured.deckId);
+                    setFileUrl(ensured.signedUrl);
+                    setTotalPages(ensured.filePages);
+                } else {
+                    // 2) 기존: deck 직접 열기
+                    const pickedDeck = (deckFromQS as string | null) ?? roomRow?.current_deck_id ?? null;
+                    if (!pickedDeck) throw new Error("현재 선택된 자료(교시)가 없습니다. 교사 화면에서 먼저 선택하세요.");
+                    if (cancel) return;
+                    setDeckId(pickedDeck);
 
-                setDeckId(pickedDeck);
+                    const { data: d, error: eDeck } = await supabase.from("decks")
+                        .select("file_key,file_pages").eq("id", pickedDeck).maybeSingle();
+                    if (eDeck) throw eDeck;
+                    if (!d?.file_key) throw new Error("deck file not found");
 
-                // 2) 덱 파일 조회
-                let { data: d, error: eDeck } = await supabase
-                    .from("decks")
-                    .select("file_key,file_pages")
-                    .eq("id", pickedDeck)
-                    .maybeSingle();
-                if (eDeck) throw eDeck;
-
-                // 3) 파일이 없으면 내부적으로 임시 덱 파일 생성 → decks 갱신
-                if (!d?.file_key) {
-                    if (!roomId) throw new Error("room id 조회 실패로 임시 덱 생성 불가");
-                    const tmp = await provisionTempDeckFile({
-                        roomId,
-                        deckId: pickedDeck,
-                        templateKey: TEMPLATE_KEY,
-                        pages: TEMPLATE_PAGES,
-                    });
-                    d = { file_key: tmp.file_key, file_pages: tmp.file_pages };
+                    const url = await getPdfUrlFromKey(d.file_key, { ttlSec: 1800 });
+                    if (cancel) return;
+                    setFileUrl(url);
+                    setTotalPages(Number(d.file_pages || 0));
                 }
 
-                // 4) 서명 URL 발급(쿼리 추가하지 말 것)
-                const url = await getPdfUrlFromKey(d!.file_key!, { ttlSec: 1800 });
-                if (cancel) return;
-
-                setFileUrl(url);
-                setTotalPages(Number(d!.file_pages || 0));
-
-                // 5) 초기 manifest 로드(실패해도 무시)
+                // manifest는 공통 로드(실패 무시)
                 try {
                     const m = await getManifestByRoom(roomCode);
                     if (!cancel) setItems(m || []);
-                } catch {/* noop */}
+                } catch {}
             } catch (e: any) {
                 if (!cancel) setErr(e?.message || "로드 실패");
             } finally {
@@ -148,7 +142,8 @@ export default function DeckEditorPage() {
             }
         })();
         return () => { cancel = true; };
-    }, [roomCode, deckFromQS]);
+    }, [roomCode, deckFromQS, sourceDeckId]);
+
 
 
     // 최초 1회 미리보기 페이지 지정
@@ -199,7 +194,8 @@ export default function DeckEditorPage() {
                         totalPages={totalPages}
                         fileUrl={fileUrl}
                         onClose={() => nav(`/teacher?room=${roomCode}&mode=setup`)}
-                        onSaved={() => nav(`/teacher?room=${roomCode}&mode=setup`)}
+                        onSaved={() => nav(`/teacher?room=${roomCode}&mode=setup`)} 
+                        tempCleanup={isClone && roomIdState ? { roomId: roomIdState, deleteDeckRow: true } : undefined}
                         onItemsChange={(next) => setItems(next)}
                         onSelectPage={(p) => setPreviewPage(Math.max(0, p))}
                     />

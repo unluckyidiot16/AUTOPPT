@@ -3,6 +3,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import type { ManifestItem, ManifestPageItem, ManifestQuizItem } from "../types/manifest";
 import { getManifestByRoom, upsertManifest } from "../api/overrides";
 import EditorThumbnailStrip from "./EditorThumbnailStrip";
+import { finalizeTempDeck } from "../utils/tempDeck";
 
 type MatchOptions = {
     enableSubstr?: boolean;
@@ -25,13 +26,14 @@ function ensureManifestPages(totalPages: number): ManifestPageItem[] {
 
 export default function DeckEditor({
                                        roomCode, deckId, totalPages, fileUrl, onClose, onSaved,
-                                       onItemsChange, onSelectPage, applyPatchRef,
+                                       onItemsChange, onSelectPage, applyPatchRef, tempCleanup,
                                    }: {
     roomCode: string; deckId: string; totalPages: number | null; fileUrl?: string | null;
     onClose: () => void; onSaved?: () => void;
     onItemsChange?: (items: ManifestItem[]) => void;
     onSelectPage?: (srcPage: number) => void;
     applyPatchRef?: React.MutableRefObject<((fn: (cur: ManifestItem[]) => ManifestItem[]) => void) | null>;
+    tempCleanup?: { roomId: string; deleteDeckRow?: boolean };
 }) {
     const [items, _setItems] = useState<ManifestItem[]>([]);
     const [loading, setLoading] = useState(true);
@@ -122,8 +124,32 @@ export default function DeckEditor({
         position: "tl",
     } as QuizX]);
 
-    const save = async () => { await upsertManifest(roomCode, deckId, items); onSaved?.(); onClose(); };
-
+    const [saving, setSaving] = useState(false);
+    const save = async () => {
+           if (saving) return;
+           setSaving(true);
+           try {
+                 await upsertManifest(roomCode, deckId, items);
+                 // 임시 덱이면 저장 직후 정리
+                     if (tempCleanup?.roomId) {
+                       try {
+                           await finalizeTempDeck({ roomId: tempCleanup.roomId, deckId, deleteDeckRow: tempCleanup.deleteDeckRow ?? true });
+                           } catch (e) {
+                             console.warn("[finalizeTempDeck] cleanup failed", e);
+                           }
+                     }
+                 // onSaved가 있으면 그것만 호출(이중 네비 방지), 없으면 onClose
+                     if (onSaved) onSaved();
+                 else onClose();
+               } catch (e) {
+                 console.error("[DeckEditor.save] failed", e);
+                 alert("저장에 실패했습니다. 잠시 후 다시 시도하세요.");
+               } finally {
+                 setSaving(false);
+               }
+         };
+    
+    
     function SynonymsEditor({ quiz, index }: { quiz: QuizX; index: number }) {
         const enabled = !!quiz.matchOptions?.useSynonyms;
         const map = quiz.matchOptions?.synonyms ?? {};
@@ -230,7 +256,9 @@ export default function DeckEditor({
                 <div style={{ fontWeight: 700 }}>자료 편집</div>
                 <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
                     <button className="btn" onClick={resetDefault} disabled={loading || !totalPages}>기본(1..N)으로</button>
-                    <button className="btn btn-primary" onClick={save} disabled={loading}>저장</button>
+                    <button className="btn btn-primary" onClick={save} disabled={loading || saving}>
+                           {saving ? "저장 중…" : "저장"}
+                         </button>
                     <button className="btn" onClick={onClose}>닫기</button>
                 </div>
             </div>

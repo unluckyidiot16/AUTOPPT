@@ -278,7 +278,7 @@ export default function PdfLibraryPage() {
                                     {d.file_key && <OpenSignedLink fileKey={d.file_key} />}
                                     {d.file_key && <button className="btn" onClick={() => setPreview(d)}>미리보기</button>}
                                     <button className="btn btn-primary" onClick={() => assignAndUse(d)}>지금 불러오기</button>
-                                    <button className="btn" onClick={() => nav(`/editor?room=${roomCode}&deck=${d.id}`)}>편집</button>
+                                    <button className="btn" onClick={() => nav(`/editor?room=${roomCode}&src=${d.id}`)}>편집</button>
                                 </div>
                             </div>
                         ))}
