@@ -31,7 +31,9 @@ export default function StudentPage() {
     const studentId = useMemo(() => getOrSetStudentId(), []);
 
     const [slides, setSlides] = useState<SlideMeta[]>([]);
-    const [state, setState] = useState<{ page?: number; slide?: number; step?: number }>({});
+    const [pageRaw, setPageRaw] = useState<number | null>(null); // ✅ page 단일
+    const page = Number(pageRaw ?? 1) > 0 ? Number(pageRaw ?? 1) : 1;
+
     const [currentDeckId, setCurrentDeckId] = useState<string | null>(null);
     const [roomId, setRoomId] = useState<string | null>(null);
     const [deckFileUrl, setDeckFileUrl] = useState<string | null>(null);
@@ -47,111 +49,109 @@ export default function StudentPage() {
     const NW: React.CSSProperties = { whiteSpace: "nowrap" };
     const [manifest, setManifest] = useState<ManifestItem[] | null>(null);
 
-
     // Slides metadata (폴백)
     useEffect(() => { loadSlides().then(setSlides).catch(() => setSlides([])); }, []);
 
-    // Fetch initial room row
+    // 초기 rooms 로우
     useEffect(() => {
         let cancel = false;
         (async () => {
-            const { data } = await supabase.from("rooms").select("id, current_deck_id, state").eq("code", roomCode).maybeSingle();
+            const { data } = await supabase
+                .from("rooms")
+                .select("id, current_deck_id, state")
+                .eq("code", roomCode)
+                .maybeSingle();
             if (cancel) return;
             if (data) {
                 setRoomId(data.id);
                 setCurrentDeckId(data.current_deck_id ?? null);
-                const pg = Number(data.state?.page ?? data.state?.slide ?? 1);
-                setState({ page: pg > 0 ? pg : 1 });
+                const pg = Number(data.state?.page ?? 1);
+                setPageRaw(pg > 0 ? pg : 1);
             }
         })();
         return () => { cancel = true; };
     }, [roomCode]);
 
+    // manifest
     useEffect(() => {
         let cancel = false;
         (async () => {
             if (!roomCode) { setManifest(null); return; }
-            try {
-                const m = await getManifestByRoom(roomCode);
-                if (!cancel) setManifest(m);
-            } catch { if (!cancel) setManifest(null); }
+            try { const m = await getManifestByRoom(roomCode); if (!cancel) setManifest(m); }
+            catch { if (!cancel) setManifest(null); }
         })();
         return () => { cancel = true; };
     }, [roomCode]);
-
 
     // Realtime sync channel (student)
     const { lastMessage } = useRealtime(roomCode, "student");
     useEffect(() => {
         if (!lastMessage) return;
-        if (lastMessage.type === "goto") {
-            // 표준: page, 과도기: slide 우선 합성
-            const p = Number(lastMessage.page ?? lastMessage.slide ?? 1) || 1;
-            setState({ page: p });
+        if (lastMessage.type === "goto" && typeof lastMessage.page === "number") {
+            setPageRaw(Math.max(1, lastMessage.page));
             setSubmitted(false);
         }
     }, [lastMessage]);
 
-    // Watch current_deck_id changes
+    // rooms.current_deck_id / state.page 구독
     useEffect(() => {
         if (!roomId) return;
         const ch = supabase
             .channel(`rooms:${roomId}`)
-            .on("postgres_changes", { event: "UPDATE", schema: "public", table: "rooms", filter: `id=eq.${roomId}` }, (ev: any) => {
-                setCurrentDeckId(ev.new?.current_deck_id ?? null);
-                const pg = Number(ev.new?.state?.page ?? ev.new?.state?.slide ?? 1);
-                setState({ page: pg > 0 ? pg : 1 });
-            })
+            .on("postgres_changes",
+                { event: "UPDATE", schema: "public", table: "rooms", filter: `id=eq.${roomId}` },
+                (ev: any) => {
+                    setCurrentDeckId(ev.new?.current_deck_id ?? null);
+                    const pg = Number(ev.new?.state?.page ?? 1);
+                    setPageRaw(pg > 0 ? pg : 1);
+                })
             .subscribe();
         return () => { supabase.removeChannel(ch); };
     }, [roomId]);
 
-    // Resolve file_key safely via RPC (student-safe)
+    // 파일 키 → public URL
     useEffect(() => {
         let cancelled = false;
         (async () => {
             if (!currentDeckId) { setDeckFileUrl(null); return; }
             try {
-                const key: string | null = await supabase.rpc("get_current_deck_file_key_public", { p_code: roomCode }).then(r => (r.error ? null : (r.data as any)));
+                const key: string | null = await supabase
+                    .rpc("get_current_deck_file_key_public", { p_code: roomCode })
+                    .then(r => (r.error ? null : (r.data as any)));
                 if (cancelled) return;
                 if (key) {
                     const url = supabase.storage.from("presentations").getPublicUrl(key).data.publicUrl;
                     setDeckFileUrl(url);
-                } else {
-                    setDeckFileUrl(null);
-                }
-            } catch {
-                if (!cancelled) setDeckFileUrl(null);
-            }
+                } else setDeckFileUrl(null);
+            } catch { if (!cancelled) setDeckFileUrl(null); }
         })();
         return () => { cancelled = true; };
     }, [roomCode, currentDeckId]);
 
-    // 초기 진입 보강: rooms 구독/브로드캐스트보다 먼저 page가 비어있다면 1회 RPC
+    // 초기 보강: page 없을 때 1회 RPC로 동기화
     useEffect(() => {
         let cancelled = false;
         (async () => {
             if (!roomCode) return;
-            if (state?.page != null) return; // 이미 세팅됨
+            if (pageRaw != null) return; // 이미 세팅됨
             try {
-                const p = await supabase.rpc("get_current_page_public", { p_code: roomCode }).then(r => (r.error ? null : (r.data as number)));
-                if (!cancelled && p) setState({ page: Number(p) || 1 });
+                const p = await supabase
+                    .rpc("get_current_page_public", { p_code: roomCode })
+                    .then(r => (r.error ? null : (r.data as number)));
+                if (!cancelled && p) setPageRaw(Number(p) || 1);
             } catch { /* noop */ }
         })();
         return () => { cancelled = true; };
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [roomCode]);
+    }, [roomCode, pageRaw]);
 
-    const page = Number(state.page ?? state.slide ?? 1) || 1;
-    const slide = page;        // 폴백 자막/퀴즈 로직 호환
-    const step  = 0;
-
+    // 퀴즈 판별 (slide=page, step=0)
+    const slide = page;
+    const step = 0;
     const isQuiz = useMemo(() => {
         const s = slides.find((x) => x.slide === slide);
         const meta = s?.steps?.[step];
         return meta?.kind === "quiz";
     }, [slides, slide, step]);
-
     useEffect(() => { if (isQuiz && !submitted) setShowToast(true); }, [isQuiz, page, submitted]);
 
     const saveNick = () => {
@@ -224,7 +224,6 @@ export default function StudentPage() {
                                 );
                             })()
                         ) : (
-                            // ... (기존 폴백 이미지/메시지 유지)
                             (() => {
                                 const s = slides.find(x => x.slide === slide);
                                 const m = s?.steps?.[step];

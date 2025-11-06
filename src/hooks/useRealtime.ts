@@ -2,14 +2,10 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { supabase } from "../supabaseClient";
 
+/** ✅ P1: page 단일 타입 */
 export type SyncMessage =
     | { type: "hello"; role: "teacher" | "student" }
-    | {
-    type: "goto";
-    page: number;         // ✅ 표준
-    slide?: number;       // (과도기) 구버전 호환용
-    step?: number;        // (과도기) 구버전 호환용
-};
+    | { type: "goto"; page: number };
 
 export function useRealtime(roomId: string, role: "teacher" | "student") {
     const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);

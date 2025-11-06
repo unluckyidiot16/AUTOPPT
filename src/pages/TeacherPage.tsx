@@ -12,7 +12,6 @@ import type { ManifestItem, ManifestPageItem, ManifestQuizItem } from "../types/
 import DeckEditor from "../components/DeckEditor";
 import QuizOverlay from "../components/QuizOverlay";
 
-
 type DeckSlot = { slot: number; deck_id: string | null; title?: string | null; file_key?: string | null };
 
 const DEBUG = true;
@@ -26,6 +25,29 @@ async function rpc<T = any>(fn: string, args?: Record<string, any>) {
     const { data, error } = await supabase.rpc(fn, args ?? {});
     if (error) { DBG.err("rpc error:", fn, error.message || error); throw error; }
     return data as T;
+}
+
+/** P1 호환용: page 이동을 안전하게 시도 (goto_page → goto_slide → rooms.state 직접업데이트 → 브로드캐스트만) */
+async function gotoPageSafe(roomCode: string, nextPage: number): Promise<"ok" | "fallback-slide" | "local-only" | "fail"> {
+    const p = Math.max(1, nextPage);
+
+    try { await rpc("goto_page", { p_code: roomCode, p_page: p }); return "ok"; }
+    catch (e1) { DBG.err("goto_page failed", e1); }
+
+    // 서버가 구버전일 수 있어 RPC 폴백은 유지 (브로드캐스트 타입/수신은 이미 page 단일화)
+    try { await rpc("goto_slide", { p_code: roomCode, p_slide: p, p_step: 0 }); return "fallback-slide"; }
+    catch (e2) { DBG.err("goto_slide fallback failed", e2); }
+
+    try {
+        const { data: r } = await supabase.from("rooms").select("id,state").eq("code", roomCode).maybeSingle();
+        if (r?.id) {
+            const nextState = { ...(r.state ?? {}), page: p };
+            const { error: uerr } = await supabase.from("rooms").update({ state: nextState }).eq("id", r.id);
+            if (!uerr) return "local-only";
+        }
+    } catch (e3) { DBG.err("rooms.state direct update failed", e3); }
+
+    return "fail";
 }
 
 function useQS() {
@@ -45,44 +67,6 @@ function useToast(ms = 2400) {
         }}>{msg}</div>
     ) : null;
     return { show, node };
-}
-
-/** P1 호환용: page 이동을 안전하게 시도 (goto_page → goto_slide → rooms.state 직접업데이트 → 브로드캐스트로만 진행) */
-async function gotoPageSafe(
-    roomCode: string,
-    nextPage: number
-): Promise<"ok" | "fallback-slide" | "local-only" | "fail"> {
-    const p = Math.max(1, nextPage);
-
-    // 1) 신버전 RPC
-    try {
-        await rpc("goto_page", { p_code: roomCode, p_page: p });
-        return "ok";
-    } catch (e1) {
-        DBG.err("goto_page failed", e1);
-    }
-
-    // 2) 구버전 RPC 폴백
-    try {
-        await rpc("goto_slide", { p_code: roomCode, p_slide: p, p_step: 0 });
-        return "fallback-slide";
-    } catch (e2) {
-        DBG.err("goto_slide fallback failed", e2);
-    }
-
-    // 3) 최후의 수단: rooms.state.page 직접 업데이트(소유자 RLS 허용 시)
-    try {
-        const { data: r } = await supabase.from("rooms").select("id,state").eq("code", roomCode).maybeSingle();
-        if (r?.id) {
-            const nextState = { ...(r.state ?? {}), page: p };
-            const { error: uerr } = await supabase.from("rooms").update({ state: nextState }).eq("id", r.id);
-            if (!uerr) return "local-only";
-        }
-    } catch (e3) {
-        DBG.err("rooms.state direct update failed", e3);
-    }
-
-    return "fail";
 }
 
 export default function TeacherPage() {
@@ -115,10 +99,8 @@ export default function TeacherPage() {
         let cancel = false;
         (async () => {
             if (!roomCode || !currentDeckId) { setManifest(null); return; }
-            try {
-                const m = await getManifestByRoom(roomCode);
-                if (!cancel) setManifest(m);
-            } catch { if (!cancel) setManifest(null); }
+            try { const m = await getManifestByRoom(roomCode); if (!cancel) setManifest(m); }
+            catch { if (!cancel) setManifest(null); }
         })();
         return () => { cancel = true; };
     }, [roomCode, currentDeckId]);
@@ -129,7 +111,6 @@ export default function TeacherPage() {
         return manifest[idx] ?? null;
     }
 
-    // 현재 아이템 스냅샷으로 키 생성(분기/문구 변경에도 재마운트 유도)
     const manifestKey = useMemo(() => {
         const it = currentItem();
         if (!it) return `none-${page}`;
@@ -137,7 +118,6 @@ export default function TeacherPage() {
             ? `p-${(it as ManifestPageItem).srcPage}`
             : `q-${(it as ManifestQuizItem).keywords.length}-${(it as ManifestQuizItem).prompt?.length ?? 0}`;
     }, [manifest, page]);
-
 
     // ---- Room row ----
     const refreshRoomState = useCallback(async () => {
@@ -151,7 +131,7 @@ export default function TeacherPage() {
         if (data) {
             setRoomId(data.id);
             setCurrentDeckId(data.current_deck_id ?? null);
-            const pg = Number(data.state?.page ?? data.state?.slide ?? 1);
+            const pg = Number(data.state?.page ?? 1);
             setPage(pg > 0 ? pg : 1);
         }
     }, [roomCode]);
@@ -163,9 +143,7 @@ export default function TeacherPage() {
             try {
                 await rpc("claim_room_auth", { p_code: roomCode });
                 await refreshRoomState();
-            } catch (e) {
-                DBG.err("claim_room_auth failed", e);
-            }
+            } catch (e) { DBG.err("claim_room_auth failed", e); }
         })();
     }, [roomCode, refreshRoomState]);
 
@@ -199,8 +177,8 @@ export default function TeacherPage() {
     useEffect(() => {
         if (!lastMessage) return;
         if (lastMessage.type === "hello") {
-            // 과도기: slide/step 필드도 함께 전송(구클라 호환)
-            send({ type: "goto", page, slide: page, step: 0 });
+            // ✅ page 단일 브로드캐스트
+            send({ type: "goto", page });
         }
     }, [lastMessage, page, send]);
 
@@ -226,17 +204,12 @@ export default function TeacherPage() {
                 } else {
                     setDeckFileUrl(null);
                 }
-            } catch (e) {
-                DBG.err("get_current_deck_file_key", e);
-                setDeckFileUrl(null);
-            }
+            } catch (e) { DBG.err("get_current_deck_file_key", e); setDeckFileUrl(null); }
 
             try {
                 const { data } = await supabase.from("decks").select("file_pages").eq("id", currentDeckId).maybeSingle();
                 setTotalPages(Number(data?.file_pages) || null);
-            } catch {
-                setTotalPages(null);
-            }
+            } catch { setTotalPages(null); }
         })();
         return () => { cancelled = true; };
     }, [roomCode, currentDeckId]);
@@ -245,13 +218,10 @@ export default function TeacherPage() {
     const gotoPage = useCallback(async (nextPage: number) => {
         const p = Math.max(1, nextPage);
         const mode = await gotoPageSafe(roomCode, p);
-        if (mode === "fail") {
-            // 그래도 수업은 흘러가도록 브로드캐스트만이라도
-            toast.show("서버 갱신 실패: 임시 동기화로 진행합니다");
-        }
+        if (mode === "fail") toast.show("서버 갱신 실패: 임시 동기화로 진행합니다");
         setPage(p);
-        // 과도기: slide/step도 함께 브로드캐스트
-        send({ type: "goto", page: p, slide: p, step: 0 });
+        // ✅ page 단일 브로드캐스트
+        send({ type: "goto", page: p });
     }, [roomCode, send]);
 
     const next = useCallback(async () => {
@@ -294,7 +264,6 @@ export default function TeacherPage() {
                 }
                 if (!ensuredRoomId) throw new Error("room id missing");
 
-                // slot → deck ensure
                 const { data: rd } = await supabase
                     .from("room_decks")
                     .select("deck_id")
@@ -310,23 +279,19 @@ export default function TeacherPage() {
                     if (!deckId) throw new Error("deck create failed");
                 }
 
-                // upload to storage
                 const key = `rooms/${ensuredRoomId}/decks/${deckId}/slides-${Date.now()}.pdf`;
                 const up = await supabase.storage.from("presentations").upload(key, file, { upsert: true, contentType: "application/pdf" });
                 if (up.error) throw up.error;
                 setPct(92, "파일 링크 갱신 중...");
 
-                // file_key 보정
                 try { await rpc("upsert_deck_file_by_slot", { p_room_code: roomCode, p_slot: slot, p_file_key: key }); }
                 catch {
                     try { await rpc("upsert_deck_file", { p_deck_id: deckId, p_file_key: key }); } catch {}
                 }
 
-                // set current deck
                 await rpc("set_room_deck", { p_code: roomCode, p_slot: slot });
                 await refreshRoomState();
 
-                // 라이브 미리보기
                 const publicUrl = supabase.storage.from("presentations").getPublicUrl(key).data.publicUrl;
                 setUploading(u => ({ ...u, previewUrl: publicUrl }));
                 setPct(100, "완료");
@@ -349,7 +314,6 @@ export default function TeacherPage() {
         }}>{children}</span>
     );
 
-    // ---- Views ----
     const PresentView = (
         <div className="panel" style={{ padding: 12 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
@@ -374,7 +338,7 @@ export default function TeacherPage() {
                             return (
                                 <PdfViewer
                                     key={`${deckFileUrl}|${currentDeckId}|p-${p}|present|${manifestKey}`}
-                                    fileUrl={deckFileUrl!}
+                                    fileUrl={viewerUrl}   {/* 🔧 실제 viewerUrl 사용 */}
                                     page={p}
                                 />
                             );
@@ -383,7 +347,6 @@ export default function TeacherPage() {
                 ) : (
                     <div style={{ opacity: 0.6 }}>자료가 없습니다.</div>
                 )}
-
             </div>
             <div style={{ display: "flex", gap: 8, justifyContent: "center", marginTop: 10 }}>
                 <button className="btn" onClick={prev} disabled={page <= 1}>◀ 이전</button>
@@ -425,8 +388,6 @@ export default function TeacherPage() {
                 ) : (
                     <div style={{ opacity: 0.6 }}>자료가 없습니다.</div>
                 )}
-
-
                 <div style={{ display: "flex", gap: 8, justifyContent: "center", marginTop: 10 }}>
                     <button className="btn" onClick={prev} disabled={page <= 1}>◀ 이전</button>
                     <button className="btn" onClick={() => gotoPage(page)}>🔓 현재 페이지 재전송</button>
@@ -454,7 +415,6 @@ export default function TeacherPage() {
                                     onClick={async () => {
                                         if (!s.deck_id) return;
                                         await rpc("set_room_deck", { p_code: roomCode, p_slot: s.slot });
-                                        // 슬롯별 저장된 current_page 복원 → rooms.state.page 반영 (안전 폴백)
                                         let restored = 1;
                                         if (roomId) {
                                             const { data: rd } = await supabase
@@ -467,7 +427,8 @@ export default function TeacherPage() {
                                         }
                                         await gotoPageSafe(roomCode, restored);
                                         setPage(restored);
-                                        send({ type: "goto", page: restored, slide: restored, step: 0 });
+                                        // ✅ page 단일 브로드캐스트
+                                        send({ type: "goto", page: restored });
                                         await refreshRoomState();
                                     }}
                                 >
