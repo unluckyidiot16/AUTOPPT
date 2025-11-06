@@ -112,12 +112,12 @@ function useFullscreenTarget(selector: string) {
 export default function TeacherPage() {
     const nav = useNavigate();
     const qs = new URLSearchParams(location.search);  // 먼저 선언
-    const roomCode = qs.get("room") || "";
     const deckFromQS = qs.get("deck");
     const toast = useToast();
 
     // ---- Room ----
     const defaultCode = useMemo(() => "CLASS-" + Math.random().toString(36).slice(2, 8).toUpperCase(), []);
+    const roomCode = useRoomId(defaultCode);
     const [roomId, setRoomId] = useState<string | null>(null);
     const [page, setPage] = useState<number>(1);
     const [currentDeckId, setCurrentDeckId] = useState<string | null>(null);
