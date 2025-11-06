@@ -99,30 +99,104 @@ export default function PdfLibraryPage() {
         return decks.filter((d) => (d.title || "").toLowerCase().includes(k));
     }, [decks, keyword]);
 
+    // useEffect 교체
     React.useEffect(() => {
         let cancel = false;
-        (async () => {
+
+        async function fetchLibrary() {
             setLoading(true);
             setError(null);
             try {
-                // 자료함: 단순히 decks 테이블 목록을 불러온다.
-                // (RLS/정렬 컬럼은 프로젝트마다 다르니, 안전하게 최소 컬럼만)
-                const { data, error: e } = await supabase
-                    .from("decks")
-                    .select("id,title,file_key,file_pages")
-                    .limit(200);
-                if (e) throw e;
-                if (!cancel) setDecks((data as DeckRow[]) || []);
+                // 0) 사용자 확인
+                const { data: userData, error: eUser } = await supabase.auth.getUser();
+                if (eUser) throw eUser;
+                const uid = userData?.user?.id || null;
+
+                // 1) roomCode → room_id
+                let roomId: string | null = null;
+                if (roomCode) {
+                    const { data: roomRow, error: eRoom } = await supabase
+                        .from("rooms")
+                        .select("id, owner_id")
+                        .eq("code", roomCode)
+                        .maybeSingle();
+                    if (eRoom) throw eRoom;
+                    if (roomRow?.id) roomId = roomRow.id;
+                }
+
+                // 2) 기본 결과 배열
+                let rows: DeckRow[] = [];
+
+                // 2-A) 방이 있으면: 그 방에 배정된 덱만 (room_decks → embed decks)
+                if (roomId) {
+                    const { data: rd, error: eRd } = await supabase
+                        .from("room_decks")
+                        .select("deck_id, decks:decks(id, title, file_key, file_pages)")
+                        .eq("room_id", roomId);
+                    if (eRd) throw eRd;
+
+                    rows = (rd ?? [])
+                        .map((r: any) => r.decks)
+                        .filter(Boolean);
+
+                    console.debug("[LIB] by room_decks =", rows.length);
+                }
+
+                // 2-B) 방 배정 결과가 비었으면: 내 소유 덱(선택)
+                if ((!rows || rows.length === 0) && uid) {
+                    try {
+                        const { data: myDecks, error: eMy } = await supabase
+                            .from("decks")
+                            .select("id,title,file_key,file_pages,owner_id")
+                            .eq("owner_id", uid)           // ❗ owner_id가 없으면 에러 → 아래 catch에서 폴백
+                            .limit(200);
+                        if (eMy) throw eMy;
+                        if (myDecks?.length) {
+                            rows = myDecks.map((d: any) => ({
+                                id: d.id,
+                                title: d.title,
+                                file_key: d.file_key,
+                                file_pages: d.file_pages,
+                            }));
+                            console.debug("[LIB] by owner_id =", rows.length);
+                        }
+                    } catch (e) {
+                        console.debug("[LIB] owner_id 필터 스킵 (컬럼 없거나 RLS)", e);
+                    }
+                }
+
+                // 2-C) 마지막 폴백: 공개/전체(정책 허용 시만)
+                if (!rows || rows.length === 0) {
+                    const { data: anyDecks, error: eAll } = await supabase
+                        .from("decks")
+                        .select("id,title,file_key,file_pages")
+                        .limit(50);
+                    if (eAll) {
+                        console.debug("[LIB] plain decks select failed:", eAll?.message);
+                    } else {
+                        rows = (anyDecks as DeckRow[]) ?? [];
+                        console.debug("[LIB] plain decks =", rows.length);
+                    }
+                }
+
+                if (!cancel) setDecks(rows ?? []);
+                if (!cancel && (!rows || rows.length === 0)) {
+                    // 안내 메시지: RLS/권한/owner_id 누락 가능성
+                    setError(
+                        "표시할 자료가 없습니다. (방 배정된 자료 없음, 또는 소유 자료가 RLS에 의해 비공개일 수 있어요.)"
+                    );
+                }
             } catch (e: any) {
                 if (!cancel) setError(e?.message || "목록을 불러오지 못했어요.");
             } finally {
                 if (!cancel) setLoading(false);
             }
-        })();
-        return () => {
-            cancel = true;
-        };
-    }, []);
+        }
+
+        fetchLibrary();
+        return () => { cancel = true; };
+    }, [roomCode]);
+
 
     const openEditClone = React.useCallback(
         (d: DeckRow) => {
