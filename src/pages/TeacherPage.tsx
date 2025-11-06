@@ -338,7 +338,7 @@ export default function TeacherPage() {
                             return (
                                 <PdfViewer
                                     key={`${deckFileUrl}|${currentDeckId}|p-${p}|present|${manifestKey}`}
-                                    fileUrl={viewerUrl}   {/* 🔧 실제 viewerUrl 사용 */}
+                                    fileUrl={viewerUrl}
                                     page={p}
                                 />
                             );
