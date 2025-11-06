@@ -8,7 +8,60 @@ import type { ManifestItem, ManifestQuizItem } from "../types/manifest";
 import { getManifestByRoom } from "../api/overrides";
 import { getPdfUrlFromKey } from "../utils/supaFiles";
 
+
+const TEMPLATE_KEY = "_templates/blank-1p.pdf"; // presentations 버킷에 미리 올려둔 1p 빈 PDF
+const TEMPLATE_PAGES = 1;                        // 템플릿 페이지 수
+
 type RoomRow = { id: string; current_deck_id: string | null };
+
+// 임시 PDF를 현재 덱에 붙이고 decks.file_key/ file_pages를 채운다.
+// - 기본은 "현재 덱 id 재사용" 모드(reuse). 새 덱을 만들고 배정하고 싶으면 아래 NEW 모드 참고.
+async function provisionTempDeckFile({
+                                         roomId,
+                                         deckId,
+                                         templateKey = "_templates/blank-1p.pdf",
+                                         pages = 1,
+                                     }: {
+    roomId: string;           // 현재 편집 중인 room_id
+    deckId: string;           // 현재 편집 중인 deck_id (파일만 붙임)
+    templateKey?: string;     // presentations 버킷 내 템플릿 경로
+    pages?: number;           // 템플릿 페이지 수
+}) {
+    // 1) 목적지 키 만들기
+    const ts = Date.now();
+    const destKey = `rooms/${roomId}/decks/${deckId}/slides-${ts}.pdf`;
+
+    // 2) 템플릿 → 목적지로 복사 (SDK v2는 copy 지원, 환경에 따라 download→upload로 폴백)
+    let copyOk = false;
+    try {
+        const { data, error } = await supabase.storage
+            .from("presentations")
+            .copy(templateKey, destKey); // ← 가능하면 이게 제일 깔끔
+        if (!error) copyOk = true;
+    } catch {/* noop */}
+
+    if (!copyOk) {
+        // 폴백: 다운로드 후 업로드
+        const dl = await supabase.storage.from("presentations").download(templateKey);
+        if (dl.error) throw dl.error;
+        const up = await supabase.storage
+            .from("presentations")
+            .upload(destKey, dl.data, { contentType: "application/pdf", upsert: true });
+        if (up.error) throw up.error;
+    }
+
+    // 3) decks 테이블에 file_key / file_pages 갱신
+    const upDeck = await supabase
+        .from("decks")
+        .update({ file_key: destKey, file_pages: pages })
+        .eq("id", deckId)
+        .select("id, file_key, file_pages")
+        .single();
+    if (upDeck.error) throw upDeck.error;
+
+    return { file_key: destKey, file_pages: pages };
+}
+
 
 export default function DeckEditorPage() {
     const nav = useNavigate();
@@ -40,42 +93,54 @@ export default function DeckEditorPage() {
             try {
                 if (!roomCode && !deckFromQS) throw new Error("room 또는 deck 파라미터가 필요합니다.");
 
-                // 1) 자료함 → 편집 직행: deck 파라미터로 decks 직조회
-                let pickedDeck = deckFromQS as string | null;
-                if (!pickedDeck) {
-                    // 2) 교사화면 경유: room.current_deck_id 사용
-                    const { data: r } = await supabase
-                        .from("rooms")
-                        .select("id,current_deck_id")
-                        .eq("code", roomCode)
-                        .maybeSingle<RoomRow>();
-                    pickedDeck = r?.current_deck_id ?? null;
-                }
+                // 항상 방 정보(id, current_deck_id) 조회해 roomId 확보(임시 파일 업로드 경로에 필요)
+                const { data: roomRow, error: eRoom } = await supabase
+                    .from("rooms")
+                    .select("id,current_deck_id")
+                    .eq("code", roomCode)
+                    .maybeSingle<RoomRow>();
+                if (eRoom) throw eRoom;
+                const roomId = roomRow?.id || null;
+
+                // 1) 자료함 직행: deck 파라미터 우선, 없으면 room.current_deck_id 사용
+                let pickedDeck = (deckFromQS as string | null) ?? roomRow?.current_deck_id ?? null;
                 if (!pickedDeck) throw new Error("현재 선택된 자료(교시)가 없습니다. 교사 화면에서 먼저 선택하세요.");
                 if (cancel) return;
 
                 setDeckId(pickedDeck);
 
-                // ✅ updated_at 없이 file_key, file_pages만 조회
-                const { data: d, error: eDeck } = await supabase
+                // 2) 덱 파일 조회
+                let { data: d, error: eDeck } = await supabase
                     .from("decks")
                     .select("file_key,file_pages")
                     .eq("id", pickedDeck)
                     .maybeSingle();
                 if (eDeck) throw eDeck;
-                if (!d?.file_key) throw new Error("deck file not found");
 
-                const url = await getPdfUrlFromKey(d.file_key, { ttlSec: 1800 });
+                // 3) 파일이 없으면 내부적으로 임시 덱 파일 생성 → decks 갱신
+                if (!d?.file_key) {
+                    if (!roomId) throw new Error("room id 조회 실패로 임시 덱 생성 불가");
+                    const tmp = await provisionTempDeckFile({
+                        roomId,
+                        deckId: pickedDeck,
+                        templateKey: TEMPLATE_KEY,
+                        pages: TEMPLATE_PAGES,
+                    });
+                    d = { file_key: tmp.file_key, file_pages: tmp.file_pages };
+                }
+
+                // 4) 서명 URL 발급(쿼리 추가하지 말 것)
+                const url = await getPdfUrlFromKey(d!.file_key!, { ttlSec: 1800 });
                 if (cancel) return;
 
                 setFileUrl(url);
-                setTotalPages(Number(d.file_pages || 0));
+                setTotalPages(Number(d!.file_pages || 0));
 
-                // 초기 manifest
+                // 5) 초기 manifest 로드(실패해도 무시)
                 try {
                     const m = await getManifestByRoom(roomCode);
                     if (!cancel) setItems(m || []);
-                } catch {}
+                } catch {/* noop */}
             } catch (e: any) {
                 if (!cancel) setErr(e?.message || "로드 실패");
             } finally {
@@ -84,6 +149,7 @@ export default function DeckEditorPage() {
         })();
         return () => { cancel = true; };
     }, [roomCode, deckFromQS]);
+
 
     // 최초 1회 미리보기 페이지 지정
     useEffect(() => {
