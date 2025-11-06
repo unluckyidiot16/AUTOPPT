@@ -515,6 +515,7 @@ export default function TeacherPage() {
                     roomCode={roomCode}
                     deckId={currentDeckId}
                     totalPages={totalPages}
+                    fileUrl={viewerUrl}
                     onClose={() => setEditOpen(false)}
                     onSaved={async () => {
                         const m = await getManifestByRoom(roomCode);

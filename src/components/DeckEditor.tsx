@@ -20,7 +20,7 @@ function ensureManifestPages(totalPages: number): ManifestPageItem[] {
 export default function DeckEditor({
                                        roomCode, deckId, totalPages, onClose, onSaved,
                                    }: {
-    roomCode: string; deckId: string; totalPages: number | null;
+    roomCode: string; deckId: string; totalPages: number | null; fileUrl?: string | null;
     onClose: () => void; onSaved?: () => void;
 }) {
     const [items, setItems] = useState<ManifestItem[]>([]);
@@ -421,6 +421,7 @@ export default function DeckEditor({
 
                         {/* ───────── 썸네일 스트립 (아래 고정) ───────── */}
                         <EditorThumbnailStrip
+                            fileUrl={fileUrl}          // ✅ 추가
                             items={pageThumbs.map(t => ({ id: t.id, page: t.page }))}
                             onReorder={(next) => {
                                 // next에는 id,page만 있으니 기존 idx 매핑으로 복원
