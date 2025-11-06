@@ -1,330 +1,297 @@
 // src/pages/PdfLibraryPage.tsx
-import React, { useEffect, useMemo, useState, useCallback } from "react";
+import React from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { supabase } from "../supabaseClient";
 import PdfViewer from "../components/PdfViewer";
-import { getBasePath } from "../utils/getBasePath";
 import { getPdfUrlFromKey } from "../utils/supaFiles";
 
 type DeckRow = {
     id: string;
-    ext_id: string | null;
     title: string | null;
     file_key: string | null;
-    created_at: string;
+    file_pages: number | null;
 };
 
-// 파일 상단 import 근처
-function useSignedUrl(key: string | null, ttlSec = 1800) {
-    const [url, setUrl] = React.useState("");
+function useSignedUrl(key: string | null | undefined, ttlSec = 1800) {
+    const [url, setUrl] = React.useState<string>("");
     React.useEffect(() => {
-        let cancel = false;
+        let alive = true;
         (async () => {
-            if (!key) { setUrl(""); return; }
+            if (!key) {
+                setUrl("");
+                return;
+            }
             try {
-                const { data, error } = await supabase.storage.from("presentations").createSignedUrl(key, ttlSec);
-                if (!error && data?.signedUrl) {
-                    const u = new URL(data.signedUrl);
-                    // ⚠️ 서명 URL엔 쿼리 붙이지 말 것 — 해시만 사용
-                    u.hash = `v=${Math.floor(Date.now()/60000)}`;
-                    if (!cancel) setUrl(u.toString());
-                    return;
-                }
-            } catch {}
-            // 폴백(버킷이 public일 때만 유효)
-            try {
-                const raw = supabase.storage.from("presentations").getPublicUrl(key).data.publicUrl;
-                const u = new URL(raw);
-                u.searchParams.set("v", String(Math.floor(Date.now()/60000))); // public엔 query 가능
-                if (!cancel) setUrl(u.toString());
-            } catch { if (!cancel) setUrl(""); }
+                const u = await getPdfUrlFromKey(key, { ttlSec });
+                if (alive) setUrl(u);
+            } catch {
+                if (alive) setUrl("");
+            }
         })();
-        return () => { cancel = true; };
+        return () => {
+            alive = false;
+        };
     }, [key, ttlSec]);
     return url;
 }
 
-
-function useQS() {
-    const loc = useLocation();
-    return new URLSearchParams(loc.search);
-}
-
-// 공용 훅: file_key → signed URL
- function useSignedUrl(key: string | null | undefined) {
-       const [url, setUrl] = React.useState<string>("");
-       React.useEffect(() => {
-             let alive = true;
-             (async () => {
-                   if (!key) { setUrl(""); return; }
-                   const u = await getPdfUrlFromKey(key, { ttlSec: 1800 });
-                   if (alive) setUrl(u);
-                 })();
-             return () => { alive = false; };
-           }, [key]);
-       return url;
-     }
-
-async function rpc<T = any>(name: string, params?: Record<string, any>) {
-    const { data, error } = await supabase.rpc(name, params ?? {});
-    if (error) {
-        console.error("[RPC ERR]", name, error);
-        throw error;
-    }
-    return data as T;
-}
-
-/** 미리보기 모달 */
-function PreviewModal({
-                          preview,
-                          onClose,
-                      }: {
-    preview: DeckRow;
-    onClose: () => void;
-}) {
-    const [currentPage, setCurrentPage] = useState(1);
-    const [totalPages, setTotalPages] = useState<number | null>(null);
-    const fileUrl = useSignedUrl(preview.file_key || "");
-    
-    useEffect(() => {
-        let cancel = false;
-        (async () => {
-            try {
-                const { data, error } = await supabase
-                    .from("decks")
-                    .select("file_pages")
-                    .eq("id", preview.id)
-                    .maybeSingle();
-                if (error) throw error;
-                if (!cancel) setTotalPages(Number(data?.file_pages) || null);
-            } catch {
-                if (!cancel) setTotalPages(null);
-            }
-        })();
-        return () => { cancel = true; };
-    }, [preview.id]);
-
-    useEffect(() => {
-        const onKey = (e: KeyboardEvent) => {
-            if (e.key === "Escape") onClose();
-            else if (e.key === "ArrowLeft") setCurrentPage((p) => Math.max(1, p - 1));
-            else if (e.key === "ArrowRight") setCurrentPage((p) => (totalPages ? Math.min(totalPages, p + 1) : p + 1));
-        };
-        window.addEventListener("keydown", onKey);
-        return () => window.removeEventListener("keydown", onKey);
-    }, [onClose, totalPages]);
-
-    const canPrev = currentPage > 1;
-    const canNext = totalPages ? currentPage < totalPages : true;
-
+function Thumb({ keyStr }: { keyStr: string }) {
+    const fileUrl = useSignedUrl(keyStr);
     return (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "grid", placeItems: "center", zIndex: 70 }}
-             role="dialog" aria-modal="true" aria-label="PDF 미리보기">
-            <div className="panel" style={{ width: "min(92vw, 920px)", maxWidth: "95vw", maxHeight: "90vh", display: "flex", flexDirection: "column" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
-                    <h3 style={{ margin: 0, flex: 1 }}>{preview.title ?? preview.ext_id}</h3>
-                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                        <button className="btn" onClick={() => setCurrentPage((p) => Math.max(1, p - 1))} disabled={!canPrev}>이전</button>
-                        <span style={{ fontSize: 14, minWidth: 80, textAlign: "center" }}>
-              페이지 {currentPage}{totalPages ? `/${totalPages}` : ""}
-            </span>
-                        <button className="btn" onClick={() => setCurrentPage((p) => (canNext ? p + 1 : p))} disabled={!canNext}>다음</button>
-                        <button className="btn" onClick={onClose}>닫기</button>
-                    </div>
-                </div>
-                <div className="pdf-stage" style={{ flex: 1, overflow: "auto", borderRadius: 8, background: "#f3f4f6" }}>
-                    {fileUrl ? (
-                        {(() => {
-                            const url = useSignedUrl(d.file_key);
-                            return url ? <PdfViewer fileUrl={url} page={1} maxHeight="140px" /> : <div style={{height:140}} />;
-                        })()}
-                    ) : (
-                        <div style={{ padding: 16, textAlign: "center", opacity: 0.6 }}>파일이 없습니다.</div>
-                    )}
-                </div>
-            </div>
+        <div
+            className="pdf-thumb"
+            style={{
+                borderRadius: 8,
+                overflow: "hidden",
+                marginBottom: 8,
+                border: "1px solid rgba(148,163,184,0.25)",
+                height: 140,
+                display: "grid",
+                placeItems: "center",
+                background: "#fff",
+            }}
+        >
+            {fileUrl ? <PdfViewer fileUrl={fileUrl} page={1} maxHeight="140px" /> : <div style={{ height: 140 }} />}
         </div>
     );
 }
 
-export default function PdfLibraryPage() {
-    const qs = useQS();
-    const nav = useNavigate();
-    const roomCode = qs.get("room") ?? "";
-
-    const [q, setQ] = useState("");
-    const [slotSel, setSlotSel] = useState(1);
-    const [decks, setDecks] = useState<DeckRow[]>([]);
-    const [preview, setPreview] = useState<DeckRow | null>(null);
-    const [loading, setLoading] = useState(false);
-    const [errMsg, setErrMsg] = useState<string | null>(null);
-
-    const loadDecks = useCallback(async () => {
-        setLoading(true);
-        setErrMsg(null);
-        try {
-            try { await rpc("claim_room_auth", { p_code: roomCode }); } catch {}
-            const { data, error } = await supabase.rpc("list_decks_by_room_owner", { p_room_code: roomCode });
-            if (error) throw error;
-            setDecks((data as any) ?? []);
-        } catch (e) {
-            console.error("[list_decks_by_room_owner]", e);
-            setDecks([]);
-            setErrMsg("자료함을 불러오지 못했습니다. 로그인/권한을 확인해 주세요.");
-        } finally {
-            setLoading(false);
-        }
-    }, [roomCode]);
-
-    useEffect(() => { if (roomCode) loadDecks(); }, [roomCode, loadDecks]);
-
-    const filt = useMemo(
-        () => decks.filter((d) => {
-            if (!q.trim()) return true;
-            const key = `${d.title ?? ""} ${d.ext_id ?? ""}`.toLowerCase();
-            return key.includes(q.toLowerCase());
-        }),
-        [q, decks]
-    );
-
-    function Thumb({ keyStr }: { keyStr: string }) {
-        const fileUrl = useSignedUrl(preview.file_key);
-        return (
-            <div className="pdf-thumb" style={{ borderRadius:8, overflow:"hidden", marginBottom:8, border:"1px solid rgba(148,163,184,0.25)", height:140 }}>
-                {fileUrl ? <PdfViewer fileUrl={fileUrl} page={1} maxHeight="140px" /> : null}
-            </div>
-        );
-    }
-
-    function OpenSignedLink({ fileKey }: { fileKey: string }) {
-        const [href, setHref] = React.useState<string>("");
-        React.useEffect(() => {
-            let alive = true;
-            (async () => {
+function OpenSignedLink({ fileKey, children }: { fileKey: string; children: React.ReactNode }) {
+    const [href, setHref] = React.useState<string>("");
+    React.useEffect(() => {
+        let alive = true;
+        (async () => {
+            try {
                 const u = await getPdfUrlFromKey(fileKey, { ttlSec: 1800 });
                 if (alive) setHref(u);
-            })();
-            return () => { alive = false; };
-        }, [fileKey]);
-        return (
-            <a className="btn" href={href || "#"} target="_blank" rel="noreferrer" aria-disabled={!href}>
-                링크 열기
-            </a>
-        );
-    }
-
-
-    const assignAndUse = async (d: DeckRow) => {
-        if (!roomCode) return;
-        try {
-            await rpc("claim_room_auth", { p_code: roomCode });
-            await rpc("assign_room_deck_by_id", { p_code: roomCode, p_slot: slotSel, p_deck_id: d.id });
-            await rpc("set_room_deck", { p_code: roomCode, p_slot: slotSel });
-
-            // 슬롯 페이지 초기화(있으면 사용)
-            try {
-                await rpc("set_current_page_for_slot", { p_code: roomCode, p_slot: slotSel, p_page: 1 });
-            } catch {}
-
-            // 페이지 이동: goto_page → goto_slide 폴백
-            let pageSetOk = false;
-            try {
-                await rpc("goto_page", { p_code: roomCode, p_page: 1 });
-                pageSetOk = true;
-            } catch (e1) {
-                console.warn("goto_page failed, fallback to goto_slide", e1);
-                try {
-                    await rpc("goto_slide", { p_code: roomCode, p_slide: 1, p_step: 0 });
-                    pageSetOk = true;
-                } catch (e2) {
-                    console.error("goto_slide fallback failed", e2);
-                }
+            } catch {
+                if (alive) setHref("");
             }
+        })();
+        return () => {
+            alive = false;
+        };
+    }, [fileKey]);
+    return (
+        <a className="btn" href={href || "#"} target="_blank" rel="noreferrer" aria-disabled={!href}>
+            {children}
+        </a>
+    );
+}
 
-            // 실패해도 수업은 진행: 발표 화면으로 전환
-            if (!pageSetOk) {
-                alert("서버에 페이지 반영은 실패했지만, 발표 화면으로 이동합니다. (임시 동기화)");
+export default function PdfLibraryPage() {
+    const nav = useNavigate();
+    const { search } = useLocation();
+    const qs = React.useMemo(() => new URLSearchParams(search), [search]);
+    const roomCode = qs.get("room") || "";
+
+    const [loading, setLoading] = React.useState(false);
+    const [error, setError] = React.useState<string | null>(null);
+    const [decks, setDecks] = React.useState<DeckRow[]>([]);
+    const [keyword, setKeyword] = React.useState("");
+
+    const [preview, setPreview] = React.useState<DeckRow | null>(null);
+    const [previewPage, setPreviewPage] = React.useState<number>(1);
+
+    const filtered = React.useMemo(() => {
+        if (!keyword.trim()) return decks;
+        const k = keyword.trim().toLowerCase();
+        return decks.filter((d) => (d.title || "").toLowerCase().includes(k));
+    }, [decks, keyword]);
+
+    React.useEffect(() => {
+        let cancel = false;
+        (async () => {
+            setLoading(true);
+            setError(null);
+            try {
+                // 자료함: 단순히 decks 테이블 목록을 불러온다.
+                // (RLS/정렬 컬럼은 프로젝트마다 다르니, 안전하게 최소 컬럼만)
+                const { data, error: e } = await supabase
+                    .from("decks")
+                    .select("id,title,file_key,file_pages")
+                    .limit(200);
+                if (e) throw e;
+                if (!cancel) setDecks((data as DeckRow[]) || []);
+            } catch (e: any) {
+                if (!cancel) setError(e?.message || "목록을 불러오지 못했어요.");
+            } finally {
+                if (!cancel) setLoading(false);
             }
-            nav(`/teacher?room=${roomCode}&mode=present`);
-        } catch (error) {
-            console.error("[assignAndUse] Error:", error);
-            alert("자료를 불러오는 중 오류가 발생했습니다.");
-        }
-    };
+        })();
+        return () => {
+            cancel = true;
+        };
+    }, []);
 
-    const studentUrl = useMemo(() => {
-        const origin = window.location.origin;
-        const base = getBasePath();
-        return `${origin}${base}/#/student?room=${roomCode}`;
-    }, [roomCode]);
+    const openEditClone = React.useCallback(
+        (d: DeckRow) => {
+            if (!roomCode) {
+                alert("room 파라미터가 필요합니다.");
+                return;
+            }
+            if (!d.file_key) {
+                alert("원본 덱에 파일이 없습니다.");
+                return;
+            }
+            nav(`/editor?room=${encodeURIComponent(roomCode)}&src=${encodeURIComponent(d.id)}`);
+        },
+        [nav, roomCode]
+    );
 
     return (
-        <div className="app-shell">
-            <div className="topbar">
-                <h1 style={{ margin: 0 }}>자료함</h1>
-                <span className="badge">room: {roomCode || "-"}</span>
-                <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
-                    <a className="btn" href={studentUrl} target="_blank" rel="noreferrer">학생 링크</a>
-                    <button className="btn" onClick={() => nav(`/teacher?room=${roomCode}&mode=setup`)}>교사 설정</button>
-                    <button className="btn btn-primary" onClick={() => nav(`/teacher?room=${roomCode}&mode=present`)}>발표로 이동</button>
-                </div>
+        <div className="px-4 py-4 max-w-6xl mx-auto">
+            <div className="flex items-center justify-between mb-3">
+                <h1 className="text-xl font-semibold">자료함</h1>
+                <div className="text-sm opacity-70">room: <code>{roomCode || "(미지정)"}</code></div>
             </div>
 
-            <div className="panel" style={{ marginBottom: 12 }}>
-                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                    <input className="input" placeholder="제목 검색" value={q} onChange={(e) => setQ(e.target.value)} style={{ maxWidth: 360 }} />
-                    <button className="btn" onClick={loadDecks} disabled={loading}>{loading ? "새로고침…" : "새로고침"}</button>
-                    <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" }}>
-                        <span style={{ fontSize: 13, opacity: 0.75 }}>불러올 슬롯</span>
-                        <select className="input" value={slotSel} onChange={(e) => setSlotSel(Number(e.target.value))}>
-                            {[1,2,3,4,5,6].map((n) => <option key={n} value={n}>{n}교시</option>)}
-                        </select>
+            <div className="flex items-center gap-2 mb-4">
+                <input
+                    className="px-3 py-2 rounded-md border border-slate-300 w-full"
+                    placeholder="제목으로 검색…"
+                    value={keyword}
+                    onChange={(e) => setKeyword(e.target.value)}
+                />
+                <button
+                    className="px-3 py-2 rounded-md border border-slate-300 bg-white"
+                    onClick={() => setKeyword("")}
+                >
+                    초기화
+                </button>
+            </div>
+
+            {loading && <div className="opacity-70">불러오는 중…</div>}
+            {error && <div className="text-red-500">{error}</div>}
+
+            {!loading && !error && filtered.length === 0 && (
+                <div className="opacity-60">자료가 없습니다.</div>
+            )}
+
+            <div
+                className="grid gap-4"
+                style={{
+                    gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))",
+                }}
+            >
+                {filtered.map((d) => (
+                    <div
+                        key={d.id}
+                        className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm flex flex-col"
+                    >
+                        <div className="text-sm font-medium mb-2 line-clamp-2">{d.title || "Untitled"}</div>
+                        {d.file_key ? <Thumb keyStr={d.file_key} /> : <div className="h-[140px] bg-slate-100 rounded-md mb-2" />}
+
+                        <div className="mt-auto flex items-center gap-2">
+                            {d.file_key && <OpenSignedLink fileKey={d.file_key}>링크 열기</OpenSignedLink>}
+                            <button
+                                className="px-3 py-1.5 rounded-md bg-emerald-600 hover:bg-emerald-500 text-white ml-auto"
+                                onClick={() => setPreview(d)}
+                            >
+                                미리보기
+                            </button>
+                            <button
+                                className="px-3 py-1.5 rounded-md bg-indigo-600 hover:bg-indigo-500 text-white"
+                                onClick={() => openEditClone(d)}
+                            >
+                                편집
+                            </button>
+                        </div>
+                    </div>
+                ))}
+            </div>
+
+            {/* Preview Modal */}
+            {preview && (
+                <PreviewModal
+                    deck={preview}
+                    onClose={() => setPreview(null)}
+                    page={previewPage}
+                    setPage={setPreviewPage}
+                />
+            )}
+        </div>
+    );
+}
+
+function PreviewModal({
+                          deck,
+                          onClose,
+                          page,
+                          setPage,
+                      }: {
+    deck: DeckRow;
+    onClose: () => void;
+    page: number;
+    setPage: (n: number) => void;
+}) {
+    const fileUrl = useSignedUrl(deck.file_key);
+    const total = Math.max(1, Number(deck.file_pages || 1));
+
+    const dec = React.useCallback(() => setPage(Math.max(1, page - 1)), [page, setPage]);
+    const inc = React.useCallback(() => setPage(Math.min(total, page + 1)), [page, setPage, total]);
+
+    React.useEffect(() => {
+        // 파일 바뀌면 1페이지로
+        setPage(1);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [deck.id]);
+
+    return (
+        <div
+            className="fixed inset-0 z-50 bg-black/50 grid"
+            style={{ placeItems: "center" }}
+            role="dialog"
+            aria-modal="true"
+        >
+            <div className="bg-white rounded-xl w-[min(1000px,92vw)] h-[min(90vh,900px)] shadow-xl flex flex-col overflow-hidden">
+                <div className="px-4 py-3 border-b border-slate-200 flex items-center gap-2">
+                    <div className="font-medium truncate">{deck.title || "Untitled"}</div>
+                    <div className="ml-auto flex items-center gap-2">
+                        <button
+                            className="px-2 py-1 rounded-md border"
+                            onClick={dec}
+                            disabled={page <= 1}
+                        >
+                            ◀
+                        </button>
+                        <div className="text-sm tabular-nums">
+                            {page} / {total}
+                        </div>
+                        <button
+                            className="px-2 py-1 rounded-md border"
+                            onClick={inc}
+                            disabled={page >= total}
+                        >
+                            ▶
+                        </button>
+                        <button
+                            className="px-3 py-1.5 rounded-md bg-slate-800 text-white"
+                            onClick={onClose}
+                        >
+                            닫기
+                        </button>
                     </div>
                 </div>
+
+                <div
+                    className="pdf-stage"
+                    style={{
+                        flex: 1,
+                        overflow: "auto",
+                        background: "#f3f4f6",
+                        padding: 12,
+                        display: "grid",
+                        placeItems: "center",
+                    }}
+                >
+                    {fileUrl ? (
+                        <PdfViewer fileUrl={fileUrl} page={page} maxHeight="80vh" />
+                    ) : (
+                        <div style={{ padding: 16, textAlign: "center", opacity: 0.6 }}>파일을 불러올 수 없습니다.</div>
+                    )}
+                </div>
             </div>
-
-            <div className="panel">
-                {errMsg ? (
-                    <div style={{ color: "#ef4444" }}>{errMsg}</div>
-                ) : filt.length === 0 ? (
-                    <div style={{ opacity: 0.6 }}>{loading ? "불러오는 중..." : "업로드된 PDF가 없습니다."}</div>
-                ) : (
-                    <div style={{ display: "grid", gap: 10, gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))" }}>
-                        {filt.map((d) => (
-                            <div key={d.id} className="card" style={{ padding: 10 }}>
-                                <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-                                    <div style={{ fontWeight:700, marginBottom:4, flex:1 }}>
-                                        {d.title ?? d.ext_id}
-                                    </div>
-                                    <span className="badge" title={d.id}>id: {d.id.slice(0,8)}…</span>
-                                </div>
-                                <div style={{ fontSize:12, opacity:0.7, marginBottom:8 }}>{d.ext_id}</div>
-
-                                {d.file_key ? (
-                                       <Thumb keyStr={d.file_key} />
-                                     ) : (
-                                    <div style={{ height:140, marginBottom:8, borderRadius:8, display:"grid", placeItems:"center", border:"1px dashed rgba(148,163,184,0.35)", color:"#94a3b8", fontSize:12 }}>
-                                        파일 없음
-                                    </div>
-                                )}
-
-                                <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
-                                    {d.file_key && <OpenSignedLink fileKey={d.file_key} />}
-                                    {d.file_key && <button className="btn" onClick={() => setPreview(d)}>미리보기</button>}
-                                    <button className="btn btn-primary" onClick={() => assignAndUse(d)}>지금 불러오기</button>
-                                    <button className="btn" onClick={() => {
-                                        if (!d.file_key) { alert("원본 덱에 파일이 없습니다."); return; }
-                                        nav(`/editor?room=${roomCode}&src=${d.id}`); // ← 복제 편집 진입
-                                    }}
-                                    >편집</button>
-                                </div>
-                            </div>
-                        ))}
-                    </div>
-                )}
-            </div>
-
-            {preview && preview.file_key && <PreviewModal preview={preview} onClose={() => setPreview(null)} />}
         </div>
     );
 }
