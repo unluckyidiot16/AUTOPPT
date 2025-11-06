@@ -176,11 +176,22 @@ export default function PdfLibraryPage() {
         try {
             const roomId = await getRoomIdByCode(roomCode);
             if (d.origin === "db") {
-                // DB 덱은 RPC로 바로 배정
-                const { error } = await supabase.rpc("assign_room_deck_by_ext", {
-                    p_code: roomCode, p_deck_id: d.id, p_slot: slot
-                });
-                if (error) throw error;
+                // DB 덱: RPC 우선 → 없으면 클라이언트 폴백 upsert
+                try {
+                    const { error } = await supabase.rpc("assign_room_deck_by_ext", {
+                        p_code: roomCode, p_deck_id: d.id, p_slot: slot
+                              });
+                              if (error) throw error;
+                            } catch (e: any) {
+                              const msg = String(e?.message || "");
+                              const isMissing = msg.includes("Could not find the function") || e?.status === 404;
+                              if (!isMissing) throw e;
+                              // 폴백: room_decks upsert (room_id,slot 유니크 가정)
+                                  const { error: upErr } = await supabase
+                                .from("room_decks")
+                                .upsert({ room_id: roomId, slot, deck_id: d.id }, { onConflict: "room_id,slot" });
+                              if (upErr) throw upErr;
+                }
             } else {
                 // 스토리지만 있는 항목은 복제 후 배정
                 if (!d.file_key) throw new Error("파일이 없습니다.");
@@ -221,11 +232,25 @@ export default function PdfLibraryPage() {
             {error && <div className="text-red-500">{error}</div>}
 
             {/* 🔳 Grid 레이아웃 (카드 폭 최소 220px) */}
-            <div className="grid gap-4" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))" }}>
+            <div
+                style={{
+                    display: "grid",
+                      gap: 16,
+                      gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))",
+                      alignItems: "start",
+                    }}
+                  >
                 {filtered.map((d) => {
                     const slot = slotSel[d.id] ?? 1;
                     return (
-                        <div key={d.id} className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm flex flex-col">
+                        <div key={d.id}
+                                  style={{
+                                        borderRadius: 12,
+                                            border: "1px solid rgba(148,163,184,.35)",
+                                            background: "#fff",
+                                            padding: 12,
+                                            display: "flex", 
+                                          flexDirection: "column",}}>
                             <div className="text-sm font-medium line-clamp-2">{d.title || "Untitled"}</div>
                             <div className="text-[11px] opacity-60 mb-2">{d.origin === "db" ? "DB" : "Storage"}</div>
                             {d.file_key ? <Thumb keyStr={d.file_key} /> : <div className="h-[110px] bg-slate-100 rounded-md" />}
@@ -235,6 +260,7 @@ export default function PdfLibraryPage() {
                                    onClick={(e) => { if (!d.file_key) e.preventDefault(); }}>
                                     링크 열기
                                 </a>
+                                {d.file_key && <OpenSignedLink fileKey={d.file_key}>링크 열기</OpenSignedLink>}
                                 <button className="px-2 py-1 rounded-md bg-emerald-600 hover:bg-emerald-500 text-white text-sm ml-auto" onClick={() => openEdit(d)}>편집</button>
                             </div>
 
@@ -262,7 +288,6 @@ export default function PdfLibraryPage() {
     );
 }
 
-/** 앵커에서 쓰기 편하게: fileKey → 서명 URL 프라미스 없이 링크 흉내 */
 function awaitableLink(fileKey: string) {
     // 실사용 시엔 바로 클릭되므로 의미는 적지만, 새 탭에서 열어도 문제 없게 캐시버스터 없는 public 폴백 포함
     // (PdfViewer는 getPdfUrlFromKey를 쓰고, 여기서는 사용자 클릭 편의상 서명 URL 실패해도 열리게 처리)
