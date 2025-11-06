@@ -6,10 +6,11 @@ import PdfViewer from "../components/PdfViewer";
 import { getPdfUrlFromKey } from "../utils/supaFiles";
 
 type DeckRow = {
-    id: string;
+    id: string;                         // DB 덱이면 uuid, 스토리지 항목이면 "s:<file_key>"
     title: string | null;
     file_key: string | null;
     file_pages: number | null;
+    origin: "db" | "storage";
 };
 
 function useSignedUrl(key: string | null | undefined, ttlSec = 1800) {
@@ -89,39 +90,114 @@ export default function PdfLibraryPage() {
     const filtered = React.useMemo(() => {
         if (!keyword.trim()) return decks;
         const k = keyword.trim().toLowerCase();
-        return decks.filter((d) => (d.title || "").toLowerCase().includes(k));
+        return decks.filter((d) =>
+            (d.title || "").toLowerCase().includes(k) ||
+            (d.file_key || "").toLowerCase().includes(k)
+        );
     }, [decks, keyword]);
 
-    // ✅ 목록 로직: RPC(list_library_decks) 우선 → 실패 시 SELECT 폴백
+    // ---------- Storage 인덱스 스캐너 (presentations/decks/*/slides-*.pdf) ----------
+    async function fetchFromStorage(limitFolders = 120): Promise<DeckRow[]> {
+        type SFile = { name: string; updated_at?: string | null; created_at?: string | null; };
+        const bucket = supabase.storage.from("presentations");
+
+        // 1) 상위 폴더(= deckId로 쓰는 UUID 폴더) 나열
+        const top = await bucket.list("decks", {
+            limit: 1000,
+            sortBy: { column: "updated_at", order: "desc" },
+        });
+        if (top.error) throw top.error;
+
+        const folders = (top.data || []).slice(0, limitFolders).map((f) => f.name).filter(Boolean);
+
+        const rows: DeckRow[] = [];
+        for (const folder of folders) {
+            const path = `decks/${folder}`;
+            // 2) 각 폴더 내 PDF 파일 조회(최신 우선)
+            const ls = await bucket.list(path, {
+                limit: 50,
+                sortBy: { column: "updated_at", order: "desc" },
+            });
+            if (ls.error) continue;
+            const files = (ls.data as SFile[]) || [];
+            // slides-*.pdf 우선, 없으면 아무 pdf
+            const pick =
+                files.find((f) => /slides-.*\.pdf$/i.test(f.name)) ||
+                files.find((f) => /\.pdf$/i.test(f.name));
+            if (!pick) continue;
+
+            const file_key = `${path}/${pick.name}`;
+            rows.push({
+                id: `s:${file_key}`,
+                title: folder,                // 폴더명을 제목으로 (간단)
+                file_key,
+                file_pages: null,
+                origin: "storage",
+            });
+            // 결과가 너무 많아지는 것 방지
+            if (rows.length >= 200) break;
+        }
+        return rows;
+    }
+
+    // ---------- RPC 우선 + Storage 병합 ----------
     React.useEffect(() => {
         let cancel = false;
         (async () => {
             setLoading(true);
             setError(null);
             try {
-                // 1) RPC 우선
-                let rows: DeckRow[] = [];
+                let merged: DeckRow[] = [];
+
+                // 1) RPC (DB)
                 try {
                     const { data, error } = await supabase.rpc("list_library_decks", { p_limit: 200 });
                     if (error) throw error;
-                    rows = (data as DeckRow[]) ?? [];
-                    console.debug("[LIB] rpc:list_library_decks =", rows.length);
+                    const dbRows: DeckRow[] = (data || []).map((d: any) => ({
+                        id: d.id,
+                        title: d.title ?? null,
+                        file_key: d.file_key ?? null,
+                        file_pages: d.file_pages ?? null,
+                        origin: "db" as const,
+                    }));
+                    merged = dbRows;
+                    console.debug("[LIB] rpc:list_library_decks =", dbRows.length);
                 } catch (e) {
-                    console.debug("[LIB] rpc:list_library_decks failed, fallback to SELECT", e);
-                    // 2) 폴백: RLS 허용 범위 내에서 파일이 있는 덱만
+                    console.debug("[LIB] rpc failed, fallback SELECT", e);
                     const { data: anyDecks, error: eAll } = await supabase
                         .from("decks")
                         .select("id,title,file_key,file_pages")
                         .not("file_key", "is", null)
                         .limit(200);
-                    if (eAll) throw eAll;
-                    rows = (anyDecks as DeckRow[]) ?? [];
-                    console.debug("[LIB] plain decks =", rows.length);
+                    if (!eAll) {
+                        merged = (anyDecks || []).map((d: any) => ({
+                            id: d.id,
+                            title: d.title ?? null,
+                            file_key: d.file_key ?? null,
+                            file_pages: d.file_pages ?? null,
+                            origin: "db" as const,
+                        }));
+                    }
                 }
 
-                if (!cancel) setDecks(rows);
-                if (!cancel && rows.length === 0) {
-                    setError("표시할 자료가 없습니다. (RLS/권한/연결 미설정)");
+                // 2) Storage 스캔 병합(중복 file_key 제거)
+                try {
+                    const sRows = await fetchFromStorage(120);
+                    const byKey = new Map<string, DeckRow>();
+                    for (const r of merged) if (r.file_key) byKey.set(r.file_key, r);
+                    for (const r of sRows) {
+                        if (!r.file_key) continue;
+                        if (!byKey.has(r.file_key)) byKey.set(r.file_key, r);
+                    }
+                    merged = Array.from(byKey.values());
+                    console.debug("[LIB] storage merged total =", merged.length);
+                } catch (e) {
+                    console.debug("[LIB] storage scan failed", e);
+                }
+
+                if (!cancel) setDecks(merged);
+                if (!cancel && merged.length === 0) {
+                    setError("표시할 자료가 없습니다. (DB/RPC 또는 스토리지에 자료 없음)");
                 }
             } catch (e: any) {
                 if (!cancel) setError(e?.message || "목록을 불러오지 못했어요.");
@@ -132,17 +208,23 @@ export default function PdfLibraryPage() {
         return () => { cancel = true; };
     }, []);
 
-    const openEditClone = React.useCallback(
+    const openEdit = React.useCallback(
         (d: DeckRow) => {
             if (!roomCode) {
                 alert("room 파라미터가 필요합니다.");
                 return;
             }
             if (!d.file_key) {
-                alert("원본 덱에 파일이 없습니다.");
+                alert("파일이 없습니다.");
                 return;
             }
-            nav(`/editor?room=${encodeURIComponent(roomCode)}&src=${encodeURIComponent(d.id)}`);
+            if (d.origin === "db") {
+                // DB 덱 → 복제 편집 (src=덱ID)
+                nav(`/editor?room=${encodeURIComponent(roomCode)}&src=${encodeURIComponent(d.id)}`);
+            } else {
+                // 스토리지 전용 → 파일키 기반 복제 편집 (srcKey=파일키)
+                nav(`/editor?room=${encodeURIComponent(roomCode)}&srcKey=${encodeURIComponent(d.file_key)}`);
+            }
         },
         [nav, roomCode]
     );
@@ -157,7 +239,7 @@ export default function PdfLibraryPage() {
             <div className="flex items-center gap-2 mb-4">
                 <input
                     className="px-3 py-2 rounded-md border border-slate-300 w-full"
-                    placeholder="제목으로 검색…"
+                    placeholder="제목/경로 검색…"
                     value={keyword}
                     onChange={(e) => setKeyword(e.target.value)}
                 />
@@ -185,7 +267,11 @@ export default function PdfLibraryPage() {
                         key={d.id}
                         className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm flex flex-col"
                     >
-                        <div className="text-sm font-medium mb-2 line-clamp-2">{d.title || "Untitled"}</div>
+                        <div className="text-sm font-medium mb-1 line-clamp-2">{d.title || "Untitled"}</div>
+                        <div className="text-[11px] opacity-60 mb-2">
+                            {d.origin === "db" ? "DB" : "Storage"} {d.file_key ? `· ${d.file_key}` : ""}
+                        </div>
+
                         {d.file_key ? <Thumb keyStr={d.file_key} /> : <div className="h-[140px] bg-slate-100 rounded-md mb-2" />}
 
                         <div className="mt-auto flex items-center gap-2">
@@ -198,7 +284,7 @@ export default function PdfLibraryPage() {
                             </button>
                             <button
                                 className="px-3 py-1.5 rounded-md bg-indigo-600 hover:bg-indigo-500 text-white"
-                                onClick={() => openEditClone(d)}
+                                onClick={() => openEdit(d)}
                             >
                                 편집
                             </button>

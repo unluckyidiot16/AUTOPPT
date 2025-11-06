@@ -73,6 +73,8 @@ export default function DeckEditorPage() {
     const deckFromQS = qs.get("deck");
     const sourceDeckId = qs.get("src");
 
+    const srcKey = qs.get("srcKey");
+
     const [deckId, setDeckId] = useState<string | null>(deckFromQS);
 
     const [items, setItems] = useState<ManifestItem[]>([]);
@@ -145,6 +147,53 @@ export default function DeckEditorPage() {
         return () => { cancel = true; };
     }, [roomCode, deckFromQS, sourceDeckId]);
 
+    async function ensureEditingDeckFromFileKey({ roomCode, fileKey, slot = 1 }:{
+        roomCode: string; fileKey: string; slot?: number;
+    }) {
+        const { data: room, error: eRoom } = await supabase.from("rooms").select("id").eq("code", roomCode).maybeSingle();
+        if (eRoom || !room?.id) throw eRoom ?? new Error("room not found");
+        const roomId = room.id as string;
+
+        const ins = await supabase.from("decks").insert({ title: "Untitled (편집)", is_temp: true }).select("id").single();
+        if (ins.error) throw ins.error;
+        const newDeckId = ins.data.id as string;
+
+        await supabase.from("room_decks").upsert({ room_id: roomId, deck_id: newDeckId, slot });
+
+        const ts = Date.now();
+        const destKey = `rooms/${roomId}/decks/${newDeckId}/slides-${ts}.pdf`;
+
+        // copy → download/upload 폴백
+        let copied = false;
+        try { const { error } = await supabase.storage.from("presentations").copy(fileKey, destKey); if (!error) copied = true; } catch {}
+        if (!copied) {
+            const dl = await supabase.storage.from("presentations").download(fileKey);
+            if (dl.error) throw dl.error;
+            const up = await supabase.storage.from("presentations").upload(destKey, dl.data, {
+                contentType: "application/pdf", upsert: true,
+            });
+            if (up.error) throw up.error;
+        }
+
+        await supabase.from("decks").update({ file_key: destKey }).eq("id", newDeckId);
+
+        const { data: sdata, error: serr } = await supabase.storage.from("presentations").createSignedUrl(destKey, 1800);
+        if (serr || !sdata?.signedUrl) throw serr ?? new Error("signed url 실패");
+        const u = new URL(sdata.signedUrl); u.hash = `v=${Math.floor(Date.now()/60000)}`;
+
+        return { roomId, deckId: newDeckId, signedUrl: u.toString(), totalPages: 0 };
+    }
+
+// useEffect 안 분기
+    if (srcKey) {
+        const ensured = await ensureEditingDeckFromFileKey({ roomCode, fileKey: srcKey, slot: 1 });
+        setDeckId(ensured.deckId);
+        setFileUrl(ensured.signedUrl);
+        setTotalPages(ensured.totalPages);
+        setRoomIdState(ensured.roomId);
+        // 이후 manifest 로드 등 동일
+    }
+    
     async function cloneDeckFromSource(roomCode: string, sourceDeckId: string) {
         // room
         const { data: room, error: eRoom } = await supabase.from("rooms").select("id").eq("code", roomCode).maybeSingle();
