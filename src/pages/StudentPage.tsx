@@ -217,7 +217,7 @@ export default function StudentPage() {
                                 const viewerUrl = `${deckFileUrl}?v=${currentDeckId || "none"}-${p}`;   // ✅ 캐시버스터
                                 return (
                                     <PdfViewer
-                                        key={`${viewerUrl}|student`}   // ✅ 강제 리마운트
+                                        key={`${deckFileUrl}|${currentDeckId}|p-${p}|student`}
                                         fileUrl={viewerUrl}
                                         page={p}
                                     />

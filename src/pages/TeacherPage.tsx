@@ -129,6 +129,15 @@ export default function TeacherPage() {
         return manifest[idx] ?? null;
     }
 
+    // 현재 아이템 스냅샷으로 키 생성(분기/문구 변경에도 재마운트 유도)
+    const manifestKey = useMemo(() => {
+        const it = currentItem();
+        if (!it) return `none-${page}`;
+        return it.type === "page"
+            ? `p-${(it as ManifestPageItem).srcPage}`
+            : `q-${(it as ManifestQuizItem).keywords.length}-${(it as ManifestQuizItem).prompt?.length ?? 0}`;
+    }, [manifest, page]);
+
 
     // ---- Room row ----
     const refreshRoomState = useCallback(async () => {
@@ -365,8 +374,8 @@ export default function TeacherPage() {
                             const viewerUrl = `${deckFileUrl}?v=${currentDeckId || "none"}-${p}`; // ✅ 캐시버스터
                             return (
                                 <PdfViewer
-                                    key={`${viewerUrl}|present|${manifestKey}`}   // ✅ 강제 리마운트
-                                    fileUrl={viewerUrl}
+                                    key={`${deckFileUrl}|${currentDeckId}|p-${p}|present|${manifestKey}`}
+                                    fileUrl={deckFileUrl!}
                                     page={p}
                                 />
                             );
@@ -406,7 +415,7 @@ export default function TeacherPage() {
                             const viewerUrl = `${deckFileUrl}?v=${currentDeckId || "none"}-${p}`; // ✅ 캐시버스터
                             return (
                                 <PdfViewer
-                                    key={`${viewerUrl}|setup|${manifestKey}`}   // ✅ 강제 리마운트
+                                    key={`${deckFileUrl}|${currentDeckId}|p-${p}|setup|${manifestKey}`}
                                     fileUrl={viewerUrl}
                                     page={p}
                                     maxHeight="500px"
