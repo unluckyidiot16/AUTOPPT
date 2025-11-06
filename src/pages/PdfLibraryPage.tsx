@@ -256,10 +256,6 @@ export default function PdfLibraryPage() {
                             {d.file_key ? <Thumb keyStr={d.file_key} /> : <div className="h-[110px] bg-slate-100 rounded-md" />}
 
                             <div className="mt-3 flex items-center gap-2">
-                                <a className="px-2 py-1 rounded-md border text-sm" href={d.file_key ? (awaitableLink(d.file_key)) : "#"} target="_blank" rel="noreferrer"
-                                   onClick={(e) => { if (!d.file_key) e.preventDefault(); }}>
-                                    링크 열기
-                                </a>
                                 {d.file_key && <OpenSignedLink fileKey={d.file_key}>링크 열기</OpenSignedLink>}
                                 <button className="px-2 py-1 rounded-md bg-emerald-600 hover:bg-emerald-500 text-white text-sm ml-auto" onClick={() => openEdit(d)}>편집</button>
                             </div>
@@ -288,9 +284,29 @@ export default function PdfLibraryPage() {
     );
 }
 
-function awaitableLink(fileKey: string) {
-    // 실사용 시엔 바로 클릭되므로 의미는 적지만, 새 탭에서 열어도 문제 없게 캐시버스터 없는 public 폴백 포함
-    // (PdfViewer는 getPdfUrlFromKey를 쓰고, 여기서는 사용자 클릭 편의상 서명 URL 실패해도 열리게 처리)
-    const u = supabase.storage.from("presentations").getPublicUrl(fileKey).data.publicUrl;
-    return u;
-}
+function OpenSignedLink({ fileKey, children }: { fileKey: string; children: React.ReactNode }) {
+    const [href, setHref] = React.useState<string>("");
+    React.useEffect(() => {
+            let alive = true;
+            (async () => {
+                  try {
+                        const u = await getPdfUrlFromKey(fileKey, { ttlSec: 1800 });
+                        if (alive) setHref(u);
+                      } catch {
+                        if (alive) setHref("");
+                      }
+                })();
+            return () => { alive = false; };
+          }, [fileKey]);
+      return (
+            <a
+      className="px-2 py-1 rounded-md border text-sm"
+          href={href || "#"}
+          target="_blank"
+          rel="noreferrer"
+          onClick={(e) => { if (!href) e.preventDefault(); }}
+        >
+          {children}
+        </a>
+      );
+    }

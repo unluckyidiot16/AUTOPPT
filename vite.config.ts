@@ -4,7 +4,7 @@ import react from "@vitejs/plugin-react";
 
 export default defineConfig({
     plugins: [react()],
-    base: "/AUTOPPT/", // <= 레포 이름
+    base: process.env.GITHUB_PAGES ? '/AUTOPPT/' : '/',
     server: {
         host: true,
         port: 5173,
