@@ -183,7 +183,7 @@ export default function StudentPage() {
     };
 
     return (
-        <div className="app-shell" style={{ maxWidth: 560 }}>
+        <div className="app-shell" style={{ maxWidth: 1080 }}>
             <div className="topbar" style={{ marginBottom: 14 }}>
                 <h1 style={{ fontSize: 18, margin: 0 }}>학생 화면</h1>
                 <span className="badge" style={NW}>room: {roomCode}</span>
@@ -225,11 +225,14 @@ export default function StudentPage() {
                                 const p = (item && item.type === "page") ? (item as ManifestPageItem).srcPage : page;
                                 const viewerUrl = `${deckFileUrl}?v=${currentDeckId || "none"}-${p}`;   // ✅ 캐시버스터
                                 return (
-                                    <PdfViewer
-                                        key={`${deckFileUrl}|${currentDeckId}|p-${p}|student`}
-                                        fileUrl={viewerUrl}
-                                        page={p}
-                                    />
+                                       <div style={{ display:"grid", placeItems:"center" }}>
+                                             <PdfViewer
+                                               key={`${deckFileUrl}|${currentDeckId}|p-${p}|student`}
+                                               fileUrl={viewerUrl}
+                                               page={p}
+                                               maxHeight="76vh"
+                                             />
+                                       </div>
                                 );
                             })()
                         ) : (

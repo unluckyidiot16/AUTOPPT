@@ -12,7 +12,7 @@ function fmtDate(s?: string | null) {
     return d.toLocaleString();
 }
 
-type Room = { id: string; code: string; name?: string | null; created_at?: string };
+type Room = { id: string; code: string; title?: string | null; created_at?: string };
 type Deck = {
     id: string; title?: string | null; is_temp?: boolean | null; file_key?: string | null;
     file_pages?: number | null; created_at?: string | null; archived_at?: string | null;
@@ -53,7 +53,7 @@ export default function AdminDataHealth() {
         try {
             const [{ data: r, error: er }, { data: d, error: ed }, { data: rd, error: erd }] =
                 await Promise.all([
-                    supabase.from("rooms").select("id,code,name,created_at").order("created_at", { ascending: false }),
+                    supabase.from("rooms").select("id,code,title,created_at").order("created_at", { ascending: false }),
                     supabase.from("decks").select("id,title,is_temp,file_key,file_pages,created_at,archived_at").order("created_at", { ascending: false }).limit(500),
                     supabase.from("room_decks").select("room_id,deck_id,slot").limit(2000),
                 ]);
@@ -203,7 +203,7 @@ export default function AdminDataHealth() {
                         return (
                             <div key={r.id} style={{ border: "1px solid #e5e7eb", borderRadius: 10, padding: 12 }}>
                                 <div className="flex items-center gap-2 mb-2">
-                                    <div className="font-medium">{r.name || "(no name)"} <span className="opacity-60">· {r.code}</span></div>
+                                    <div className="font-medium">{r.title || "(no title)"} <span className="opacity-60">· {r.code}</span></div>
                                     <div className="ml-auto text-xs opacity-70">{fmtDate(r.created_at)}</div>
                                 </div>
                                 <div className="text-xs opacity-70 mb-2"><code>{r.id}</code></div>

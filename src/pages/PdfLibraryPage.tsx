@@ -214,9 +214,15 @@ export default function PdfLibraryPage() {
     return (
         <div className="px-4 py-4 max-w-7xl mx-auto">
             <div className="flex items-center justify-between mb-3">
-                <h1 className="text-xl font-semibold">자료함</h1>
-                <div className="text-sm opacity-70">room: <code>{roomCode || "(미지정)"}</code></div>
-            </div>
+                   <div className="flex items-center gap-2">
+                     <button
+                       className="px-3 py-2 rounded-md border border-slate-300"
+                       onClick={() => nav(`/teacher?room=${encodeURIComponent(roomCode)}&mode=setup`)}
+                     >← 뒤로</button>
+                     <h1 className="text-xl font-semibold">자료함</h1>
+                   </div>
+               <div className="text-sm opacity-70">room: <code>{roomCode || "(미지정)"}</code></div>
+             </div>
 
             <div className="flex items-center gap-2 mb-4">
                 <input
