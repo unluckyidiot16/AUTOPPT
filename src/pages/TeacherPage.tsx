@@ -51,6 +51,21 @@ async function gotoPageSafe(roomCode: string, nextPage: number): Promise<"ok" | 
     return "fail";
 }
 
+function withViewerCachebuster(url: string, v: string) {
+    try {
+        const u = new URL(url);
+        // Supabase 서명 URL은 query에 토큰이 있으니, 절대 query를 건드리지 말고 hash만 쓴다.
+        if (u.pathname.includes("/object/sign/") || u.searchParams.has("token") || u.searchParams.has("expires")) {
+            u.hash = `v=${encodeURIComponent(v)}`;
+        } else {
+            u.searchParams.set("v", v);
+        }
+        return u.toString();
+    } catch {
+        return url;
+    }
+}
+
 
 /** 쿼리스트링 */
 function useQS() {
@@ -390,7 +405,7 @@ export default function TeacherPage() {
                                 );
                             }
                             const p = (item && item.type === "page") ? (item as ManifestPageItem).srcPage : page;
-                            const viewerUrl = `${deckFileUrl}?v=${currentDeckId || "none"}-${p}`; // 캐시버스터
+                            const viewerUrl = withViewerCachebuster(deckFileUrl, `${currentDeckId || "none"}-${p}`);
                             return (
                                 <PdfViewer
                                     key={`${deckFileUrl}|${currentDeckId}|p-${p}|present|${manifestKey}`}
@@ -430,7 +445,7 @@ export default function TeacherPage() {
                                 );
                             }
                             const p = (item && item.type === "page") ? (item as ManifestPageItem).srcPage : page;
-                            const viewerUrl = `${deckFileUrl}?v=${currentDeckId || "none"}-${p}`; // 캐시버스터
+                            const viewerUrl = withViewerCachebuster(deckFileUrl, `${currentDeckId || "none"}-${p}`);
                             return (
                                 <PdfViewer
                                     key={`${deckFileUrl}|${currentDeckId}|p-${p}|setup|${manifestKey}`}
