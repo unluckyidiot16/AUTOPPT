@@ -1,11 +1,10 @@
 // src/components/EditorPreviewPane.tsx
 import React, { useMemo, useRef, useState } from "react";
-import PdfViewer from "./PdfViewer";
+import StaticPdfPage from "./StaticPdfPage";
 
 type QuizLike = {
     prompt?: string;
     keywords?: string[];
-    // 배치
     attachToSrcPage?: number;
     position?: "tl" | "tr" | "bl" | "br" | "free";
     posX?: number; // 0..1
@@ -25,10 +24,9 @@ function styleFor(pos: QuizLike, container: HTMLDivElement | null) {
     };
     const p = pos.position || "tl";
     if (p === "free") {
-        const rect = container?.getBoundingClientRect?.();
         const x = Math.max(0, Math.min(1, pos.posX ?? 0.05));
         const y = Math.max(0, Math.min(1, pos.posY ?? 0.05));
-        return { ...base, left: `${x * 100}%`, top: `${y * 100}%`, transform: "translate(-0%, -0%)" };
+        return { ...base, left: `${x * 100}%`, top: `${y * 100}%` };
     }
     const map: Record<string, React.CSSProperties> = {
         tl: { left: 12, top: 12 },
@@ -61,14 +59,11 @@ export default function EditorPreviewPane({
     })), [quizzes]);
 
     const onMouseDown = (e: React.MouseEvent, idx: number) => {
-        if (!editable) return;
-        setDragIdx(idx);
-        e.preventDefault();
+        if (!editable) return; setDragIdx(idx); e.preventDefault();
     };
     const onMouseMove = (e: React.MouseEvent) => {
         if (!editable || dragIdx === null) return;
-        const host = hostRef.current;
-        if (!host) return;
+        const host = hostRef.current; if (!host) return;
         const rect = host.getBoundingClientRect();
         const x = (e.clientX - rect.left) / rect.width;
         const y = (e.clientY - rect.top) / rect.height;
@@ -90,9 +85,9 @@ export default function EditorPreviewPane({
                 onMouseUp={onMouseUp}
                 style={{ position: "relative" }}
             >
-                {/* 본문 */}
+                {/* 본문: 정적 PDF 페이지만 렌더 (부작용 없음) */}
                 {page > 0 && fileUrl ? (
-                    <PdfViewer key={`${fileUrl}|preview|${page}`} fileUrl={fileUrl} page={page} maxHeight={height} />
+                    <StaticPdfPage fileUrl={fileUrl} page={page} maxHeight={height} />
                 ) : (
                     <div
                         style={{
