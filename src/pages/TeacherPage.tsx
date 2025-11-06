@@ -50,6 +50,27 @@ async function gotoPageSafe(roomCode: string, nextPage: number): Promise<"ok" | 
     return "fail";
 }
 
+// 파일 상단 근처에 추가
+async function getReadablePdfUrlFromKey(key: string): Promise<string> {
+    // 1) signed url 우선
+    try {
+        const { data, error } = await supabase
+            .storage.from("presentations")
+            .createSignedUrl(key, 60); // 60초
+        if (!error && data?.signedUrl) {
+            const u = new URL(data.signedUrl);
+            u.searchParams.set("v", String(Math.floor(Date.now() / 60000)));
+            return u.toString();
+        }
+    } catch {}
+    // 2) public URL 폴백
+    const raw = supabase.storage.from("presentations").getPublicUrl(key).data.publicUrl;
+    const u = new URL(raw);
+    u.searchParams.set("v", String(Math.floor(Date.now() / 60000)));
+    return u.toString();
+}
+
+
 /** 쿼리스트링 */
 function useQS() {
     const { search } = useLocation();
@@ -90,12 +111,12 @@ function useFullscreenTarget(selector: string) {
 
 export default function TeacherPage() {
     const nav = useNavigate();
-    const qs = useQS();
-    const toast = useToast();
+    const qs = new URLSearchParams(location.search);  // 먼저 선언
+    const roomCode = qs.get("room") || "";
+    const deckFromQS = qs.get("deck");
 
     // ---- Room ----
     const defaultCode = useMemo(() => "CLASS-" + Math.random().toString(36).slice(2, 8).toUpperCase(), []);
-    const roomCode = useRoomId(defaultCode);
     const [roomId, setRoomId] = useState<string | null>(null);
     const [page, setPage] = useState<number>(1);
     const [currentDeckId, setCurrentDeckId] = useState<string | null>(null);
@@ -233,9 +254,9 @@ export default function TeacherPage() {
 
     // ---- Student URL ----
     const studentUrl = useMemo(() => {
-        const base = getBasePath(); // 배포 BasePath (예: /AUTOPPT)
-        return `${location.origin}${base}/#/student?room=${roomCode}`;
-        }, [roomCode]);
+           const base = getBasePath(); // 예: /AUTOPPT
+           return `${location.origin}${base}/#/student?room=${roomCode}`;
+         }, [roomCode]);
 
     // ---- Current deck file url + total pages ----
     const [deckFileUrl, setDeckFileUrl] = useState<string | null>(null);
@@ -249,8 +270,8 @@ export default function TeacherPage() {
                 if (cancelled) return;
                 if (key) {
                     // 공개 URL
-                    const url = supabase.storage.from("presentations").getPublicUrl(key).data.publicUrl;
-                    setDeckFileUrl(url);
+                    const finalUrl = await getReadablePdfUrlFromKey(key);
+                    setDeckFileUrl(finalUrl);
                 } else {
                     setDeckFileUrl(null);
                 }

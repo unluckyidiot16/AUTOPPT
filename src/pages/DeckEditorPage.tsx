@@ -16,6 +16,27 @@ async function rpc<T = any>(fn: string, args?: Record<string, any>) {
 }
 function useQS() { const { search } = useLocation(); return useMemo(() => new URLSearchParams(search), [search]); }
 
+// 파일 상단 근처에 추가
+async function getReadablePdfUrlFromKey(key: string): Promise<string> {
+    // 1) signed url 우선
+    try {
+        const { data, error } = await supabase
+            .storage.from("presentations")
+            .createSignedUrl(key, 60); // 60초
+        if (!error && data?.signedUrl) {
+            const u = new URL(data.signedUrl);
+            u.searchParams.set("v", String(Math.floor(Date.now() / 60000)));
+            return u.toString();
+        }
+    } catch {}
+    // 2) public URL 폴백
+    const raw = supabase.storage.from("presentations").getPublicUrl(key).data.publicUrl;
+    const u = new URL(raw);
+    u.searchParams.set("v", String(Math.floor(Date.now() / 60000)));
+    return u.toString();
+}
+
+
 export default function DeckEditorPage() {
     const nav = useNavigate();
     const roomCode = qs.get("room") || "";
@@ -70,7 +91,7 @@ export default function DeckEditorPage() {
                     if (cancel) return;
                     setDeckId(d.id);
                     setFilePages(Number(d.file_pages) || null);
-                    setFileUrl(publicUrlWithV(d.file_key, d.updated_at));
+                    setFileUrl(await getReadablePdfUrlFromKey(d.file_key));
                     return;
                 }
 
@@ -97,7 +118,7 @@ export default function DeckEditorPage() {
                 if (cancel) return;
                 setDeckId(d2.id);
                 setFilePages(Number(d2.file_pages) || null);
-                setFileUrl(publicUrlWithV(d2.file_key, d2.updated_at));
+                setFileUrl(await getReadablePdfUrlFromKey(d2.file_key));
             } catch (e: any) {
                 if (!cancel) setLoadErr(e?.message || "load failed");
             }
