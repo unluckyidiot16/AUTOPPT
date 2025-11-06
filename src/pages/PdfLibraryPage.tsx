@@ -218,21 +218,29 @@ export default function PdfLibraryPage() {
                     <div style={{ display: "grid", gap: 10, gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))" }}>
                         {filt.map((d) => (
                             <div key={d.id} className="card" style={{ padding: 10 }}>
-                                <div style={{ fontWeight: 700, marginBottom: 4 }}>{d.title ?? d.ext_id}</div>
-                                <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 8 }}>{d.ext_id}</div>
+                                <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                                    <div style={{ fontWeight:700, marginBottom:4, flex:1 }}>
+                                        {d.title ?? d.ext_id}
+                                    </div>
+                                    <span className="badge" title={d.id}>id: {d.id.slice(0,8)}…</span>
+                                </div>
+                                <div style={{ fontSize:12, opacity:0.7, marginBottom:8 }}>{d.ext_id}</div>
+
                                 {d.file_key ? (
-                                    <div className="pdf-thumb" style={{ borderRadius: 8, overflow: "hidden", marginBottom: 8, border: "1px solid rgba(148,163,184,.25)", height: 120, position: "relative" }} aria-label="PDF 썸네일">
-                                        <PdfViewer fileUrl={getPublicUrl(d.file_key)} page={1} maxHeight="120px" />
+                                    <div className="pdf-thumb" style={{ borderRadius:8, overflow:"hidden", marginBottom:8, border:"1px solid rgba(148,163,184,0.25)", height:140 }}>
+                                        <PdfViewer fileUrl={getPublicUrl(d.file_key)} page={1} maxHeight="140px" />
                                     </div>
                                 ) : (
-                                    <div style={{ height: 120, marginBottom: 8, borderRadius: 8, display: "grid", placeItems: "center", border: "1px dashed rgba(148,163,184,.35)", color: "#94a3b8", fontSize: 12 }}>
+                                    <div style={{ height:140, marginBottom:8, borderRadius:8, display:"grid", placeItems:"center", border:"1px dashed rgba(148,163,184,0.35)", color:"#94a3b8", fontSize:12 }}>
                                         파일 없음
                                     </div>
                                 )}
-                                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+
+                                <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
                                     {d.file_key && <a className="btn" href={getPublicUrl(d.file_key)} target="_blank" rel="noreferrer">링크 열기</a>}
                                     {d.file_key && <button className="btn" onClick={() => setPreview(d)}>미리보기</button>}
                                     <button className="btn btn-primary" onClick={() => assignAndUse(d)}>지금 불러오기</button>
+                                    <button className="btn" onClick={() => nav(`/editor?room=${roomCode}&deck=${d.id}`)}>편집</button>
                                 </div>
                             </div>
                         ))}

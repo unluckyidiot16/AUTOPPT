@@ -9,12 +9,11 @@ import PdfViewer from "../components/PdfViewer";
 import { getBasePath } from "../utils/getBasePath";
 import { getManifestByRoom } from "../api/overrides";
 import type { ManifestItem, ManifestPageItem, ManifestQuizItem } from "../types/manifest";
-import DeckEditor from "../components/DeckEditor";
 import QuizOverlay from "../components/QuizOverlay";
 import { usePresence } from "../hooks/usePresence";
 import PresenceSidebar from "../components/PresenceSidebar";
 import { useArrowNav } from "../hooks/useArrowNav";
-
+import RoomQR from "../components/RoomQR";
 
 type DeckSlot = { slot: number; deck_id: string | null; title?: string | null; file_key?: string | null };
 
@@ -31,14 +30,12 @@ async function rpc<T = any>(fn: string, args?: Record<string, any>) {
     return data as T;
 }
 
-/** P1 호환용: page 이동을 안전하게 시도 (goto_page → goto_slide → rooms.state 직접업데이트 → 브로드캐스트만) */
+/** 안전 페이지 이동(goto_page → goto_slide → rooms.state 폴백) */
 async function gotoPageSafe(roomCode: string, nextPage: number): Promise<"ok" | "fallback-slide" | "local-only" | "fail"> {
     const p = Math.max(1, nextPage);
-
     try { await rpc("goto_page", { p_code: roomCode, p_page: p }); return "ok"; }
     catch (e1) { DBG.err("goto_page failed", e1); }
 
-    // 서버가 구버전일 수 있어 RPC 폴백은 유지 (브로드캐스트 타입/수신은 이미 page 단일화)
     try { await rpc("goto_slide", { p_code: roomCode, p_slide: p, p_step: 0 }); return "fallback-slide"; }
     catch (e2) { DBG.err("goto_slide fallback failed", e2); }
 
@@ -50,15 +47,16 @@ async function gotoPageSafe(roomCode: string, nextPage: number): Promise<"ok" | 
             if (!uerr) return "local-only";
         }
     } catch (e3) { DBG.err("rooms.state direct update failed", e3); }
-
     return "fail";
 }
 
+/** 쿼리스트링 */
 function useQS() {
     const { search } = useLocation();
     return useMemo(() => new URLSearchParams(search), [search]);
 }
 
+/** 토스트 */
 function useToast(ms = 2400) {
     const [open, setOpen] = useState(false);
     const [msg, setMsg] = useState("");
@@ -71,6 +69,23 @@ function useToast(ms = 2400) {
         }}>{msg}</div>
     ) : null;
     return { show, node };
+}
+
+/** 전체화면 토글 훅 */
+function useFullscreenTarget(selector: string) {
+    const [isFS, setIsFS] = useState(false);
+    useEffect(() => {
+        const h = () => setIsFS(!!document.fullscreenElement);
+        document.addEventListener("fullscreenchange", h);
+        return () => document.removeEventListener("fullscreenchange", h);
+    }, []);
+    const toggle = useCallback(() => {
+        const el = (document.querySelector(selector) as HTMLElement) || document.documentElement;
+        const doc: any = document;
+        if (!doc.fullscreenElement) el.requestFullscreen?.();
+        else doc.exitFullscreen?.();
+    }, [selector]);
+    return { isFS, toggle };
 }
 
 export default function TeacherPage() {
@@ -87,17 +102,28 @@ export default function TeacherPage() {
     const [totalPages, setTotalPages] = useState<number | null>(null);
     const viewMode: "present" | "setup" = qs.get("mode") === "setup" ? "setup" : "present";
 
-    const [manifest, setManifest] = useState<ManifestItem[] | null>(null);
-    const [editOpen, setEditOpen] = useState(false);
-
     const presence = usePresence(roomCode, "teacher");
+    const [answers, setAnswers] = useState<any[]>([]);
 
+    const { isFS, toggle: toggleFS } = useFullscreenTarget(".pdf-stage");
+
+    useEffect(() => {
+        (async () => {
+            if (!roomId) return;
+            const { data } = await supabase
+                .from("answers_v2")
+                .select("student_id, answer, slide, step, created_at")
+                .eq("room_id", roomId)
+                .order("created_at", { ascending: false })
+                .limit(50);
+            setAnswers(data || []);
+        })();
+    }, [roomId]);
+
+    // 이탈 알림(간단)
     const [lastUnfocusedKeys, setLastUnfocusedKeys] = useState<string>("");
     useEffect(() => {
-        const keys = presence.unfocused
-            .map(m => m.nick || m.studentId || "unknown")
-            .sort()
-            .join(",");
+        const keys = presence.unfocused.map(m => m.nick || m.studentId || "unknown").sort().join(",");
         if (keys !== lastUnfocusedKeys) {
             setLastUnfocusedKeys(keys);
             if (presence.unfocused.length > 0) {
@@ -107,6 +133,7 @@ export default function TeacherPage() {
         }
     }, [presence.unfocused, lastUnfocusedKeys]);
 
+    // URL 정리
     useEffect(() => {
         const url = new URLSearchParams(qs.toString());
         if (!url.get("room") && roomCode) {
@@ -116,6 +143,8 @@ export default function TeacherPage() {
         }
     }, [roomCode]);
 
+    // manifest
+    const [manifest, setManifest] = useState<ManifestItem[] | null>(null);
     useEffect(() => {
         let cancel = false;
         (async () => {
@@ -169,7 +198,7 @@ export default function TeacherPage() {
     }, [roomCode, refreshRoomState]);
 
     // ---- Slots ----
-    const [slots, setSlots] = useState<DeckSlot[]>(() => Array.from({ length: 6 }, (_, i) => ({ slot: i+1, deck_id: null })));
+    const [slots, setSlots] = useState<DeckSlot[]>(() => Array.from({ length: 6 }, (_, i) => ({ slot: i + 1, deck_id: null })));
     useEffect(() => {
         (async () => {
             if (!roomId) return;
@@ -180,9 +209,9 @@ export default function TeacherPage() {
                 .order("slot", { ascending: true });
             if (!data) return;
             setSlots(Array.from({ length: 6 }, (_, i) => {
-                const found: any = data.find((d: any) => d.slot === i+1) ?? {};
+                const found: any = data.find((d: any) => d.slot === i + 1) ?? {};
                 return {
-                    slot: i+1,
+                    slot: i + 1,
                     deck_id: found.deck_id ?? null,
                     title: found?.decks?.title ?? null,
                     file_key: found?.decks?.file_key ?? null,
@@ -198,7 +227,6 @@ export default function TeacherPage() {
     useEffect(() => {
         if (!lastMessage) return;
         if (lastMessage.type === "hello") {
-            // ✅ page 단일 브로드캐스트
             send({ type: "goto", page });
         }
     }, [lastMessage, page, send]);
@@ -220,6 +248,7 @@ export default function TeacherPage() {
                 const key = await rpc<string | null>("get_current_deck_file_key", { p_code: roomCode });
                 if (cancelled) return;
                 if (key) {
+                    // 공개 URL
                     const url = supabase.storage.from("presentations").getPublicUrl(key).data.publicUrl;
                     setDeckFileUrl(url);
                 } else {
@@ -235,13 +264,12 @@ export default function TeacherPage() {
         return () => { cancelled = true; };
     }, [roomCode, currentDeckId]);
 
-    // ---- Controls (안전 폴백 버전) ----
+    // ---- Controls ----
     const gotoPage = useCallback(async (nextPage: number) => {
         const p = Math.max(1, nextPage);
         const mode = await gotoPageSafe(roomCode, p);
         if (mode === "fail") toast.show("서버 갱신 실패: 임시 동기화로 진행합니다");
         setPage(p);
-        // ✅ page 단일 브로드캐스트
         send({ type: "goto", page: p });
     }, [roomCode, send]);
 
@@ -258,11 +286,11 @@ export default function TeacherPage() {
 
     useArrowNav(prev, next);
 
-    // ---- Upload (기존) ----
+    // ---- 업로드 다이얼로그(기존 로직 보강) ----
     const [uploading, setUploading] = useState<{ open: boolean; name?: string; pct?: number; previewUrl?: string | null; msg?: string }>({
         open: false, name: "", pct: 0, previewUrl: null, msg: ""
     });
-    const openUploadDlg = (name: string) => setUploading({ open: true, name, pct: 0, previewUrl: null, msg: "업로드 준비 중..." });
+    const openUploadDlg = (name: string) => setUploading({ open: true, name, pct: 0, previewUrl: null, msg: "업로드 중..." });
     const setPct = (pct: number, msg?: string) => setUploading(u => ({ ...u, pct: Math.max(0, Math.min(100, pct)), msg: msg ?? u.msg }));
     const closeUpload = () => setUploading({ open: false, name: "", pct: 0, previewUrl: null, msg: "" });
 
@@ -308,9 +336,7 @@ export default function TeacherPage() {
                 setPct(92, "파일 링크 갱신 중...");
 
                 try { await rpc("upsert_deck_file_by_slot", { p_room_code: roomCode, p_slot: slot, p_file_key: key }); }
-                catch {
-                    try { await rpc("upsert_deck_file", { p_deck_id: deckId, p_file_key: key }); } catch {}
-                }
+                catch { try { await rpc("upsert_deck_file", { p_deck_id: deckId, p_file_key: key }); } catch {} }
 
                 await rpc("set_room_deck", { p_code: roomCode, p_slot: slot });
                 await refreshRoomState();
@@ -330,11 +356,11 @@ export default function TeacherPage() {
         input.click();
     }
 
+    // ---- 파생 UI ----
     const Badge: React.FC<React.PropsWithChildren<{ muted?: boolean }>> = ({ children, muted }) => (
-        <span style={{
-            border: "1px solid rgba(148,163,184,0.25)", borderRadius: 999, padding: "2px 8px",
-            fontSize: 12, color: muted ? "#94a3b8" : "#e5e7eb"
-        }}>{children}</span>
+        <span style={{ border: "1px solid rgba(148,163,184,0.25)", borderRadius: 999, padding: "2px 8px", fontSize: 12, color: muted ? "#94a3b8" : "#e5e7eb" }}>
+      {children}
+    </span>
     );
 
     const PresentView = (
@@ -342,11 +368,11 @@ export default function TeacherPage() {
             <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
                 <div style={{ fontSize: 12, opacity: 0.7 }}>페이지 {page}{totalPages ? ` / ${totalPages}` : ""}</div>
                 <a className="btn" href={studentUrl} target="_blank" rel="noreferrer">학생 접속 링크</a>
-                <button className="btn" onClick={() => nav(`/library?room=${roomCode}`)}>자료함</button>
+                <button className="btn" onClick={toggleFS}>{isFS ? "전체화면 해제" : "전체화면"}</button>
             </div>
             <div style={{ display: "grid", placeItems: "center" }}>
                 {deckFileUrl ? (
-                    <div className="pdf-stage" style={{ width: "100%", display: "grid", placeItems: "center" }}>
+                    <div className="pdf-stage" style={{ width: "100%", display: "grid", placeItems: "center", background: isFS ? "#000" : "transparent" }}>
                         {(() => {
                             const item = currentItem();
                             if (item && item.type === "quiz") {
@@ -357,7 +383,7 @@ export default function TeacherPage() {
                                 );
                             }
                             const p = (item && item.type === "page") ? (item as ManifestPageItem).srcPage : page;
-                            const viewerUrl = `${deckFileUrl}?v=${currentDeckId || "none"}-${p}`; // ✅ 캐시버스터
+                            const viewerUrl = `${deckFileUrl}?v=${currentDeckId || "none"}-${p}`; // 캐시버스터
                             return (
                                 <PdfViewer
                                     key={`${deckFileUrl}|${currentDeckId}|p-${p}|present|${manifestKey}`}
@@ -397,7 +423,7 @@ export default function TeacherPage() {
                                 );
                             }
                             const p = (item && item.type === "page") ? (item as ManifestPageItem).srcPage : page;
-                            const viewerUrl = `${deckFileUrl}?v=${currentDeckId || "none"}-${p}`; // ✅ 캐시버스터
+                            const viewerUrl = `${deckFileUrl}?v=${currentDeckId || "none"}-${p}`; // 캐시버스터
                             return (
                                 <PdfViewer
                                     key={`${deckFileUrl}|${currentDeckId}|p-${p}|setup|${manifestKey}`}
@@ -418,48 +444,81 @@ export default function TeacherPage() {
                 </div>
             </div>
 
-            <div className="panel">
-                <div style={{ display: "flex", alignItems: "center", marginBottom: 10, gap: 8 }}>
-                    <div style={{ fontWeight: 700 }}>슬롯</div>
-                    <button className="btn" style={{ marginLeft: "auto" }} onClick={() => nav(`/library?room=${roomCode}`)}>자료함 열기</button>
+            <div className="panel" style={{ display: "grid", gap: 12 }}>
+                {/* 슬롯 패널 */}
+                <div>
+                    <div style={{ display: "flex", alignItems: "center", marginBottom: 10, gap: 8 }}>
+                        <div style={{ fontWeight: 700 }}>슬롯</div>
+                    </div>
+                    <div style={{ display: "grid", gap: 8 }}>
+                        {slots.map(s => (
+                            <div key={s.slot} style={{ display: "grid", gridTemplateColumns: "36px 1fr auto", gap: 10, alignItems: "center" }}>
+                                <Badge muted>{s.slot}교시</Badge>
+                                <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                    {s.deck_id ? (s.title || s.deck_id) : <span style={{ opacity: 0.6 }}>비어 있음</span>}
+                                </div>
+                                <div style={{ display: "flex", gap: 6 }}>
+                                    <button className="btn" onClick={() => uploadPdfForSlot(s.slot)}>업로드</button>
+                                    <button
+                                        className="btn"
+                                        disabled={!s.deck_id}
+                                        onClick={async () => {
+                                            if (!s.deck_id) return;
+                                            await rpc("set_room_deck", { p_code: roomCode, p_slot: s.slot });
+                                            let restored = 1;
+                                            if (roomId) {
+                                                const { data: rd } = await supabase
+                                                    .from("room_decks")
+                                                    .select("current_page")
+                                                    .eq("room_id", roomId)
+                                                    .eq("slot", s.slot)
+                                                    .maybeSingle();
+                                                restored = Number(rd?.current_page ?? 1) || 1;
+                                            }
+                                            await gotoPageSafe(roomCode, restored);
+                                            setPage(restored);
+                                            send({ type: "goto", page: restored });
+                                            await refreshRoomState();
+                                        }}
+                                    >
+                                        불러오기
+                                    </button>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
                 </div>
-                <div style={{ display: "grid", gap: 8 }}>
-                    {slots.map(s => (
-                        <div key={s.slot} style={{ display: "grid", gridTemplateColumns: "36px 1fr auto", gap: 10, alignItems: "center" }}>
-                            <Badge muted>{s.slot}교시</Badge>
-                            <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                                {s.deck_id ? (s.title || s.deck_id) : <span style={{ opacity: 0.6 }}>비어 있음</span>}
-                            </div>
-                            <div style={{ display: "flex", gap: 6 }}>
-                                <button className="btn" onClick={() => uploadPdfForSlot(s.slot)}>업로드</button>
-                                <button
-                                    className="btn"
-                                    disabled={!s.deck_id}
-                                    onClick={async () => {
-                                        if (!s.deck_id) return;
-                                        await rpc("set_room_deck", { p_code: roomCode, p_slot: s.slot });
-                                        let restored = 1;
-                                        if (roomId) {
-                                            const { data: rd } = await supabase
-                                                .from("room_decks")
-                                                .select("current_page")
-                                                .eq("room_id", roomId)
-                                                .eq("slot", s.slot)
-                                                .maybeSingle();
-                                            restored = Number(rd?.current_page ?? 1) || 1;
-                                        }
-                                        await gotoPageSafe(roomCode, restored);
-                                        setPage(restored);
-                                        // ✅ page 단일 브로드캐스트
-                                        send({ type: "goto", page: restored });
-                                        await refreshRoomState();
-                                    }}
-                                >
-                                    불러오기
-                                </button>
-                            </div>
+
+                {/* 학생 링크 & QR */}
+                <div>
+                    <div style={{ fontWeight: 700, marginBottom: 6 }}>학생 접속</div>
+                    <div style={{ display: "grid", gridTemplateColumns: "160px 1fr", gap: 12, alignItems: "center" }}>
+                        <div style={{ background: "#fff", borderRadius: 8, padding: 8 }}>
+                            <RoomQR url={studentUrl} size={144} />
                         </div>
-                    ))}
+                        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                            <a className="btn" href={studentUrl} target="_blank" rel="noreferrer">링크 열기</a>
+                            <span style={{ fontSize: 12, opacity: 0.8 }}>{studentUrl}</span>
+                        </div>
+                    </div>
+                </div>
+
+                {/* 최근 제출 */}
+                <div>
+                    <div style={{ fontWeight: 700, marginBottom: 6 }}>최근 제출(50)</div>
+                    {answers.length === 0 ? (
+                        <div style={{ opacity: 0.6 }}>최근 제출이 없습니다.</div>
+                    ) : (
+                        <div style={{ display: "grid", gap: 6, maxHeight: 260, overflow: "auto" }}>
+                            {answers.map((a, i) => (
+                                <div key={i} style={{ display: "grid", gridTemplateColumns: "100px 1fr auto", gap: 8, fontSize: 13 }}>
+                                    <span className="badge">{a.student_id}</span>
+                                    <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{a.answer}</span>
+                                    <span style={{ opacity: 0.7 }}>{new Date(a.created_at).toLocaleTimeString()}</span>
+                                </div>
+                            ))}
+                        </div>
+                    )}
                 </div>
             </div>
         </div>
@@ -474,27 +533,22 @@ export default function TeacherPage() {
                 <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
                     <button className="btn" onClick={() => nav(`/teacher?room=${roomCode}&mode=present`)} aria-pressed={viewMode === "present"}>발표</button>
                     <button className="btn" onClick={() => nav(`/teacher?room=${roomCode}&mode=setup`)} aria-pressed={viewMode === "setup"}>설정</button>
-                    <button
-                        className="btn"
-                        disabled={!currentDeckId}
-                        onClick={() => nav(`/editor?room=${roomCode}${currentDeckId ? `&deck=${currentDeckId}` : ""}`)}
-                    >
-                        자료 편집
-                    </button>
+                    <button className="btn" onClick={() => nav(`/library?room=${roomCode}`)}>자료함</button>
                 </div>
             </div>
 
             {viewMode === "present" ? PresentView : SetupView}
 
             <PresenceSidebar members={presence.members} unfocused={presence.unfocused} />
-            
+
+            {/* 업로드 모달 */}
             {uploading.open && (
                 <div style={{ position: "fixed", inset: 0, display: "grid", placeItems: "center", background: "rgba(0,0,0,0.5)", zIndex: 70 }}>
                     <div className="panel" style={{ width: "min(92vw, 720px)", maxWidth: "95vw", maxHeight: "90vh", display: "flex", flexDirection: "column" }}>
                         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
-                            <span className="badge">
-                                이탈 {presence.unfocused.length} / 전체 {presence.members.length}
-                            </span>
+              <span className="badge">
+                이탈 {presence.unfocused.length} / 전체 {presence.members.length}
+              </span>
                             <div style={{ fontWeight: 700 }}>PDF 업로드</div>
                             <button className="btn" onClick={closeUpload}>×</button>
                         </div>
