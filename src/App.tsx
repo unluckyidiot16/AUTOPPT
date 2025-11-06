@@ -7,6 +7,7 @@ import LoginPage from "./pages/LoginPage";
 import PdfLibraryPage from "./pages/PdfLibraryPage";
 import DeckEditorPage from "./pages/DeckEditorPage";
 import AdminPage from "./pages/AdminPage";
+import TestSlidesUpload from "./pages/TestSlidesUpload";
 
 export default function App() {
     return (
@@ -14,6 +15,7 @@ export default function App() {
             <Route path="/" element={<Navigate to="/student" replace />} />
             <Route path="/login" element={<LoginPage />} />
             <Route path="/student" element={<StudentPage />} />
+            <Route path="/Test" element ={<TestSlidesUpload />} />
             <Route
                 path="/teacher"
                 element={
