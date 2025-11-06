@@ -18,15 +18,20 @@ function ensureWorker() {
     }
 }
 
+type FitMode = "height" | "width";
+
 export default function StaticPdfPage({
                                           fileUrl,
                                           page,
+                                          fit = "height",
                                           maxHeight = "82vh",
                                       }: {
     fileUrl: string;
     page: number;        // 1..N
-    maxHeight?: string;
+    fit?: FitMode;       // ⬅ 추가: height(기본) | width
+    maxHeight?: string;  // fit=height일 때만 사용
 }) {
+    const wrapRef   = useRef<HTMLDivElement | null>(null);
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
     const [err, setErr] = useState<string | null>(null);
 
@@ -48,11 +53,18 @@ export default function StaticPdfPage({
                 const p: PDFPage = await pdf.getPage(page);
                 const base = p.getViewport({ scale: 1 });
 
-                // 높이 기준 스케일 (maxHeight px)
-                const targetH = Number(String(maxHeight).replace(/[^\d.]/g, "")) || 640;
-                const scale = Math.max(0.1, (targetH - 16) / base.height);
+                // ── 스케일 계산
+                let scale = 1;
+                if (fit === "width") {
+                    const w = wrapRef.current?.clientWidth ?? base.width;
+                    scale = Math.max(0.1, (w - 16) / base.width);
+                } else {
+                    const targetH = Number(String(maxHeight).replace(/[^\d.]/g, "")) || 640;
+                    scale = Math.max(0.1, (targetH - 16) / base.height);
+                }
                 const vp = p.getViewport({ scale });
 
+                // ── 캔버스 준비 & 렌더
                 const canvas = canvasRef.current;
                 if (!canvas) return;
                 canvas.width = Math.floor(vp.width);
@@ -77,10 +89,10 @@ export default function StaticPdfPage({
             try { pdfTask?.destroy?.(); } catch {}
             try { pdf?.destroy?.(); } catch {}
         };
-    }, [fileUrl, page, maxHeight]);
+    }, [fileUrl, page, fit, maxHeight]);
 
     return (
-        <div style={{ position: "relative" }}>
+        <div ref={wrapRef} style={{ position: "relative", width: "100%" }}>
             <canvas ref={canvasRef} />
             {err && (
                 <div style={{
