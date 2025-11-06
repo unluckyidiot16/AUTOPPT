@@ -13,6 +13,7 @@ import QuizOverlay from "../components/QuizOverlay";
 import { usePresence } from "../hooks/usePresence";
 import PresenceSidebar from "../components/PresenceSidebar";
 import { useArrowNav } from "../hooks/useArrowNav";
+import { getPdfUrlFromKey } from "../utils/supaFiles";
 import { RoomQR } from "../components/RoomQR";
 
 type DeckSlot = { slot: number; deck_id: string | null; title?: string | null; file_key?: string | null };
@@ -48,26 +49,6 @@ async function gotoPageSafe(roomCode: string, nextPage: number): Promise<"ok" | 
         }
     } catch (e3) { DBG.err("rooms.state direct update failed", e3); }
     return "fail";
-}
-
-// 파일 상단 근처에 추가
-async function getReadablePdfUrlFromKey(key: string): Promise<string> {
-    // 1) signed url 우선
-    try {
-        const { data, error } = await supabase
-            .storage.from("presentations")
-            .createSignedUrl(key, 60); // 60초
-        if (!error && data?.signedUrl) {
-            const u = new URL(data.signedUrl);
-            u.searchParams.set("v", String(Math.floor(Date.now() / 60000)));
-            return u.toString();
-        }
-    } catch {}
-    // 2) public URL 폴백
-    const raw = supabase.storage.from("presentations").getPublicUrl(key).data.publicUrl;
-    const u = new URL(raw);
-    u.searchParams.set("v", String(Math.floor(Date.now() / 60000)));
-    return u.toString();
 }
 
 
@@ -275,7 +256,7 @@ export default function TeacherPage() {
                 if (cancelled) return;
                 if (key) {
                     // 공개 URL
-                    const finalUrl = await getReadablePdfUrlFromKey(key);
+                    const finalUrl = await getPdfUrlFromKey(key, { ttlSec: 1800 });
                     setDeckFileUrl(finalUrl);
                 } else {
                     setDeckFileUrl(null);
@@ -367,8 +348,8 @@ export default function TeacherPage() {
                 await rpc("set_room_deck", { p_code: roomCode, p_slot: slot });
                 await refreshRoomState();
 
-                const publicUrl = supabase.storage.from("presentations").getPublicUrl(key).data.publicUrl;
-                setUploading(u => ({ ...u, previewUrl: publicUrl }));
+                const signedUrl = await getPdfUrlFromKey(key);
+                setUploading(u => ({ ...u, previewUrl: signedUrl }));
                 setPct(100, "완료");
                 window.clearInterval(timer);
                 toast.show("업로드 완료");

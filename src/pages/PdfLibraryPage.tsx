@@ -4,6 +4,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { supabase } from "../supabaseClient";
 import PdfViewer from "../components/PdfViewer";
 import { getBasePath } from "../utils/getBasePath";
+import { getPdfUrlFromKey } from "../utils/supaFiles";
 
 type DeckRow = {
     id: string;
@@ -18,8 +19,20 @@ function useQS() {
     return new URLSearchParams(loc.search);
 }
 
-const getPublicUrl = (key: string) =>
-    supabase.storage.from("presentations").getPublicUrl(key).data.publicUrl;
+// 공용 훅: file_key → signed URL
+ function useSignedUrl(key: string | null | undefined) {
+       const [url, setUrl] = React.useState<string>("");
+       React.useEffect(() => {
+             let alive = true;
+             (async () => {
+                   if (!key) { setUrl(""); return; }
+                   const u = await getPdfUrlFromKey(key, { ttlSec: 1800 });
+                   if (alive) setUrl(u);
+                 })();
+             return () => { alive = false; };
+           }, [key]);
+       return url;
+     }
 
 async function rpc<T = any>(name: string, params?: Record<string, any>) {
     const { data, error } = await supabase.rpc(name, params ?? {});
@@ -40,8 +53,8 @@ function PreviewModal({
 }) {
     const [currentPage, setCurrentPage] = useState(1);
     const [totalPages, setTotalPages] = useState<number | null>(null);
-    const fileUrl = preview.file_key ? getPublicUrl(preview.file_key) : "";
-
+    const fileUrl = useSignedUrl(preview.file_key || "");
+    
     useEffect(() => {
         let cancel = false;
         (async () => {
@@ -140,6 +153,33 @@ export default function PdfLibraryPage() {
         [q, decks]
     );
 
+    function Thumb({ keyStr }: { keyStr: string }) {
+        const fileUrl = useSignedUrl(keyStr);
+        return (
+            <div className="pdf-thumb" style={{ borderRadius:8, overflow:"hidden", marginBottom:8, border:"1px solid rgba(148,163,184,0.25)", height:140 }}>
+                {fileUrl ? <PdfViewer fileUrl={fileUrl} page={1} maxHeight="140px" /> : null}
+            </div>
+        );
+    }
+
+    function OpenSignedLink({ fileKey }: { fileKey: string }) {
+        const [href, setHref] = React.useState<string>("");
+        React.useEffect(() => {
+            let alive = true;
+            (async () => {
+                const u = await getPdfUrlFromKey(fileKey, { ttlSec: 1800 });
+                if (alive) setHref(u);
+            })();
+            return () => { alive = false; };
+        }, [fileKey]);
+        return (
+            <a className="btn" href={href || "#"} target="_blank" rel="noreferrer" aria-disabled={!href}>
+                링크 열기
+            </a>
+        );
+    }
+
+
     const assignAndUse = async (d: DeckRow) => {
         if (!roomCode) return;
         try {
@@ -227,17 +267,15 @@ export default function PdfLibraryPage() {
                                 <div style={{ fontSize:12, opacity:0.7, marginBottom:8 }}>{d.ext_id}</div>
 
                                 {d.file_key ? (
-                                    <div className="pdf-thumb" style={{ borderRadius:8, overflow:"hidden", marginBottom:8, border:"1px solid rgba(148,163,184,0.25)", height:140 }}>
-                                        <PdfViewer fileUrl={getPublicUrl(d.file_key)} page={1} maxHeight="140px" />
-                                    </div>
-                                ) : (
+                                       <Thumb keyStr={d.file_key} />
+                                     ) : (
                                     <div style={{ height:140, marginBottom:8, borderRadius:8, display:"grid", placeItems:"center", border:"1px dashed rgba(148,163,184,0.35)", color:"#94a3b8", fontSize:12 }}>
                                         파일 없음
                                     </div>
                                 )}
 
                                 <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
-                                    {d.file_key && <a className="btn" href={getPublicUrl(d.file_key)} target="_blank" rel="noreferrer">링크 열기</a>}
+                                    {d.file_key && <OpenSignedLink fileKey={d.file_key} />}
                                     {d.file_key && <button className="btn" onClick={() => setPreview(d)}>미리보기</button>}
                                     <button className="btn btn-primary" onClick={() => assignAndUse(d)}>지금 불러오기</button>
                                     <button className="btn" onClick={() => nav(`/editor?room=${roomCode}&deck=${d.id}`)}>편집</button>

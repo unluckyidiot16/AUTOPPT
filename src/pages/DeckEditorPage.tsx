@@ -6,24 +6,9 @@ import DeckEditor from "../components/DeckEditor";
 import EditorPreviewPane from "../components/EditorPreviewPane";
 import type { ManifestItem, ManifestQuizItem } from "../types/manifest";
 import { getManifestByRoom } from "../api/overrides";
+import { getPdfUrlFromKey } from "../utils/supaFiles";
 
 type RoomRow = { id: string; current_deck_id: string | null };
-
-async function getReadablePdfUrlFromKey(key: string): Promise<string> {
-    // 서명 URL 우선, 실패 시 public URL
-    try {
-        const { data, error } = await supabase.storage.from("presentations").createSignedUrl(key, 300);
-        if (!error && data?.signedUrl) {
-            const u = new URL(data.signedUrl);
-            u.searchParams.set("v", String(Math.floor(Date.now() / 60000)));
-            return u.toString();
-        }
-    } catch {}
-    const raw = supabase.storage.from("presentations").getPublicUrl(key).data.publicUrl;
-    const u = new URL(raw);
-    u.searchParams.set("v", String(Math.floor(Date.now() / 60000)));
-    return u.toString();
-}
 
 export default function DeckEditorPage() {
     const nav = useNavigate();
@@ -80,7 +65,7 @@ export default function DeckEditorPage() {
                 if (eDeck) throw eDeck;
                 if (!d?.file_key) throw new Error("deck file not found");
 
-                const url = await getReadablePdfUrlFromKey(d.file_key);
+                const url = await getPdfUrlFromKey(d.file_key, { ttlSec: 1800 });
                 if (cancel) return;
 
                 setFileUrl(url);
