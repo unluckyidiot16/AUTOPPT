@@ -129,6 +129,15 @@ export default function TeacherPage() {
         return manifest[idx] ?? null;
     }
 
+    // 현재 아이템 스냅샷으로 키 생성(분기/문구 변경에도 재마운트 유도)
+    const manifestKey = useMemo(() => {
+        const it = currentItem();
+        if (!it) return `none-${page}`;
+        return it.type === "page"
+            ? `p-${(it as ManifestPageItem).srcPage}`
+            : `q-${(it as ManifestQuizItem).keywords.length}-${(it as ManifestQuizItem).prompt?.length ?? 0}`;
+    }, [manifest, page]);
+
 
     // ---- Room row ----
     const refreshRoomState = useCallback(async () => {
@@ -347,6 +356,7 @@ export default function TeacherPage() {
                 <div style={{ fontSize: 12, opacity: 0.7 }}>페이지 {page}{totalPages ? ` / ${totalPages}` : ""}</div>
                 <a className="btn" href={studentUrl} target="_blank" rel="noreferrer">학생 접속 링크</a>
                 <button className="btn" onClick={() => nav(`/library?room=${roomCode}`)}>자료함</button>
+                <button className="btn" disabled={!currentDeckId} onClick={() => setEditOpen(true)}>자료 편집</button>
             </div>
             <div style={{ display: "grid", placeItems: "center" }}>
                 {deckFileUrl ? (
@@ -356,17 +366,16 @@ export default function TeacherPage() {
                             if (item && item.type === "quiz") {
                                 return (
                                     <div style={{ display: "grid", placeItems: "center", minHeight: 300 }}>
-                                        <QuizOverlay item={item as ManifestQuizItem} mode="teacher" />
+                                        <QuizOverlay key={`present|${manifestKey}`} item={item as ManifestQuizItem} mode="teacher" />
                                     </div>
                                 );
                             }
-                            const p = (item && item.type === "page")
-                                ? (item as ManifestPageItem).srcPage
-                                : page;
+                            const p = (item && item.type === "page") ? (item as ManifestPageItem).srcPage : page;
+                            const viewerUrl = `${deckFileUrl}?v=${currentDeckId || "none"}-${p}`; // ✅ 캐시버스터
                             return (
                                 <PdfViewer
-                                    key={`${deckFileUrl}|${currentDeckId}|${p}`}
-                                    fileUrl={deckFileUrl}
+                                    key={`${viewerUrl}|present|${manifestKey}`}   // ✅ 강제 리마운트
+                                    fileUrl={viewerUrl}
                                     page={p}
                                 />
                             );
@@ -398,17 +407,16 @@ export default function TeacherPage() {
                             if (item && item.type === "quiz") {
                                 return (
                                     <div style={{ display: "grid", placeItems: "center", minHeight: 240 }}>
-                                        <QuizOverlay item={item as ManifestQuizItem} mode="teacher" />
+                                        <QuizOverlay key={`setup|${manifestKey}`} item={item as ManifestQuizItem} mode="teacher" />
                                     </div>
                                 );
                             }
-                            const p = (item && item.type === "page")
-                                ? (item as ManifestPageItem).srcPage
-                                : page;
+                            const p = (item && item.type === "page") ? (item as ManifestPageItem).srcPage : page;
+                            const viewerUrl = `${deckFileUrl}?v=${currentDeckId || "none"}-${p}`; // ✅ 캐시버스터
                             return (
                                 <PdfViewer
-                                    key={`${deckFileUrl}|${currentDeckId}|${p}`}
-                                    fileUrl={deckFileUrl}
+                                    key={`${viewerUrl}|setup|${manifestKey}`}   // ✅ 강제 리마운트
+                                    fileUrl={viewerUrl}
                                     page={p}
                                     maxHeight="500px"
                                 />
@@ -418,6 +426,7 @@ export default function TeacherPage() {
                 ) : (
                     <div style={{ opacity: 0.6 }}>자료가 없습니다.</div>
                 )}
+
 
                 <div style={{ display: "flex", gap: 8, justifyContent: "center", marginTop: 10 }}>
                     <button className="btn" onClick={prev} disabled={page <= 1}>◀ 이전</button>
@@ -511,8 +520,19 @@ export default function TeacherPage() {
                     </div>
                 </div>
             )}
-
             {toast.node}
+            {editOpen && currentDeckId && (
+                <DeckEditor
+                    roomCode={roomCode}
+                    deckId={currentDeckId}
+                    totalPages={totalPages}
+                    onClose={() => setEditOpen(false)}
+                    onSaved={async () => {
+                        const m = await getManifestByRoom(roomCode);
+                        setManifest(m);
+                    }}
+                />
+            )}
         </div>
     );
 }

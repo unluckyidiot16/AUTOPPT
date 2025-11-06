@@ -208,30 +208,23 @@ export default function StudentPage() {
                                 if (item && item.type === "quiz") {
                                     return (
                                         <div style={{ display: "grid", placeItems: "center", minHeight: 300 }}>
-                                            <QuizOverlay
-                                                item={item as ManifestQuizItem}
-                                                mode="student"
-                                                onPassed={() => {
-                                                    // 기본은 교사 진행 대기. autoAdvance는 P2.5에서 브로드캐스트/집계로 붙이자.
-                                                }}
-                                            />
+                                            <QuizOverlay item={item as ManifestQuizItem} mode="student" />
                                         </div>
                                     );
                                 }
 
-                                const p = (item && item.type === "page")
-                                    ? (item as ManifestPageItem).srcPage
-                                    : page;
-
+                                const p = (item && item.type === "page") ? (item as ManifestPageItem).srcPage : page;
+                                const viewerUrl = `${deckFileUrl}?v=${currentDeckId || "none"}-${p}`;   // ✅ 캐시버스터
                                 return (
                                     <PdfViewer
-                                        key={`${deckFileUrl}|${currentDeckId}|${p}`}
-                                        fileUrl={deckFileUrl}
+                                        key={`${viewerUrl}|student`}   // ✅ 강제 리마운트
+                                        fileUrl={viewerUrl}
                                         page={p}
                                     />
                                 );
                             })()
                         ) : (
+                            // ... (기존 폴백 이미지/메시지 유지)
                             (() => {
                                 const s = slides.find(x => x.slide === slide);
                                 const m = s?.steps?.[step];
