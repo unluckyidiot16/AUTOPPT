@@ -13,6 +13,7 @@ import DeckEditor from "../components/DeckEditor";
 import QuizOverlay from "../components/QuizOverlay";
 import { usePresence } from "../hooks/usePresence";
 import PresenceSidebar from "../components/PresenceSidebar";
+import { useArrowNav } from "../hooks/useArrowNav";
 
 
 type DeckSlot = { slot: number; deck_id: string | null; title?: string | null; file_key?: string | null };
@@ -254,6 +255,8 @@ export default function TeacherPage() {
         if (page <= 1) return;
         await gotoPage(page - 1);
     }, [page, gotoPage]);
+
+    useArrowNav(prev, next);
 
     // ---- Upload (기존) ----
     const [uploading, setUploading] = useState<{ open: boolean; name?: string; pct?: number; previewUrl?: string | null; msg?: string }>({
