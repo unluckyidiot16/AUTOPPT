@@ -1,67 +1,20 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import type { ManifestItem, ManifestPageItem, ManifestQuizItem } from "../types/manifest";
-import { defaultManifest } from "../types/manifest";
 import { getManifestByRoom, upsertManifest } from "../api/overrides";
+import EditorThumbnailStrip from "./EditorThumbnailStrip";
 
-/** ─────────────────────────────────────────────────────────────────────
- *  koNormalize v2 매칭 옵션(선택 필드)
- *  ManifestQuizItem에 부가로 저장해도 기존 렌더에는 영향 없음
- *  ───────────────────────────────────────────────────────────────────── */
+/** ─ koNormalize v2 매칭 옵션 ─ */
 type MatchOptions = {
-    enableSubstr?: boolean;                    // 부분일치 허용
-    minLen?: number;                           // 부분일치 최소 길이
-    synonyms?: Record<string, string[]>;       // 동의어 테이블
+    enableSubstr?: boolean;
+    minLen?: number;
+    synonyms?: Record<string, string[]>;
 };
 type QuizX = ManifestQuizItem & { matchOptions?: MatchOptions };
 
-const LS_KEY = "autoppt:matchDefaults";
-
-function loadMatchDefaults(): Required<MatchOptions> {
-    try {
-        const j = JSON.parse(localStorage.getItem(LS_KEY) || "{}");
-        return {
-            enableSubstr: j.enableSubstr ?? true,
-            minLen: Math.max(2, Number(j.minLen ?? 2)),
-            synonyms: (j.synonyms && typeof j.synonyms === "object") ? j.synonyms : {},
-        };
-    } catch {
-        return { enableSubstr: true, minLen: 2, synonyms: {} };
-    }
-}
-function saveMatchDefaults(v: Required<MatchOptions>) {
-    localStorage.setItem(LS_KEY, JSON.stringify(v));
-}
-
-/** 간단한 동의어 에디터 행 */
-function SynRow({
-                    base, syns, onChange, onRemove,
-                }: {
-    base: string; syns: string[];
-    onChange: (nextBase: string, nextSyns: string[]) => void;
-    onRemove: () => void;
-}) {
-    const [b, setB] = useState(base);
-    const [t, setT] = useState(syns.join(", "));
-    useEffect(() => { setB(base); setT(syns.join(", ")); }, [base, syns]);
-
-    return (
-        <div style={{
-            display: "grid", gridTemplateColumns: "1fr 1.2fr auto", gap: 6, alignItems: "center",
-            border: "1px solid rgba(148,163,184,0.25)", borderRadius: 8, padding: 6
-        }}>
-            <input className="input" value={b} placeholder="기준어"
-                   onChange={(e) => setB(e.target.value)} />
-            <input className="input" value={t} placeholder="동의어들을 쉼표로 구분"
-                   onChange={(e) => setT(e.target.value)} />
-            <div style={{ display: "flex", gap: 6 }}>
-                <button className="btn"
-                        onClick={() => onChange(b.trim(), t.split(",").map(s => s.trim()).filter(Boolean))}>
-                    적용
-                </button>
-                <button className="btn" onClick={onRemove}>삭제</button>
-            </div>
-        </div>
-    );
+/** totalPages만큼 PAGE 아이템 생성 */
+function ensureManifestPages(totalPages: number): ManifestPageItem[] {
+    const n = Math.max(0, Number(totalPages) || 0);
+    return Array.from({ length: n }, (_, i) => ({ type: "page", srcPage: i + 1 }));
 }
 
 export default function DeckEditor({
@@ -73,25 +26,55 @@ export default function DeckEditor({
     const [items, setItems] = useState<ManifestItem[]>([]);
     const [loading, setLoading] = useState(true);
 
-    // 전역 기본값(퀴즈 삽입 시 초기화에 사용, LS에 보관)
-    const [defaults, setDefaults] = useState<Required<MatchOptions>>(() => loadMatchDefaults());
-    useEffect(() => { saveMatchDefaults(defaults); }, [defaults]);
+    /** 전역 기본값(L/S 보관) */
+    const LS_KEY = "autoppt:matchDefaults";
+    const [defaults, setDefaults] = useState<Required<MatchOptions>>(() => {
+        try {
+            const j = JSON.parse(localStorage.getItem(LS_KEY) || "{}");
+            return {
+                enableSubstr: j.enableSubstr ?? true,
+                minLen: Math.max(2, Number(j.minLen ?? 2)),
+                synonyms: (j.synonyms && typeof j.synonyms === "object") ? j.synonyms : {},
+            };
+        } catch { return { enableSubstr: true, minLen: 2, synonyms: {} }; }
+    });
+    useEffect(() => { localStorage.setItem(LS_KEY, JSON.stringify(defaults)); }, [defaults]);
 
-    const resetDefault = () => setItems(defaultManifest(totalPages ?? 0));
+    /** 카드 스크롤용 ref */
+    const cardRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+    const [highlightIdx, setHighlightIdx] = useState<number | null>(null);
 
+    /** 초기 로드: 없거나 PAGE가 0개면 totalPages로 자동 주입 */
     useEffect(() => {
         (async () => {
             setLoading(true);
             try {
                 const m = await getManifestByRoom(roomCode);
-                if (m.length) setItems(m);
-                else resetDefault();
+                let next = m;
+                const hasPage = next.some(it => it.type === "page");
+                if ((!next.length || !hasPage) && (totalPages ?? 0) > 0) {
+                    // PAGE 자동 주입 + 기존 퀴즈는 보존(뒤에 붙임)
+                    const pages = ensureManifestPages(totalPages!);
+                    const quizzes = next.filter(it => it.type !== "page");
+                    next = [...pages, ...quizzes];
+                }
+                setItems(next);
             } finally {
                 setLoading(false);
             }
         })();
     }, [roomCode, totalPages]);
 
+    /** 상단 버튼: 기본(1..N)으로 */
+    const resetDefault = () => {
+        if (!totalPages) return;
+        const pages = ensureManifestPages(totalPages);
+        // 기존 퀴즈는 그대로 뒤에 붙임(원하면 초기화하려면 quizzes=[] 로)
+        const quizzes = items.filter(it => it.type !== "page");
+        setItems([...pages, ...quizzes]);
+    };
+
+    /** 공통 조작 */
     const move = (i: number, d: number) => {
         const j = i + d;
         if (j < 0 || j >= items.length) return;
@@ -118,16 +101,15 @@ export default function DeckEditor({
         } as QuizX
     ]);
 
+    /** 저장 */
     const save = async () => {
         await upsertManifest(roomCode, deckId, items);
         onSaved?.();
         onClose();
     };
 
-    /** 동의어 편집기: quiz.matchOptions.synonyms 를 레코드로 관리 */
-    function SynonymsEditor({
-                                quiz, index,
-                            }: { quiz: QuizX; index: number }) {
+    /** 동의어 편집기 */
+    function SynonymsEditor({ quiz, index }: { quiz: QuizX; index: number }) {
         const map = quiz.matchOptions?.synonyms ?? {};
         const entries = useMemo(() => Object.entries(map), [map]);
 
@@ -147,38 +129,103 @@ export default function DeckEditor({
                 {entries.length === 0 && <div style={{ opacity: .6 }}>등록된 동의어가 없습니다.</div>}
 
                 {entries.map(([base, syns]) => (
-                    <SynRow
-                        key={base}
-                        base={base}
-                        syns={syns}
-                        onChange={(nb, ns) => updateMap(cur => {
-                            const copy = { ...cur };
-                            if (base !== nb) delete copy[base];
-                            if (nb) copy[nb] = ns;
-                            return copy;
-                        })}
-                        onRemove={() => updateMap(cur => {
-                            const copy = { ...cur }; delete copy[base]; return copy;
-                        })}
-                    />
+                    <div key={base} style={{
+                        display: "grid", gridTemplateColumns: "1fr 1.2fr auto", gap: 6, alignItems: "center",
+                        border: "1px solid rgba(148,163,184,0.25)", borderRadius: 8, padding: 6
+                    }}>
+                        {/* 기준어 */}
+                        <input className="input" defaultValue={base} placeholder="기준어"
+                               onBlur={(e) => {
+                                   const nb = e.target.value.trim();
+                                   updateMap(cur => {
+                                       const copy = { ...cur };
+                                       const oldSyn = copy[base] ?? [];
+                                       delete copy[base];
+                                       if (nb) copy[nb] = oldSyn;
+                                       return copy;
+                                   });
+                               }} />
+                        {/* 동의어들 */}
+                        <input className="input" defaultValue={syns.join(", ")} placeholder="동의어들을 쉼표로 구분"
+                               onBlur={(e) => {
+                                   const ns = e.target.value.split(",").map(s => s.trim()).filter(Boolean);
+                                   updateMap(cur => ({ ...cur, [base]: ns }));
+                               }} />
+                        <div style={{ display: "flex", gap: 6 }}>
+                            <button className="btn" onClick={() => updateMap(cur => ({ ...cur, "": [] }))}>+ 행</button>
+                            <button className="btn" onClick={() => updateMap(cur => { const c = { ...cur }; delete c[base]; return c; })}>삭제</button>
+                        </div>
+                    </div>
                 ))}
 
-                <div style={{ display: "flex", gap: 6 }}>
-                    <button
-                        className="btn"
-                        onClick={() => updateMap(cur => ({ ...cur, "": [] }))}
-                    >
-                        + 행 추가
-                    </button>
-                    <button className="btn"
-                            onClick={() => updateMap(() => ({}))}
-                    >
-                        전체 삭제
-                    </button>
-                </div>
+                {entries.length === 0 && (
+                    <button className="btn" onClick={() => updateMap(cur => ({ ...cur, "": [] }))}>+ 행 추가</button>
+                )}
             </div>
         );
     }
+
+    /** 썸네일 스트립용 페이지 리스트 */
+    const pageThumbs = useMemo(() => {
+        const arr: { id: string; page: number; idx: number }[] = [];
+        items.forEach((it, idx) => {
+            if (it.type === "page") {
+                const pg = it as ManifestPageItem;
+                arr.push({ id: `pg-${idx}-${pg.srcPage}`, page: pg.srcPage, idx });
+            }
+        });
+        return arr;
+    }, [items]);
+
+    /** 썸네일 → 카드로 스크롤 */
+    const scrollToIndex = (i: number) => {
+        const el = cardRefs.current.get(i);
+        if (el) {
+            el.scrollIntoView({ block: "center", behavior: "smooth" });
+            setHighlightIdx(i);
+            setTimeout(() => setHighlightIdx(null), 800);
+        }
+    };
+
+    /** 썸네일 DnD 정렬 → PAGE들만 새 순서로 치환, 나머지(QUIZ)는 기존 위치 유지 */
+    const onReorderPages = (nextThumbs: { id: string; page: number; idx: number }[]) => {
+        // nextThumbs의 page만 순서대로 뽑아 새 PAGE 시퀀스 만들기
+        const orderedPages = nextThumbs.map(t => ({ type: "page", srcPage: t.page } as ManifestPageItem));
+        let pageCursor = 0;
+        const next: ManifestItem[] = items.map(it => {
+            if (it.type === "page") {
+                const rep = orderedPages[pageCursor++];
+                return rep ?? it;
+            }
+            return it; // quiz 등은 그대로
+        });
+        setItems(next);
+    };
+
+    const onDuplicatePage = (id: string) => {
+        const found = pageThumbs.find(t => t.id === id);
+        if (!found) return;
+        // 해당 idx 뒤에 같은 PAGE를 복제
+        const next = items.slice();
+        next.splice(found.idx + 1, 0, { type: "page", srcPage: found.page } as ManifestPageItem);
+        setItems(next);
+    };
+
+    const onDeletePage = (id: string) => {
+        const found = pageThumbs.find(t => t.id === id);
+        if (!found) return;
+        // 해당 idx의 아이템이 정말 page일 때만 제거
+        if (items[found.idx]?.type === "page") {
+            const next = items.slice();
+            next.splice(found.idx, 1);
+            setItems(next);
+        }
+    };
+
+    const onAddPage = () => {
+        const maxPg = Math.max(0, ...items.filter(i => i.type === "page").map(i => (i as ManifestPageItem).srcPage));
+        pushPage(maxPg + 1);
+    };
 
     return (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.5)", display: "grid", placeItems: "center", zIndex: 80 }}>
@@ -192,9 +239,9 @@ export default function DeckEditor({
                     </div>
                 </div>
 
-                {/* 전역 기본값 (퀴즈 삽입 시 적용) */}
+                {/* 채점 기본값 */}
                 <div className="card" style={{ padding: 10, marginBottom: 12 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
                         <span className="badge">채점 기본값</span>
                         <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
                             <input
@@ -221,14 +268,28 @@ export default function DeckEditor({
 
                 {loading ? <div>불러오는 중…</div> : (
                     <>
+                        {/* 조작 버튼 */}
                         <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
                             <button className="btn" onClick={() => pushPage((items.filter(i => i.type === "page").length) + 1)}>페이지 추가</button>
                             <button className="btn" onClick={pushQuiz}>퀴즈 삽입</button>
                         </div>
 
+                        {/* 메인 리스트 */}
                         <div style={{ display: "grid", gap: 8 }}>
                             {items.map((it, i) => (
-                                <div key={i} className="card" style={{ padding: 10, display: "grid", gridTemplateColumns: "1fr auto", gap: 8 }}>
+                                <div
+                                    key={i}
+                                    ref={(el) => { if (el) cardRefs.current.set(i, el); }}
+                                    className="card"
+                                    style={{
+                                        padding: 10,
+                                        display: "grid",
+                                        gridTemplateColumns: "1fr auto",
+                                        gap: 8,
+                                        outline: highlightIdx === i ? "2px solid #22c55e" : "none",
+                                        transition: "outline-color .3s",
+                                    }}
+                                >
                                     <div>
                                         {it.type === "page" ? (
                                             <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -251,7 +312,6 @@ export default function DeckEditor({
                                             (() => {
                                                 const q = it as QuizX;
                                                 const mo: MatchOptions = q.matchOptions ?? (q.matchOptions = {});
-
                                                 return (
                                                     <div style={{ display: "grid", gap: 8 }}>
                                                         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
@@ -292,7 +352,7 @@ export default function DeckEditor({
                                                             </label>
                                                         </div>
 
-                                                        {/* 키워드 복수 입력 (쉼표 구분) */}
+                                                        {/* 키워드 복수 입력 */}
                                                         <div>
                                                             <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 4 }}>정답 키워드(쉼표로 여러 개)</div>
                                                             <input
@@ -341,7 +401,6 @@ export default function DeckEditor({
                                                                 </label>
                                                             </div>
 
-                                                            {/* 동의어 편집기 */}
                                                             <SynonymsEditor quiz={q} index={i} />
                                                         </div>
                                                     </div>
@@ -359,6 +418,26 @@ export default function DeckEditor({
                                 </div>
                             ))}
                         </div>
+
+                        {/* ───────── 썸네일 스트립 (아래 고정) ───────── */}
+                        <EditorThumbnailStrip
+                            items={pageThumbs.map(t => ({ id: t.id, page: t.page }))}
+                            onReorder={(next) => {
+                                // next에는 id,page만 있으니 기존 idx 매핑으로 복원
+                                const remapped = next.map(n => {
+                                    const found = pageThumbs.find(t => t.page === n.page && t.id.startsWith("pg-"));
+                                    return found ?? { id: n.id, page: n.page, idx: -1 };
+                                });
+                                onReorderPages(remapped);
+                            }}
+                            onSelect={(id) => {
+                                const found = pageThumbs.find(t => t.id === id);
+                                if (found) scrollToIndex(found.idx);
+                            }}
+                            onAdd={onAddPage}
+                            onDuplicate={onDuplicatePage}
+                            onDelete={onDeletePage}
+                        />
                     </>
                 )}
             </div>
