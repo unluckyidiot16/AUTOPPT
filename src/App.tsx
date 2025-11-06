@@ -6,6 +6,7 @@ import StudentPage from "./pages/StudentPage";
 import LoginPage from "./pages/LoginPage";
 import PdfLibraryPage from "./pages/PdfLibraryPage";
 import DeckEditorPage from "./pages/DeckEditorPage";
+import AdminPage from "./pages/AdminPage";
 
 export default function App() {
     return (
@@ -30,6 +31,7 @@ export default function App() {
                 }
             />
             <Route path="/editor"  element={<DeckEditorPage />} />
+            <Route path="/admin" element={<AdminPage />} />
             <Route path="*" element={<Navigate to="/student" replace />} />
         </Routes>
     );

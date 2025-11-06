@@ -1,82 +1,94 @@
-// src/pages/AdminPage.tsx
-import React, { useEffect, useState, useMemo } from "react";
+// src/pages/AdminDataHealth.tsx
+import React from "react";
 import { supabase } from "../supabaseClient";
-import { useNavigate } from "react-router-dom";
 
-type RoomRow = { id: string; code: string; owner_id: string | null; created_at: string; state: any; current_deck_id: string | null };
-type OrphanDeck = { id: string; title: string | null; file_key: string | null; created_at: string };
+export default function AdminDataHealth() {
+    const [orphans, setOrphans] = React.useState<any[]>([]);
+    const [dirty, setDirty] = React.useState<any[]>([]);
+    const [loading, setLoading] = React.useState(false);
+    const [msg, setMsg] = React.useState<string>("");
 
-export default function AdminPage() {
-    const nav = useNavigate();
-    const [rooms, setRooms] = useState<RoomRow[]>([]);
-    const [orphans, setOrphans] = useState<OrphanDeck[]>([]);
-    const [loading, setLoading] = useState(false);
+    async function refresh() {
+        setLoading(true); setMsg("");
+        try {
+            const [o, d] = await Promise.all([
+                supabase.rpc("list_orphan_room_decks"),
+                supabase.rpc("list_dirty_decks", { p_days: 7 })
+            ]);
+            if (o.error) throw o.error;
+            if (d.error) throw d.error;
+            setOrphans(o.data || []);
+            setDirty(d.data || []);
+        } catch (e:any) {
+            setMsg(e.message || "로드 실패");
+        } finally {
+            setLoading(false);
+        }
+    }
 
-    useEffect(() => {
-        (async () => {
-            setLoading(true);
-            try {
-                // 로그인 확인
-                const { data: s } = await supabase.auth.getSession();
-                if (!s.session) return nav("/login?next=/admin");
-                // 방 목록
-                const { data: rs } = await supabase
-                    .from("rooms")
-                    .select("id, code, owner_id, created_at, state, current_deck_id")
-                    .order("created_at", { ascending: false });
-                setRooms((rs as any) ?? []);
+    React.useEffect(() => { refresh(); }, []);
 
-                // 고아 자료(예: room_decks에 매핑되지 않은 decks)
-                const { data: ods } = await supabase.rpc("list_orphan_decks"); // 없으면 나중에 만들 RPC
-                setOrphans((ods as any) ?? []);
-            } finally { setLoading(false); }
-        })();
-    }, [nav]);
+    async function fixOrphan(idRow: any) {
+        // 고아 room_decks 행 삭제
+        const { error } = await supabase.from("room_decks")
+            .delete()
+            .match({ room_id: idRow.room_id, deck_id: idRow.deck_id, slot: idRow.slot });
+        if (!error) refresh();
+    }
+
+    async function archiveDeck(id: string) {
+        const { error } = await supabase.rpc("archive_deck", { p_deck_id: id });
+        if (!error) refresh();
+    }
+
+    async function purgeArchived() {
+        const { error } = await supabase.rpc("purge_archived_decks", { p_days: 30 });
+        if (!error) refresh();
+    }
 
     return (
-        <div style={{ padding:12, display:"grid", gap:12 }}>
-            <div className="topbar"><h1>Admin</h1></div>
-
-            <div className="panel">
-                <div style={{ fontWeight:700, marginBottom:8 }}>방</div>
-                {rooms.length === 0 ? <div style={{ opacity:0.6 }}>{loading ? "불러오는 중…" : "방이 없습니다."}</div> : (
-                    <div style={{ display:"grid", gap:8 }}>
-                        {rooms.map(r => (
-                            <div key={r.id} style={{ display:"grid", gridTemplateColumns:"160px 1fr auto", gap:8 }}>
-                                <span className="badge">code: {r.code}</span>
-                                <div style={{ fontSize:12, opacity:0.8 }}>
-                                    deck: {r.current_deck_id ? r.current_deck_id.slice(0,8) + "…" : "없음"} · p.{r.state?.page ?? 1}
-                                </div>
-                                <div style={{ display:"flex", gap:6 }}>
-                                    <button className="btn" onClick={() => nav(`/teacher?room=${r.code}&mode=present`)}>바로가기</button>
-                                    <button className="btn" onClick={async () => {
-                                        await supabase.rpc("goto_page", { p_code: r.code, p_page: 1 });
-                                    }}>1페이지로</button>
-                                </div>
-                            </div>
-                        ))}
-                    </div>
-                )}
+        <div className="p-4 max-w-6xl mx-auto">
+            <h1 className="text-xl font-semibold mb-3">Data Health</h1>
+            <div className="mb-3 flex gap-2">
+                <button className="px-3 py-2 border rounded" onClick={refresh} disabled={loading}>새로고침</button>
+                <button className="px-3 py-2 border rounded" onClick={purgeArchived}>아카이브 30일↑ 영구삭제</button>
             </div>
+            {msg && <div className="text-red-500 mb-2">{msg}</div>}
 
-            <div className="panel">
-                <div style={{ fontWeight:700, marginBottom:8 }}>고아 자료</div>
-                {orphans.length === 0 ? <div style={{ opacity:0.6 }}>없음</div> : (
-                    <div style={{ display:"grid", gap:8 }}>
-                        {orphans.map(d => (
-                            <div key={d.id} style={{ display:"grid", gridTemplateColumns:"1fr auto", gap:8 }}>
-                                <div>{d.title ?? d.id} <span className="badge">id: {d.id.slice(0,8)}…</span></div>
-                                <div style={{ display:"flex", gap:6 }}>
-                                    <button className="btn" onClick={() => nav(`/editor?deck=${d.id}`)}>편집</button>
-                                    <button className="btn" onClick={async () => {
-                                        await supabase.from("decks").delete().eq("id", d.id);
-                                    }}>삭제</button>
-                                </div>
-                            </div>
+            <section className="mb-6">
+                <h2 className="font-semibold mb-2">고아 room_decks</h2>
+                {orphans.length === 0 ? <div className="opacity-60">정상</div> : (
+                    <ul className="space-y-2">
+                        {orphans.map((r:any, i:number) => (
+                            <li key={i} className="border rounded p-2 flex items-center gap-2">
+                                <code className="text-xs">{r.room_id}</code>
+                                <span>slot {r.slot}</span>
+                                <code className="text-xs">{r.deck_id}</code>
+                                <button className="ml-auto px-2 py-1 border rounded" onClick={() => fixOrphan(r)}>삭제</button>
+                            </li>
                         ))}
-                    </div>
+                    </ul>
                 )}
-            </div>
+            </section>
+
+            <section>
+                <h2 className="font-semibold mb-2">더티 덱 (file_key 없음 / 오래된 임시 / 아카이브)</h2>
+                {dirty.length === 0 ? <div className="opacity-60">정상</div> : (
+                    <ul className="space-y-2">
+                        {dirty.map((d:any) => (
+                            <li key={d.id} className="border rounded p-2">
+                                <div className="text-sm font-medium">{d.title || d.id}</div>
+                                <div className="text-xs opacity-70">{d.is_temp ? "is_temp" : ""} {d.archived_at ? "archived" : ""}</div>
+                                <div className="text-xs break-all">{d.file_key || "(file_key 없음)"}</div>
+                                <div className="mt-2 flex gap-2">
+                                    <button className="px-2 py-1 border rounded" onClick={() => archiveDeck(d.id)}>아카이브</button>
+                                    {/* 필요 시: 파일 존재 체크 버튼/복구 버튼 추가 */}
+                                </div>
+                            </li>
+                        ))}
+                    </ul>
+                )}
+            </section>
         </div>
     );
 }
