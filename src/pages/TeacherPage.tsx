@@ -114,6 +114,7 @@ export default function TeacherPage() {
     const qs = new URLSearchParams(location.search);  // 먼저 선언
     const roomCode = qs.get("room") || "";
     const deckFromQS = qs.get("deck");
+    const toast = useToast();
 
     // ---- Room ----
     const defaultCode = useMemo(() => "CLASS-" + Math.random().toString(36).slice(2, 8).toUpperCase(), []);
@@ -254,9 +255,9 @@ export default function TeacherPage() {
 
     // ---- Student URL ----
     const studentUrl = useMemo(() => {
-           const base = getBasePath(); // 예: /AUTOPPT
-           return `${location.origin}${base}/#/student?room=${roomCode}`;
-         }, [roomCode]);
+        const base = getBasePath(); // 배포 BasePath (예: /AUTOPPT)
+        return `${location.origin}${base}/#/student?room=${roomCode}`;
+        }, [roomCode]);
 
     // ---- Current deck file url + total pages ----
     const [deckFileUrl, setDeckFileUrl] = useState<string | null>(null);
