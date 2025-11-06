@@ -16,28 +16,8 @@ async function rpc<T = any>(fn: string, args?: Record<string, any>) {
 }
 function useQS() { const { search } = useLocation(); return useMemo(() => new URLSearchParams(search), [search]); }
 
-// 파일 상단 근처에 추가
-async function getReadablePdfUrlFromKey(key: string): Promise<string> {
-    // 1) signed url 우선
-    try {
-        const { data, error } = await supabase
-            .storage.from("presentations")
-            .createSignedUrl(key, 60); // 60초
-        if (!error && data?.signedUrl) {
-            const u = new URL(data.signedUrl);
-            u.searchParams.set("v", String(Math.floor(Date.now() / 60000)));
-            return u.toString();
-        }
-    } catch {}
-    // 2) public URL 폴백
-    const raw = supabase.storage.from("presentations").getPublicUrl(key).data.publicUrl;
-    const u = new URL(raw);
-    u.searchParams.set("v", String(Math.floor(Date.now() / 60000)));
-    return u.toString();
-}
-
-
 export default function DeckEditorPage() {
+    const qs = useQS();
     const nav = useNavigate();
     const roomCode = qs.get("room") || "";
     const deckFromQS = qs.get("deck");
@@ -57,75 +37,6 @@ export default function DeckEditorPage() {
     const setPreviewPage = (p: number) => {
         _setPreviewPage(prev => (prev === p ? prev : p));
     };
-
-    function publicUrlWithV(key: string, v?: string | number) {
-        const url = supabase.storage.from("presentations").getPublicUrl(key).data.publicUrl;
-        const token = v ?? Math.floor(Date.now() / 60000); // 분단위 캐시버스트
-        return url + (url.includes("?") ? "&" : "?") + "v=" + token;
-    }
-
-    const qs = new URLSearchParams(location.search);
-    const qsDeckId = qs.get("deck") || undefined;
-    const qsRoom   = qs.get("room") || undefined;
-
-    const [filePages, setFilePages] = useState<number | null>(null);
-    const [loadErr, setLoadErr] = useState<string | null>(null);
-
-    useEffect(() => {
-        let cancel = false;
-        (async () => {
-            setLoadErr(null);
-            setFileUrl(null);
-            setFilePages(null);
-
-            try {
-                // 1) deck 파라미터가 오면 decks에서 직접 조회 (자료함 → 편집 직행 케이스)
-                if (qsDeckId) {
-                    const { data: d, error } = await supabase
-                        .from("decks")
-                        .select("id,file_key,file_pages,updated_at")
-                        .eq("id", qsDeckId)
-                        .maybeSingle();
-                    if (error) throw error;
-                    if (!d?.file_key) { setLoadErr("deck file not found"); return; }
-                    if (cancel) return;
-                    setDeckId(d.id);
-                    setFilePages(Number(d.file_pages) || null);
-                    setFileUrl(await getReadablePdfUrlFromKey(d.file_key));
-                    return;
-                }
-
-                // 2) 그 외에는 기존 흐름(방/슬롯 경유) 사용
-                //    room의 current_deck_id → decks에서 file_key 조회
-                if (!qsRoom) { setLoadErr("room not found"); return; }
-
-                const { data: roomRow } = await supabase
-                    .from("rooms")
-                    .select("id,current_deck_id")
-                    .eq("code", qsRoom)
-                    .maybeSingle();
-
-                const currentDeck = roomRow?.current_deck_id ?? null;
-                if (!currentDeck) { setLoadErr("deck not selected for room"); return; }
-
-                const { data: d2, error: e2 } = await supabase
-                    .from("decks")
-                    .select("id,file_key,file_pages,updated_at")
-                    .eq("id", currentDeck)
-                    .maybeSingle();
-                if (e2) throw e2;
-                if (!d2?.file_key) { setLoadErr("deck file not found"); return; }
-                if (cancel) return;
-                setDeckId(d2.id);
-                setFilePages(Number(d2.file_pages) || null);
-                setFileUrl(await getReadablePdfUrlFromKey(d2.file_key));
-            } catch (e: any) {
-                if (!cancel) setLoadErr(e?.message || "load failed");
-            }
-        })();
-        return () => { cancel = true; };
-    }, [qsDeckId, qsRoom]);
-    
 
     const attachedQuizzes = useMemo(() => {
         const page = Math.max(0, previewPage ?? 0);

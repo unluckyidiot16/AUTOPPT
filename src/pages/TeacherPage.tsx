@@ -50,27 +50,6 @@ async function gotoPageSafe(roomCode: string, nextPage: number): Promise<"ok" | 
     return "fail";
 }
 
-// 파일 상단 근처에 추가
-async function getReadablePdfUrlFromKey(key: string): Promise<string> {
-    // 1) signed url 우선
-    try {
-        const { data, error } = await supabase
-            .storage.from("presentations")
-            .createSignedUrl(key, 60); // 60초
-        if (!error && data?.signedUrl) {
-            const u = new URL(data.signedUrl);
-            u.searchParams.set("v", String(Math.floor(Date.now() / 60000)));
-            return u.toString();
-        }
-    } catch {}
-    // 2) public URL 폴백
-    const raw = supabase.storage.from("presentations").getPublicUrl(key).data.publicUrl;
-    const u = new URL(raw);
-    u.searchParams.set("v", String(Math.floor(Date.now() / 60000)));
-    return u.toString();
-}
-
-
 /** 쿼리스트링 */
 function useQS() {
     const { search } = useLocation();
@@ -111,8 +90,7 @@ function useFullscreenTarget(selector: string) {
 
 export default function TeacherPage() {
     const nav = useNavigate();
-    const qs = new URLSearchParams(location.search);  // 먼저 선언
-    const deckFromQS = qs.get("deck");
+    const qs = useQS();
     const toast = useToast();
 
     // ---- Room ----
@@ -255,9 +233,9 @@ export default function TeacherPage() {
 
     // ---- Student URL ----
     const studentUrl = useMemo(() => {
-        const base = getBasePath(); // 배포 BasePath (예: /AUTOPPT)
-        return `${location.origin}${base}/#/student?room=${roomCode}`;
-        }, [roomCode]);
+        const base = getBasePath();
+        return `${base}/#/student?room=${roomCode}`;
+    }, [roomCode]);
 
     // ---- Current deck file url + total pages ----
     const [deckFileUrl, setDeckFileUrl] = useState<string | null>(null);
@@ -271,8 +249,8 @@ export default function TeacherPage() {
                 if (cancelled) return;
                 if (key) {
                     // 공개 URL
-                    const finalUrl = await getReadablePdfUrlFromKey(key);
-                    setDeckFileUrl(finalUrl);
+                    const url = supabase.storage.from("presentations").getPublicUrl(key).data.publicUrl;
+                    setDeckFileUrl(url);
                 } else {
                     setDeckFileUrl(null);
                 }
@@ -514,25 +492,16 @@ export default function TeacherPage() {
                 {/* 학생 링크 & QR */}
                 <div>
                     <div style={{ fontWeight: 700, marginBottom: 6 }}>학생 접속</div>
-                    <div style={{ display: "grid", gridTemplateColumns: "180px 1fr", gap: 12, alignItems: "center" }}>
-                        <div style={{ background: "#fff", borderRadius: 12, padding: 12, width: 180, height: 180, overflow: "hidden", display: "grid", placeItems: "center" }}>
-                            {/* QR은 박스보다 작게(여백 포함) */}
-                            <RoomQR url={studentUrl} size={156} />
+                    <div style={{ display: "grid", gridTemplateColumns: "160px 1fr", gap: 12, alignItems: "center" }}>
+                        <div style={{ background: "#fff", borderRadius: 8, padding: 8 }}>
+                            <RoomQR url={studentUrl} size={144} />
                         </div>
-                        <div style={{ display: "flex", gap: 8, alignItems: "center", minWidth: 0 }}>
+                        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                             <a className="btn" href={studentUrl} target="_blank" rel="noreferrer">링크 열기</a>
-                            <span style={{ fontSize: 12, opacity: 0.8, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-        {studentUrl}
-      </span>
-                            <button
-                                className="btn"
-                                onClick={() => { navigator.clipboard?.writeText(studentUrl); }}
-                                title="주소 복사"
-                            >복사</button>
+                            <span style={{ fontSize: 12, opacity: 0.8 }}>{studentUrl}</span>
                         </div>
                     </div>
                 </div>
-
 
                 {/* 최근 제출 */}
                 <div>
