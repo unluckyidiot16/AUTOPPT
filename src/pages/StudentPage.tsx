@@ -9,6 +9,8 @@ import PdfViewer from "../components/PdfViewer";
 import { getManifestByRoom } from "../api/overrides";
 import type { ManifestItem, ManifestPageItem, ManifestQuizItem } from "../types/manifest";
 import QuizOverlay from "../components/QuizOverlay";
+import { usePresence } from "../hooks/usePresence";
+
 
 const DEBUG = true;
 const DBG = {
@@ -154,10 +156,17 @@ export default function StudentPage() {
     }, [slides, slide, step]);
     useEffect(() => { if (isQuiz && !submitted) setShowToast(true); }, [isQuiz, page, submitted]);
 
+    const presence = usePresence(roomCode, "student", {
+        studentId,
+        nickname,
+        heartbeatSec: 10,
+    });
+
     const saveNick = () => {
         const v = nickInput.trim();
         if (!v) { alert("닉네임을 입력하세요."); return; }
         setNicknameLS(v); setNicknameState(v); setEditNick(false);
+        presence.track({ nick: v }); // ← 닉 변경 즉시 presence 반영
     };
 
     const handleSubmit = async () => {

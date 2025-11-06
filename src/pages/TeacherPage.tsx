@@ -11,6 +11,8 @@ import { getManifestByRoom } from "../api/overrides";
 import type { ManifestItem, ManifestPageItem, ManifestQuizItem } from "../types/manifest";
 import DeckEditor from "../components/DeckEditor";
 import QuizOverlay from "../components/QuizOverlay";
+import { usePresence } from "../hooks/usePresence";
+
 
 type DeckSlot = { slot: number; deck_id: string | null; title?: string | null; file_key?: string | null };
 
@@ -85,6 +87,23 @@ export default function TeacherPage() {
 
     const [manifest, setManifest] = useState<ManifestItem[] | null>(null);
     const [editOpen, setEditOpen] = useState(false);
+
+    const presence = usePresence(roomCode, "teacher");
+
+    const [lastUnfocusedKeys, setLastUnfocusedKeys] = useState<string>("");
+    useEffect(() => {
+        const keys = presence.unfocused
+            .map(m => m.nick || m.studentId || "unknown")
+            .sort()
+            .join(",");
+        if (keys !== lastUnfocusedKeys) {
+            setLastUnfocusedKeys(keys);
+            if (presence.unfocused.length > 0) {
+                const names = presence.unfocused.map(m => m.nick || m.studentId).join(", ");
+                toast.show(`이탈/부재 감지: ${names}`);
+            }
+        }
+    }, [presence.unfocused, lastUnfocusedKeys]);
 
     useEffect(() => {
         const url = new URLSearchParams(qs.toString());
@@ -461,6 +480,9 @@ export default function TeacherPage() {
                 <div style={{ position: "fixed", inset: 0, display: "grid", placeItems: "center", background: "rgba(0,0,0,0.5)", zIndex: 70 }}>
                     <div className="panel" style={{ width: "min(92vw, 720px)", maxWidth: "95vw", maxHeight: "90vh", display: "flex", flexDirection: "column" }}>
                         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+                            <span className="badge">
+                                이탈 {presence.unfocused.length} / 전체 {presence.members.length}
+                            </span>
                             <div style={{ fontWeight: 700 }}>PDF 업로드</div>
                             <button className="btn" onClick={closeUpload}>×</button>
                         </div>
