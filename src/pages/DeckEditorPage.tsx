@@ -145,6 +145,90 @@ export default function DeckEditorPage() {
         return () => { cancel = true; };
     }, [roomCode, deckFromQS, sourceDeckId]);
 
+    async function cloneDeckFromSource(roomCode: string, sourceDeckId: string) {
+        // room
+        const { data: room, error: eRoom } = await supabase.from("rooms").select("id").eq("code", roomCode).maybeSingle();
+        if (eRoom || !room?.id) throw eRoom ?? new Error("room not found");
+        const roomId = room.id as string;
+
+        // source deck
+        const { data: src, error: eSrc } = await supabase
+            .from("decks")
+            .select("id,title,file_key,file_pages")
+            .eq("id", sourceDeckId).maybeSingle();
+        if (eSrc) throw eSrc;
+        if (!src?.file_key) throw new Error("원본 덱에 파일이 없습니다.");
+
+        // temp deck 생성
+        const ins = await supabase.from("decks").insert({
+            title: (src.title ? `${src.title} (편집)` : "Untitled (temp)"),
+            is_temp: true,
+        }).select("id").single();
+        if (ins.error) throw ins.error;
+        const newDeckId = ins.data.id as string;
+
+        // room 배정
+        await supabase.from("room_decks").upsert({ room_id: roomId, deck_id: newDeckId, slot: 1 });
+
+        // 파일 복사
+        const ts = Date.now();
+        const destKey = `rooms/${roomId}/decks/${newDeckId}/slides-${ts}.pdf`;
+        // copy → 폴백
+        let copied = false;
+        try { const { error } = await supabase.storage.from("presentations").copy(src.file_key as string, destKey); if (!error) copied = true; } catch {}
+        if (!copied) {
+            const dl = await supabase.storage.from("presentations").download(src.file_key as string);
+            if (dl.error) throw dl.error;
+            const up = await supabase.storage.from("presentations").upload(destKey, dl.data, { contentType: "application/pdf", upsert: true });
+            if (up.error) throw up.error;
+        }
+
+        // 덱 갱신
+        await supabase.from("decks").update({ file_key: destKey, file_pages: src.file_pages ?? null }).eq("id", newDeckId);
+
+        // 서명 URL 발급(쿼리 금지, 캐시버스터는 해시)
+        const { data: sdata, error: serr } = await supabase.storage.from("presentations").createSignedUrl(destKey, 1800);
+        if (serr || !sdata?.signedUrl) throw serr ?? new Error("signed url 실패");
+        const u = new URL(sdata.signedUrl); u.hash = `v=${Math.floor(Date.now()/60000)}`;
+
+        return { roomId, deckId: newDeckId, signedUrl: u.toString(), totalPages: Number(src.file_pages || 0) };
+    }
+
+    useEffect(() => {
+        let cancel = false;
+        (async () => {
+            setLoading(true);
+            setErr(null);
+            setFileUrl(null);
+
+            try {
+                if (!roomCode && !deckFromQS && !sourceDeckId) throw new Error("room 또는 deck/src 파라미터가 필요합니다.");
+
+                if (sourceDeckId) {
+                    // ← 복제 편집
+                    const ensured = await cloneDeckFromSource(roomCode, sourceDeckId);
+                    if (cancel) return;
+                    setDeckId(ensured.deckId);
+                    setFileUrl(ensured.signedUrl);
+                    setTotalPages(ensured.totalPages);
+                } else {
+                    // ← 기존: deck 직접 열기
+                    // ... (지금 작성해 두신 로직 유지) ...
+                    // 이때도 서명 URL엔 쿼리 붙이지 않도록 주의!
+                }
+
+                try {
+                    const m = await getManifestByRoom(roomCode);
+                    if (!cancel) setItems(m || []);
+                } catch {}
+            } catch (e: any) {
+                if (!cancel) setErr(e?.message || "로드 실패");
+            } finally {
+                if (!cancel) setLoading(false);
+            }
+        })();
+        return () => { cancel = true; };
+    }, [roomCode, deckFromQS, sourceDeckId]);
 
 
     // 최초 1회 미리보기 페이지 지정

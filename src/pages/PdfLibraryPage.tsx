@@ -14,6 +14,37 @@ type DeckRow = {
     created_at: string;
 };
 
+// 파일 상단 import 근처
+function useSignedUrl(key: string | null, ttlSec = 1800) {
+    const [url, setUrl] = React.useState("");
+    React.useEffect(() => {
+        let cancel = false;
+        (async () => {
+            if (!key) { setUrl(""); return; }
+            try {
+                const { data, error } = await supabase.storage.from("presentations").createSignedUrl(key, ttlSec);
+                if (!error && data?.signedUrl) {
+                    const u = new URL(data.signedUrl);
+                    // ⚠️ 서명 URL엔 쿼리 붙이지 말 것 — 해시만 사용
+                    u.hash = `v=${Math.floor(Date.now()/60000)}`;
+                    if (!cancel) setUrl(u.toString());
+                    return;
+                }
+            } catch {}
+            // 폴백(버킷이 public일 때만 유효)
+            try {
+                const raw = supabase.storage.from("presentations").getPublicUrl(key).data.publicUrl;
+                const u = new URL(raw);
+                u.searchParams.set("v", String(Math.floor(Date.now()/60000))); // public엔 query 가능
+                if (!cancel) setUrl(u.toString());
+            } catch { if (!cancel) setUrl(""); }
+        })();
+        return () => { cancel = true; };
+    }, [key, ttlSec]);
+    return url;
+}
+
+
 function useQS() {
     const loc = useLocation();
     return new URLSearchParams(loc.search);
@@ -103,7 +134,10 @@ function PreviewModal({
                 </div>
                 <div className="pdf-stage" style={{ flex: 1, overflow: "auto", borderRadius: 8, background: "#f3f4f6" }}>
                     {fileUrl ? (
-                        <PdfViewer fileUrl={fileUrl} page={currentPage} maxHeight="calc(90vh - 120px)" />
+                        {(() => {
+                            const url = useSignedUrl(d.file_key);
+                            return url ? <PdfViewer fileUrl={url} page={1} maxHeight="140px" /> : <div style={{height:140}} />;
+                        })()}
                     ) : (
                         <div style={{ padding: 16, textAlign: "center", opacity: 0.6 }}>파일이 없습니다.</div>
                     )}
@@ -154,7 +188,7 @@ export default function PdfLibraryPage() {
     );
 
     function Thumb({ keyStr }: { keyStr: string }) {
-        const fileUrl = useSignedUrl(keyStr);
+        const fileUrl = useSignedUrl(preview.file_key);
         return (
             <div className="pdf-thumb" style={{ borderRadius:8, overflow:"hidden", marginBottom:8, border:"1px solid rgba(148,163,184,0.25)", height:140 }}>
                 {fileUrl ? <PdfViewer fileUrl={fileUrl} page={1} maxHeight="140px" /> : null}
@@ -278,7 +312,11 @@ export default function PdfLibraryPage() {
                                     {d.file_key && <OpenSignedLink fileKey={d.file_key} />}
                                     {d.file_key && <button className="btn" onClick={() => setPreview(d)}>미리보기</button>}
                                     <button className="btn btn-primary" onClick={() => assignAndUse(d)}>지금 불러오기</button>
-                                    <button className="btn" onClick={() => nav(`/editor?room=${roomCode}&src=${d.id}`)}>편집</button>
+                                    <button className="btn" onClick={() => {
+                                        if (!d.file_key) { alert("원본 덱에 파일이 없습니다."); return; }
+                                        nav(`/editor?room=${roomCode}&src=${d.id}`); // ← 복제 편집 진입
+                                    }}
+                                    >편집</button>
                                 </div>
                             </div>
                         ))}
