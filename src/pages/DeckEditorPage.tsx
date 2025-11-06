@@ -12,7 +12,6 @@ import { ensureEditingDeckFromSource } from "../utils/tempDeck";
 
 const TEMPLATE_KEY = "_templates/blank-1p.pdf"; // presentations 버킷에 미리 올려둔 1p 빈 PDF
 const TEMPLATE_PAGES = 1;                        // 템플릿 페이지 수
-const [deckId, setDeckId] = useState<string | null>(deckFromQS || null);
 
 type RoomRow = { id: string; current_deck_id: string | null };
 
@@ -73,6 +72,8 @@ export default function DeckEditorPage() {
     const roomCode = qs.get("room") || "";
     const deckFromQS = qs.get("deck");
     const sourceDeckId = qs.get("src");
+
+    const [deckId, setDeckId] = useState<string | null>(deckFromQS);
 
     const [items, setItems] = useState<ManifestItem[]>([]);
     const [previewPage, _setPreviewPage] = useState<number | null>(null);
@@ -156,9 +157,9 @@ export default function DeckEditorPage() {
         previewOnce.current = true;
     }, [loading, items, totalPages]);
 
-    const maxPage = Math.max(0, Number(totalPages || 0));
-    const dec = () => setPreviewPage(Math.max(0, Math.min(maxPage, (previewPage ?? 0) - 1)));
-    const inc = () => setPreviewPage(Math.max(0, Math.min(maxPage, (previewPage ?? 0) + 1)));
+    const maxPage = Math.max(1, Number(totalPages || 1));
+    const dec = () => setPreviewPage(Math.max(1, Math.min(maxPage, (previewPage ?? 1) - 1)));
+    const inc = () => setPreviewPage(Math.max(1, Math.min(maxPage, (previewPage ?? 1) + 1)));
 
     return (
         <div style={{ padding: 12 }}>
@@ -185,7 +186,7 @@ export default function DeckEditorPage() {
                     <EditorPreviewPane
                         key={`${fileUrl}|prev|p=${previewPage ?? 0}`}
                         fileUrl={fileUrl}
-                        page={Math.max(0, previewPage ?? 0)}
+                        page={Math.max(1, previewPage ?? 1)}
                         height="82vh"
                     />
                     <DeckEditor
