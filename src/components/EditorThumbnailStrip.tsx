@@ -1,8 +1,6 @@
-// src/components/EditorThumbnailStrip.tsx
+// src/components/EditorThumbnailStrip.tsx  (workerless-safe + LRU cache 동일)
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { getDocument, GlobalWorkerOptions } from "pdfjs-dist";
-// @ts-ignore
-import PdfJsWorker from "pdfjs-dist/build/pdf.worker.min.mjs?worker";
+import { loadPdfJs } from "../lib/pdfjs";
 
 type ThumbItem = { id: string; page: number };
 type Props = {
@@ -19,17 +17,6 @@ type Props = {
 
 type PDFDoc = any;
 type PDFPage = any;
-
-let WORKER_BOUND = false;
-function ensureWorker() {
-    if (!WORKER_BOUND) {
-        const w = new PdfJsWorker();
-        GlobalWorkerOptions.workerPort = w;
-        // @ts-ignore
-        (globalThis as any).__autoppt_pdf_worker = w;
-        WORKER_BOUND = true;
-    }
-}
 
 // ---- 썸네일 LRU 캐시 ----
 type CacheBucket = Map<number, string>; // page -> dataURL
@@ -67,17 +54,19 @@ export default function EditorThumbnailStrip({
 
     useEffect(() => {
         let cancelled = false;
-        if (!fileUrl) { setDoc(null); setErr(null); return; }
-        ensureWorker();
-        const task = getDocument({ url: fileUrl, withCredentials: false });
         (async () => {
             try {
+                if (!fileUrl) { setDoc(null); setErr(null); return; }
+                const pdfjs: any = await loadPdfJs();
+                const task = pdfjs.getDocument({ url: fileUrl, withCredentials: false, disableWorker: true });
                 const pdf = await task.promise;
-                if (cancelled) { await pdf.destroy?.(); return; }
+                if (cancelled) { await pdf?.destroy?.(); return; }
                 setDoc(pdf);
-            } catch { if (!cancelled) setErr("썸네일 로드 실패"); }
+            } catch {
+                if (!cancelled) setErr("썸네일 로드 실패");
+            }
         })();
-        return () => { cancelled = true; try { task?.destroy?.(); } catch {} };
+        return () => { cancelled = true; };
     }, [fileUrl]);
 
     const dragSrcId = useRef<string | null>(null);
@@ -158,7 +147,6 @@ function Thumb({
         let cancelled = false;
         if (!pdf || !visible || isBlank) { setLoading(false); setErr(null); return; }
 
-        // 캐시 hit → <img>로 표시
         const hit = cacheGet(cacheKey, pageNumber);
         if (hit && imgRef.current) {
             imgRef.current.src = hit;

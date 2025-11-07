@@ -1,23 +1,9 @@
-// src/components/StaticPdfPage.tsx
+// src/components/StaticPdfPage.tsx  (workerless-safe)
 import React, { useEffect, useRef, useState } from "react";
-import { getDocument, GlobalWorkerOptions } from "pdfjs-dist";
-// @ts-ignore
-import PdfJsWorker from "pdfjs-dist/build/pdf.worker.min.mjs?worker";
+import { loadPdfJs } from "../lib/pdfjs";
 
 type PDFDoc = any;
 type PDFPage = any;
-
-let WORKER_BOUND = false;
-function ensureWorker() {
-    if (!WORKER_BOUND) {
-        const w = new PdfJsWorker();
-        GlobalWorkerOptions.workerPort = w;
-        // @ts-ignore
-        (globalThis as any).__autoppt_pdf_worker = w;
-        WORKER_BOUND = true;
-    }
-}
-
 type FitMode = "height" | "width";
 
 export default function StaticPdfPage({
@@ -28,8 +14,8 @@ export default function StaticPdfPage({
                                       }: {
     fileUrl: string;
     page: number;        // 1..N
-    fit?: FitMode;       // ⬅ 추가: height(기본) | width
-    maxHeight?: string;  // fit=height일 때만 사용
+    fit?: FitMode;       // height | width
+    maxHeight?: string;  // fit=height 일 때만 사용
 }) {
     const wrapRef   = useRef<HTMLDivElement | null>(null);
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -37,7 +23,6 @@ export default function StaticPdfPage({
 
     useEffect(() => {
         if (!fileUrl || page <= 0) return;
-        ensureWorker();
 
         let cancelled = false;
         let pdf: PDFDoc | null = null;
@@ -46,7 +31,8 @@ export default function StaticPdfPage({
 
         (async () => {
             try {
-                pdfTask = getDocument({ url: fileUrl, withCredentials: false });
+                const pdfjs: any = await loadPdfJs();
+                pdfTask = pdfjs.getDocument({ url: fileUrl, withCredentials: false, disableWorker: true });
                 pdf = await pdfTask.promise;
                 if (cancelled) { await pdf?.destroy?.(); return; }
 

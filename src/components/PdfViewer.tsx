@@ -1,11 +1,11 @@
-// src/components/PdfViewer.tsx  (full replace)
+// src/components/PdfViewer.tsx
 import React from "react";
 import { loadPdfJs } from "../lib/pdfjs";
 
 type Props = {
     fileUrl: string;
-    page?: number;            // 1-based
-    maxHeight?: string;       // e.g. "500px"
+    page?: number;      // 1-based
+    maxHeight?: string; // e.g. "500px"
 };
 
 export default function PdfViewer({ fileUrl, page = 1, maxHeight }: Props) {
@@ -24,8 +24,11 @@ export default function PdfViewer({ fileUrl, page = 1, maxHeight }: Props) {
             if (!canvas) return;
 
             try {
-                const pdfjs: any = await loadPdfJs();
-                loadingTask = pdfjs.getDocument({ url: fileUrl, disableWorker: true });
+                const pdfjs: any = await loadPdfJs();                 // ← 공통 로더
+                loadingTask = pdfjs.getDocument({
+                    url: fileUrl,
+                    disableWorker: true,                                // ← 워커 비활성화(중요)
+                });
                 const pdf = await loadingTask.promise;
                 if (!mounted) return;
                 pdfDoc = pdf;
@@ -35,12 +38,12 @@ export default function PdfViewer({ fileUrl, page = 1, maxHeight }: Props) {
                 if (!mounted) return;
 
                 const dpr = window.devicePixelRatio || 1;
-                const viewport = pdfPage.getViewport({ scale: 1 });
+                const baseVp = pdfPage.getViewport({ scale: 1 });
 
                 let scale = dpr;
                 if (maxHeight) {
                     const h = parseFloat(maxHeight);
-                    if (!Number.isNaN(h) && h > 0) scale = (h * dpr) / viewport.height;
+                    if (!Number.isNaN(h) && h > 0) scale = (h * dpr) / baseVp.height;
                 }
 
                 const vp = pdfPage.getViewport({ scale });
@@ -60,8 +63,8 @@ export default function PdfViewer({ fileUrl, page = 1, maxHeight }: Props) {
                     msg.includes("Worker was terminated") ||
                     e?.name === "AbortException" ||
                     e?.name === "RenderingCancelledException"
-                ) return;
-                if (mounted) setErr("PDF 로드 실패");
+                ) return; // 언마운트 중 취소
+                setErr("PDF 로드 실패");
                 console.debug("[PdfViewer] error:", e);
             }
         })();
