@@ -1,6 +1,7 @@
 // src/components/EditorThumbnailStrip.tsx  (workerless-safe + LRU cache 동일)
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { loadPdfJs } from "../lib/pdfjs";
+import { loadPdfJs, openPdf } from "../lib/pdfjs";
+
 
 type ThumbItem = { id: string; page: number };
 type Props = {
@@ -57,8 +58,9 @@ export default function EditorThumbnailStrip({
         (async () => {
             try {
                 if (!fileUrl) { setDoc(null); setErr(null); return; }
-                const pdfjs: any = await loadPdfJs();
-                const task = pdfjs.getDocument({ url: fileUrl, withCredentials: false, disableWorker: true });
+                await loadPdfJs(); // ensure loaded
+                // ⬇ 썸네일은 workerless로 통일
+                const task = openPdf(fileUrl, { disableWorker: true, withCredentials: false });
                 const pdf = await task.promise;
                 if (cancelled) { await pdf?.destroy?.(); return; }
                 setDoc(pdf);

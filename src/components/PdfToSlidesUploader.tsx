@@ -1,7 +1,7 @@
 // src/components/PdfToSlidesUploader.tsx
 import React, { useCallback, useRef, useState } from "react";
 import { supabase } from "../supabaseClient";
-import { loadPdfJs } from "../lib/pdfjs";
+import { loadPdfJs, openPdf } from "../lib/pdfjs";
 
 /** ========== 유틸 ========== */
 async function fileToArrayBuffer(f: File): Promise<ArrayBuffer> { return await f.arrayBuffer(); }
@@ -78,9 +78,10 @@ export default function PdfToSlidesUploader({ onFinished }: { onFinished?: (x:{ 
             // 3) pdf.js 로드 + 분석 (워커 실패시 메인스레드 모드)
             setStage("PDF 분석");
             const pdfjs: any = await loadPdfJs();
+            const buf = await file.arrayBuffer();
             pushLog("pdf.js 로드: workerless-safe");
             const ab = await fileToArrayBuffer(file);
-            const loadingTask = pdfjs.getDocument({ data: ab, disableWorker: true }); // ✅ 항상 워커 비활성화
+            const loadingTask = openPdf(buf, { disableWorker: true });
             
             const pdf = await loadingTask.promise;
             const total = pdf.numPages;
