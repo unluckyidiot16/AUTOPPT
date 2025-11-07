@@ -434,11 +434,23 @@ export default function PdfLibraryPage() {
     const onUploaded = React.useCallback(() => { load(); }, [load]);
 
     // 불러오기
-    async function createDeckFromFileKeyAndAssign(fileKey: string, roomId: string, slot: number) {
-        const ins = await supabase.from("decks").insert({ title: "Imported", is_temp: true }).select("id").single();
+    // 1) 파일 키로 새 덱 만들어 rooms/<room>/decks/<newDeck>/... 로 복사 + 슬롯 배정
+    async function createDeckFromFileKeyAndAssign(
+        fileKey: string,
+        roomId: string,
+        slot: number,
+        title?: string | null
+    ) {
+        // (A) decks: 새 덱 생성  (is_temp 제거)
+        const ins = await supabase
+            .from("decks")
+            .insert({ title: title ?? "Imported" })
+            .select("id")
+            .single();
         if (ins.error) throw ins.error;
         const newDeckId = ins.data.id as string;
 
+        // (B) 스토리지: rooms/<room>/decks/<newDeck>/slides-*.pdf 로 복제
         const ts = Date.now();
         const destKey = `rooms/${roomId}/decks/${newDeckId}/slides-${ts}.pdf`;
 
@@ -450,14 +462,56 @@ export default function PdfLibraryPage() {
         if (!copied) {
             const dl = await supabase.storage.from("presentations").download(fileKey);
             if (dl.error) throw dl.error;
-            const up = await supabase.storage.from("presentations").upload(destKey, dl.data, { contentType: "application/pdf", upsert: true });
+            const up = await supabase.storage
+                .from("presentations")
+                .upload(destKey, dl.data, { contentType: "application/pdf", upsert: true });
             if (up.error) throw up.error;
         }
 
-        await supabase.from("decks").update({ file_key: destKey }).eq("id", newDeckId);
-        await supabase.from("room_decks").upsert({ room_id: roomId, deck_id: newDeckId, slot }, { onConflict: "room_id,slot" });
+        // (C) decks.file_key 업데이트
+        const upDeck = await supabase.from("decks").update({ file_key: destKey }).eq("id", newDeckId);
+        if (upDeck.error) throw upDeck.error;
+
+        // (D) room_decks 배정 (room_id+slot 유니크 기준 업서트)
+        const upMap = await supabase
+            .from("room_decks")
+            .upsert({ room_id: roomId, slot, deck_id: newDeckId }, { onConflict: "room_id,slot" })
+            .select("deck_id")
+            .single();
+        if (upMap.error) throw upMap.error;
+
+        // (E) 검증 로그(콘솔 확인용)
+        try {
+            const verify = await supabase
+                .from("room_decks")
+                .select("deck_id,slot")
+                .eq("room_id", roomId)
+                .eq("slot", slot)
+                .maybeSingle();
+            console.log("[LIB:assign] mapped =>", verify.data);
+        } catch {}
+
         return newDeckId;
     }
+
+// 2) 불러오기 버튼 핸들러 (항상 복제 후 배정으로 통일)
+    async function assignDeckToSlot(d: DeckRow, slot: number) {
+        if (!roomCode) { alert("room 파라미터가 필요합니다."); return; }
+        if (!d.file_key) { alert("파일이 없습니다."); return; }
+
+        try {
+            const rid = await ensureRoomId();
+
+            // 출처(DB/Storage 상관없이) 항상 복제 후 새 덱으로 매핑
+            await createDeckFromFileKeyAndAssign(d.file_key, rid, slot, d.title);
+
+            alert(`✅ ${slot}교시로 불러왔습니다.`);
+        } catch (e: any) {
+            console.error(e);
+            alert(`불러오기 실패: ${e?.message || e}`);
+        }
+    }
+
 
     async function assignDeckToSlot(d: DeckRow, slot: number) {
         if (!roomCode) { alert("room 파라미터가 필요합니다."); return; }
