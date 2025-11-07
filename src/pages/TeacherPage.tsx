@@ -140,20 +140,18 @@ export default function TeacherPage() {
     const [manifest, setManifest] = useState<RpcManifest | null>(null);
     const [activeSlot, setActiveSlot] = useState<number>(1);
 
-    useEffect(() => {
-        let cancel = false;
-        (async () => {
-            if (!roomCode) return setManifest(null);
-            try {
-                const data = await rpc<RpcManifest>("get_student_manifest_by_code", { p_room_code: roomCode });
-                if (!cancel) setManifest(data);
-            } catch (e) {
-                DBG.err("manifest rpc", e);
-                if (!cancel) setManifest(null);
-            }
-        })();
-        return () => { cancel = true; };
+    const refreshManifest = useCallback(async () => {
+        if (!roomCode) return setManifest(null);
+        try {
+            const data = await rpc<RpcManifest>("get_student_manifest_by_code", { p_room_code: roomCode });
+            setManifest(data);
+        } catch (e) {
+            DBG.err("manifest rpc", e);
+            setManifest(null);
+        }
     }, [roomCode]);
+
+    useEffect(() => { refreshManifest(); }, [refreshManifest]);
 
     const totalPages = useMemo(() => {
         const slot = manifest?.slots?.find(s => s.slot === activeSlot) ?? manifest?.slots?.[0];
@@ -226,16 +224,127 @@ export default function TeacherPage() {
         })();
     }, [roomId, page]);
 
-    const Badge: React.FC<React.PropsWithChildren<{ muted?: boolean }>> = ({ children, muted }) => (
-        <span style={{ border: "1px solid rgba(148,163,184,0.25)", borderRadius: 999, padding: "2px 8px", fontSize: 12, color: muted ? "#94a3b8" : "#e5e7eb" }}>
-      {children}
-    </span>
-    );
+    // ========== 테스트 업로드(교시/업로드) ==========
+
+    const [slotInput, setSlotInput] = useState<number>(1); // 교시 선택용
+    const [files, setFiles] = useState<FileList | null>(null);
+    const [uploading, setUploading] = useState(false);
+    const [ulog, setUlog] = useState<string[]>([]);
+
+    useEffect(() => {
+        // 교시 초기값: activeSlot과 동기화
+        setSlotInput(activeSlot);
+    }, [activeSlot]);
+
+    const pushLog = (s: string) => setUlog((prev) => [s, ...prev].slice(0, 50));
+
+    const handleTestUpload = useCallback(async () => {
+        try {
+            if (!roomId) { toast.show("방 정보를 불러오는 중입니다."); return; }
+            if (!files || files.length === 0) { toast.show("업로드할 이미지 파일을 선택하세요."); return; }
+
+            setUploading(true); setUlog([]);
+
+            // 로그인 사용자
+            const { data: u } = await supabase.auth.getUser();
+            const uid = u.user?.id;
+            if (!uid) { toast.show("로그인이 필요합니다."); return; }
+
+            // 1) materials 생성
+            const title = `AutoMat ${new Date().toISOString()}`;
+            const { data: mat, error: em } = await supabase
+                .from("materials")
+                .insert({ owner_id: uid, title, source_type: "images" })
+                .select()
+                .single();
+            if (em) throw em;
+            const matId: string = String(mat.id).toLowerCase();
+            pushLog(`materials 생성: ${matId}`);
+
+            // 정렬: 파일명 기준 오름차순
+            const list = Array.from(files).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+
+            // 2) slides 업로드 + material_pages upsert
+            for (let i = 0; i < list.length; i++) {
+                const f = list[i];
+                const ext = (() => {
+                    const n = f.name.toLowerCase();
+                    const m = n.match(/\.(webp|png|jpg|jpeg)$/i);
+                    return m ? m[1] : "webp";
+                })();
+                const path = `${matId}/pages/${i}.${ext}`;
+                const { error: eu } = await supabase.storage.from("slides")
+                    .upload(path, f, { upsert: true, contentType: f.type || undefined, cacheControl: "3600" });
+                if (eu) throw eu;
+
+                await supabase.from("material_pages").upsert(
+                    {
+                        material_id: matId,
+                        page_index: i,
+                        image_key: path,
+                        width: 16,
+                        height: 16,
+                        thumb_key: null,
+                        ocr_json_key: null,
+                    },
+                    { onConflict: "material_id,page_index" }
+                );
+
+                pushLog(`업로드 완료: ${path}`);
+            }
+
+            // 3) lessons 생성
+            const { data: lesson, error: el } = await supabase
+                .from("lessons")
+                .insert({ owner_id: uid, title: `Lesson of ${matId}` })
+                .select()
+                .single();
+            if (el) throw el;
+            const lessonId: string = lesson.id;
+            pushLog(`lesson 생성: ${lessonId}`);
+
+            // 4) lesson_slides 벌크 생성
+            const slidesRows = list.map((_, i) => ({
+                lesson_id: lessonId,
+                sort_index: i,
+                kind: "material",
+                material_id: matId,
+                page_index: i,
+            }));
+            const { error: es } = await supabase.from("lesson_slides").insert(slidesRows);
+            if (es) throw es;
+            pushLog(`lesson_slides ${slidesRows.length}건 생성`);
+
+            // 5) room_lessons에 교시 배정(upsert)
+            const { error: erl } = await supabase.from("room_lessons").upsert(
+                { room_id: roomId, slot: slotInput, lesson_id: lessonId, current_index: 0 },
+                { onConflict: "room_id,slot" }
+            );
+            if (erl) throw erl;
+            pushLog(`room_lessons: ${slotInput}교시에 배정 완료`);
+
+            // 6) 매니페스트 새로고침 + 페이지 1로
+            await refreshManifest();
+            setActiveSlot(slotInput);
+            await gotoPage(1);
+
+            toast.show("업로드/배정 완료!");
+        } catch (e: any) {
+            DBG.err("handleTestUpload", e);
+            toast.show(e?.message ?? String(e));
+        } finally {
+            setUploading(false);
+        }
+    }, [files, roomId, slotInput, toast, refreshManifest, gotoPage]);
+
+    // ===================== UI =====================
 
     const StageBlock = (
         <div className="panel" style={{ padding: 12 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
-                <div style={{ fontSize: 12, opacity: 0.7 }}>페이지 {page}{totalPages ? ` / ${totalPages}` : ""}</div>
+                <div style={{ fontSize: 12, opacity: 0.7 }}>
+                    {activeSlot}교시 · 페이지 {page}{totalPages ? ` / ${totalPages}` : ""}
+                </div>
                 <a className="btn" href={studentUrl} target="_blank" rel="noreferrer">학생 접속 링크</a>
                 <button className="btn" onClick={toggleFS}>{isFS ? "전체화면 해제" : "전체화면"}</button>
             </div>
@@ -256,6 +365,54 @@ export default function TeacherPage() {
 
     const SetupRight = (
         <div className="panel" style={{ display: "grid", gap: 12 }}>
+            {/* 교시 선택 */}
+            <div>
+                <div style={{ fontWeight: 700, marginBottom: 6 }}>교시 선택</div>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <select
+                        value={slotInput}
+                        onChange={(e) => setSlotInput(parseInt(e.target.value, 10))}
+                        className="input"
+                    >
+                        {[1,2,3,4,5,6].map(n => (
+                            <option key={n} value={n}>{n}교시</option>
+                        ))}
+                    </select>
+                    <button className="btn" onClick={() => setActiveSlot(slotInput)}>
+                        이 교시 보기
+                    </button>
+                    <span style={{ fontSize: 12, opacity: .7 }}>
+            (현재: {activeSlot}교시)
+          </span>
+                </div>
+            </div>
+
+            {/* 테스트 업로드 */}
+            <div>
+                <div style={{ fontWeight: 700, marginBottom: 6 }}>테스트 업로드 (이미지 → 자료 생성 → 교시 배정)</div>
+                <div style={{ display: "grid", gap: 8 }}>
+                    <input
+                        type="file"
+                        multiple
+                        accept="image/*"
+                        onChange={(e) => setFiles(e.target.files)}
+                    />
+                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                        <button className="btn" onClick={handleTestUpload} disabled={uploading}>
+                            {uploading ? "업로드 중…" : `${slotInput}교시에 업로드+배정`}
+                        </button>
+                        <span style={{ fontSize: 12, opacity: .7 }}>
+              {files?.length ? `${files.length}개 선택됨` : "이미지 여러 장 선택 가능 (이름순으로 정렬)"}
+            </span>
+                    </div>
+                    {!!ulog.length && (
+                        <div style={{ maxHeight: 160, overflow: "auto", background: "#0b1220", color: "#cbd5e1", borderRadius: 8, padding: 8, fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace", fontSize: 12 }}>
+                            {ulog.map((l, i) => <div key={i}>• {l}</div>)}
+                        </div>
+                    )}
+                </div>
+            </div>
+
             {/* 학생 접속 */}
             <div>
                 <div style={{ fontWeight: 700, marginBottom: 6 }}>학생 접속</div>
@@ -311,7 +468,7 @@ export default function TeacherPage() {
                 <div style={{ display: "grid", gridTemplateColumns: "1.25fr 0.75fr", gap: 16 }}>
                     <div className="panel">
                         <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 6 }}>
-                            페이지 {page}{totalPages ? ` / ${totalPages}` : ""}
+                            {activeSlot}교시 · 페이지 {page}{totalPages ? ` / ${totalPages}` : ""}
                         </div>
                         <div className="slide-stage" style={{ width: "100%", height: 500, display: "grid", placeItems: "center" }}>
                             <SlideStage
