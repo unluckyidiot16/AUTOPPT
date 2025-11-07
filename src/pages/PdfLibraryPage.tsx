@@ -8,11 +8,11 @@ import PdfToSlidesUploader from "../components/PdfToSlidesUploader";
 // ───────────────────────────────────────────────────────────────────────────────
 // Types
 type DeckRow = {
-    id: string;                   // DB 덱이면 uuid, 스토리지 항목이면 "s:<file_key>"
+    id: string; // DB 덱이면 uuid, 스토리지 항목이면 "s:<file_key>"
     title: string | null;
-    file_key: string | null;      // presentations/* 경로
+    file_key: string | null; // presentations/* 경로
     file_pages: number | null;
-    origin: "db" | "storage";     // DB(decks) vs storage-only(폴더 스캔)
+    origin: "db" | "storage"; // DB(decks) vs storage-only(폴더 스캔)
 };
 
 // ───────────────────────────────────────────────────────────────────────────────
@@ -21,7 +21,7 @@ function usePrefersDark() {
     const [dark, setDark] = React.useState<boolean>(
         typeof window !== "undefined" &&
         (window as any).matchMedia &&
-        (window as any).matchMedia("(prefers-color-scheme: dark)").matches
+        (window as any).matchMedia("(prefers-color-scheme: dark)").matches,
     );
     React.useEffect(() => {
         if (typeof window === "undefined" || !(window as any).matchMedia) return;
@@ -34,21 +34,25 @@ function usePrefersDark() {
     }, []);
     return dark;
 }
-async function copySlidesDir(srcPrefix: string, destPrefix: string, onStep?: (copied: number, total: number) => void) {
+
+async function copySlidesDir(
+    srcPrefix: string,
+    destPrefix: string,
+    onStep?: (copied: number, total: number) => void,
+) {
     // srcPrefix/destPrefix는 'slides' 버킷 기준 경로 (예: 'decks/brain-storming-xxx' → 'rooms/<room>/decks/<deckId>')
     const slides = supabase.storage.from("slides");
 
     // 1) 소스 목록 재귀 수집
     async function listAll(prefix: string): Promise<string[]> {
         const out: string[] = [];
-        const stack = [prefix.replace(/\/+$/,'')];
+        const stack = [prefix.replace(/\/+$/, "")];
         while (stack.length) {
             const cur = stack.pop()!;
             const ls = await slides.list(cur);
             if (ls.error) throw ls.error;
-            for (const ent of (ls.data || [])) {
+            for (const ent of ls.data || []) {
                 const child = `${cur}/${ent.name}`;
-                // 폴더인지 파일인지 판별: 하위가 있으면 폴더
                 const probe = await slides.list(child);
                 if (!probe.error && (probe.data?.length || 0) > 0) {
                     stack.push(child);
@@ -67,7 +71,7 @@ async function copySlidesDir(srcPrefix: string, destPrefix: string, onStep?: (co
     // 2) 파일 복사 (없으면 download→upload 폴백)
     let copied = 0;
     for (const srcPath of files) {
-        const rel = srcPath.slice(srcPrefix.length).replace(/^\/+/,'');  // 하위 경로
+        const rel = srcPath.slice(srcPrefix.length).replace(/^\/+/, ""); // 하위 경로
         const dstPath = `${destPrefix}/${rel}`;
 
         // try native copy
@@ -87,7 +91,11 @@ async function copySlidesDir(srcPrefix: string, destPrefix: string, onStep?: (co
 }
 
 // (추가) 빠른 슬라이드 복사: .done.json → 정확한 파일명 세트만 복사
-async function copySlidesFastByDone(slidesPrefixSrc: string, slidesPrefixDst: string, onStep?: (copied: number, total: number) => void) {
+async function copySlidesFastByDone(
+    slidesPrefixSrc: string,
+    slidesPrefixDst: string,
+    onStep?: (copied: number, total: number) => void,
+) {
     const slides = supabase.storage.from("slides");
     // 1) .done.json 읽기
     const doneKey = `${slidesPrefixSrc}/.done.json`;
@@ -133,10 +141,10 @@ type BtnProps = React.ButtonHTMLAttributes<HTMLButtonElement> & {
 };
 
 const chipPal = {
-    blue:  { bgD: "rgba(59,130,246,.18)",  bgL: "rgba(59,130,246,.12)",  bdD: "rgba(59,130,246,.45)",  fgD: "#bfdbfe", fgL: "#1e40af" },
-    green: { bgD: "rgba(16,185,129,.18)",  bgL: "rgba(16,185,129,.12)",  bdD: "rgba(16,185,129,.45)",  fgD: "#bbf7d0", fgL: "#065f46" },
+    blue: { bgD: "rgba(59,130,246,.18)", bgL: "rgba(59,130,246,.12)", bdD: "rgba(59,130,246,.45)", fgD: "#bfdbfe", fgL: "#1e40af" },
+    green: { bgD: "rgba(16,185,129,.18)", bgL: "rgba(16,185,129,.12)", bdD: "rgba(16,185,129,.45)", fgD: "#bbf7d0", fgL: "#065f46" },
     slate: { bgD: "rgba(148,163,184,.18)", bgL: "rgba(148,163,184,.12)", bdD: "rgba(148,163,184,.35)", fgD: "#e2e8f0", fgL: "#334155" },
-    red:   { bgD: "rgba(239,68,68,.22)",   bgL: "rgba(239,68,68,.12)",   bdD: "rgba(239,68,68,.45)",   fgD: "#fecaca", fgL: "#7f1d1d" },
+    red: { bgD: "rgba(239,68,68,.22)", bgL: "rgba(239,68,68,.12)", bdD: "rgba(239,68,68,.45)", fgD: "#fecaca", fgL: "#7f1d1d" },
 } as const;
 
 function useBtnStyles(dark: boolean, { variant = "neutral", small, pressed }: BtnProps) {
@@ -183,12 +191,18 @@ function Chip({ color, children }: { color: "blue" | "green" | "slate" | "red"; 
     const dark = usePrefersDark();
     const pal = chipPal[color];
     return (
-        <span style={{
-            fontSize: 11, padding: "2px 6px", borderRadius: 999,
-            background: dark ? pal.bgD : pal.bgL,
-            color: dark ? pal.fgD : pal.fgL,
-            border: `1px solid ${dark ? pal.bdD : pal.bdD}`
-        }}>{children}</span>
+        <span
+            style={{
+                fontSize: 11,
+                padding: "2px 6px",
+                borderRadius: 999,
+                background: dark ? pal.bgD : pal.bgL,
+                color: dark ? pal.fgD : pal.fgL,
+                border: `1px solid ${dark ? pal.bdD : pal.bdD}`,
+            }}
+        >
+      {children}
+    </span>
     );
 }
 
@@ -203,14 +217,23 @@ function OpenSignedLink({ fileKey, children }: { fileKey: string; children: Reac
         let off = false;
         (async () => {
             const { data } = await supabase.storage.from("presentations").createSignedUrl(fileKey, 3600 * 24 * 7);
-            if (!off && data?.signedUrl) { setHref(data.signedUrl); return; }
+            if (!off && data?.signedUrl) {
+                setHref(data.signedUrl);
+                return;
+            }
             const { data: pub } = supabase.storage.from("presentations").getPublicUrl(fileKey);
             if (!off) setHref(pub.publicUrl || "#");
         })();
-        return () => { off = true; };
+        return () => {
+            off = true;
+        };
     }, [fileKey]);
 
-    return (<a style={style} href={href} target="_blank" rel="noreferrer">{children}</a>);
+    return (
+        <a style={style} href={href} target="_blank" rel="noreferrer">
+            {children}
+        </a>
+    );
 }
 
 function useReadableUrl(key: string | null | undefined, ttlSec = 3600 * 24) {
@@ -218,13 +241,21 @@ function useReadableUrl(key: string | null | undefined, ttlSec = 3600 * 24) {
     React.useEffect(() => {
         let off = false;
         (async () => {
-            if (!key) { setUrl(""); return; }
+            if (!key) {
+                setUrl("");
+                return;
+            }
             const { data } = await supabase.storage.from("presentations").createSignedUrl(key, ttlSec);
-            if (!off && data?.signedUrl) { setUrl(`${data.signedUrl}`); return; }
+            if (!off && data?.signedUrl) {
+                setUrl(`${data.signedUrl}`);
+                return;
+            }
             const { data: pub } = supabase.storage.from("presentations").getPublicUrl(key);
             if (!off) setUrl(pub.publicUrl || "");
         })();
-        return () => { off = true; };
+        return () => {
+            off = true;
+        };
     }, [key, ttlSec]);
     return url;
 }
@@ -245,14 +276,15 @@ function Thumb({ keyStr, badge }: { keyStr: string; badge: React.ReactNode }) {
                 background: dark ? "rgba(2,6,23,.65)" : "#fff",
             }}
         >
-            {fileUrl
-                ? <PdfViewer fileUrl={fileUrl} page={1} maxHeight="120px" />
-                : <div style={{ width: "100%", display: "grid", placeItems: "center", maxHeight: 120, overflow: "hidden" }}>
+            {fileUrl ? (
+                <PdfViewer fileUrl={fileUrl} page={1} maxHeight="120px" />
+            ) : (
+                <div style={{ width: "100%", display: "grid", placeItems: "center", maxHeight: 120, overflow: "hidden" }}>
                     <div style={{ fontSize: 12, opacity: 0.7, padding: 8, color: dark ? "#cbd5e1" : "#475569" }}>
                         파일을 불러올 수 없습니다.
                     </div>
                 </div>
-            }
+            )}
             <div style={{ position: "absolute", top: 6, left: 6 }}>{badge}</div>
         </div>
     );
@@ -261,7 +293,9 @@ function Thumb({ keyStr, badge }: { keyStr: string; badge: React.ReactNode }) {
 // ───────────────────────────────────────────────────────────────────────────────
 // Storage helpers (삭제/스캔)
 async function listDir(bucket: string, prefix: string) {
-    return await supabase.storage.from(bucket).list(prefix, { limit: 1000, sortBy: { column: "updated_at", order: "desc" } });
+    return await supabase.storage
+        .from(bucket)
+        .list(prefix, { limit: 1000, sortBy: { column: "updated_at", order: "desc" } });
 }
 
 /** "decks/slug/.." 또는 "rooms/<room>/decks/<deckId>/.." → 상위 폴더 경로 */
@@ -297,7 +331,9 @@ async function removeTree(bucket: string, prefix: string) {
         const rm = await b.remove(files);
         if (rm.error) throw rm.error;
     }
-    try { await b.remove([root]); } catch {}
+    try {
+        await b.remove([root]);
+    } catch {}
 }
 
 // ───────────────────────────────────────────────────────────────────────────────
@@ -357,21 +393,19 @@ async function findMissingByFolder(rows: DeckRow[]) {
 }
 
 async function detachMissingFileKeys(rows: DeckRow[]) {
-    const targets = rows
-        .filter((r) => r.origin !== "storage" && r.file_key) // DB 행만
-        .map((r) => r.id);
+    const targets = rows.filter((r) => r.origin !== "storage" && r.file_key).map((r) => r.id);
     if (!targets.length) return;
     await supabase.from("decks").update({ file_key: null, file_pages: null }).in("id", targets);
 }
 
 // ───────────────────────────────────────────────────────────────────────────────
-// 변환 진행 폴링
+// 변환 진행 폴링 (현재 미사용; 필요 시 사용)
 async function pollSlidesProgress(
     roomId: string,
     deckId: string,
     expectedPages?: number,
     onTick?: (pct: number, count: number) => void,
-    timeoutMs = 120000
+    timeoutMs = 120000,
 ) {
     const start = Date.now();
     const prefix = `rooms/${roomId}/decks/${deckId}`;
@@ -379,12 +413,10 @@ async function pollSlidesProgress(
     while (Date.now() - start < timeoutMs) {
         const { data } = await supabase.storage.from("slides").list(prefix);
         count = data?.length || 0;
-        const pct = expectedPages
-            ? Math.min(99, Math.floor((count / expectedPages) * 100))
-            : (count > 0 ? 100 : 5);
+        const pct = expectedPages ? Math.min(99, Math.floor((count / expectedPages) * 100)) : count > 0 ? 100 : 5;
         onTick?.(pct, count);
         if (expectedPages ? count >= expectedPages : count > 0) return count;
-        await new Promise(r => setTimeout(r, 1200));
+        await new Promise((r) => setTimeout(r, 1200));
     }
     return count; // timeout
 }
@@ -397,13 +429,18 @@ export default function PdfLibraryPage() {
     const roomCode = qs.get("room") || "";
     const dark = usePrefersDark();
 
-    // 진행 모달 (※ 훅은 반드시 컴포넌트 내부에!)
+    // 진행 모달 (로그 포함) — 중복 선언 제거됨
     const [assign, setAssign] = React.useState<{
         open: boolean;
         progress: number;
         text: string;
         deckId: string | null;
-    }>({ open: false, progress: 0, text: "", deckId: null });
+        logs: string[];
+    }>({ open: false, progress: 0, text: "", deckId: null, logs: [] });
+
+    const logAssign = React.useCallback((m: string) => {
+        setAssign((a) => ({ ...a, logs: [...a.logs, m].slice(-300) }));
+    }, []);
 
     // UI state
     const [loading, setLoading] = React.useState(false);
@@ -418,18 +455,6 @@ export default function PdfLibraryPage() {
     // room & slots
     const [roomId, setRoomId] = React.useState<string | null>(null);
     const [slots, setSlots] = React.useState<number[]>([]);
-
-    const [assign, setAssign] = React.useState<{
-        open: boolean;
-        progress: number;
-        text: string;
-        deckId: string | null;
-        logs: string[];          // ⬅️ 추가: 진행 로그
-    }>({ open: false, progress: 0, text: "", deckId: null, logs: [] });
-
-    const logAssign = React.useCallback((m: string) => {
-        setAssign(a => ({ ...a, logs: [...a.logs, m].slice(-300) }));
-    }, []);
 
     // room/slot helpers
     const getRoomIdByCode = React.useCallback(async (code: string): Promise<string> => {
@@ -448,8 +473,7 @@ export default function PdfLibraryPage() {
     const refreshSlotsList = React.useCallback(async () => {
         try {
             const rid = await ensureRoomId();
-            const { data, error } = await supabase
-                .from("room_lessons").select("slot").eq("room_id", rid).order("slot", { ascending: true });
+            const { data, error } = await supabase.from("room_lessons").select("slot").eq("room_id", rid).order("slot", { ascending: true });
             if (error) throw error;
             const arr = (data || []).map((r: any) => Number(r.slot));
             setSlots(arr);
@@ -463,18 +487,27 @@ export default function PdfLibraryPage() {
         try {
             const rid = await ensureRoomId();
             const used = new Set(slots);
-            let next = 1; while (used.has(next) && next <= 12) next++;
-            if (next > 12) { alert("더 이상 교시를 만들 수 없습니다."); return; }
+            let next = 1;
+            while (used.has(next) && next <= 12) next++;
+            if (next > 12) {
+                alert("더 이상 교시를 만들 수 없습니다.");
+                return;
+            }
             const { error } = await supabase
                 .from("room_lessons")
                 .upsert({ room_id: rid, slot: next, current_index: 0 }, { onConflict: "room_id,slot" });
             if (error) throw error;
             await refreshSlotsList();
             setSlotSelGlobal(next);
-        } catch (e:any) { alert(e?.message ?? String(e)); }
+        } catch (e: any) {
+            alert(e?.message ?? String(e));
+        }
     }, [ensureRoomId, slots, refreshSlotsList]);
 
-    React.useEffect(() => { if (roomCode) ensureRoomId().then(refreshSlotsList); }, [roomCode]); // eslint-disable-line
+    React.useEffect(() => {
+        if (roomCode) ensureRoomId().then(refreshSlotsList);
+        // eslint-disable-next-line
+    }, [roomCode]);
 
     // 목록: Storage 스캔
     const fetchFromStorage = React.useCallback(async (limitFolders = 120): Promise<DeckRow[]> => {
@@ -490,9 +523,7 @@ export default function PdfLibraryPage() {
             const ls = await bucket.list(path, { limit: 50, sortBy: { column: "updated_at", order: "desc" } });
             if (ls.error) continue;
             const files = (ls.data as SFile[]) || [];
-            const pick =
-                files.find(f => /slides-.*\.pdf$/i.test(f.name)) ||
-                files.find(f => /\.pdf$/i.test(f.name));
+            const pick = files.find((f) => /slides-.*\.pdf$/i.test(f.name)) || files.find((f) => /\.pdf$/i.test(f.name));
             if (!pick) continue;
             const file_key = `${path}/${pick.name}`;
             rows.push({ id: `s:${file_key}`, title: folder, file_key, file_pages: null, origin: "storage" });
@@ -503,7 +534,8 @@ export default function PdfLibraryPage() {
 
     // 목록: DB + Storage 병합 → 유실 파일 감지/필터/자동 정리(옵션)
     const load = React.useCallback(async () => {
-        setLoading(true); setError(null);
+        setLoading(true);
+        setError(null);
         try {
             let merged: DeckRow[] = [];
 
@@ -512,14 +544,21 @@ export default function PdfLibraryPage() {
                 const { data, error } = await supabase.rpc("list_library_decks", { p_limit: 200 });
                 if (error) throw error;
                 merged = (data || []).map((d: any) => ({
-                    id: d.id, title: d.title ?? null, file_key: d.file_key ?? null, file_pages: d.file_pages ?? null, origin: "db" as const
+                    id: d.id,
+                    title: d.title ?? null,
+                    file_key: d.file_key ?? null,
+                    file_pages: d.file_pages ?? null,
+                    origin: "db" as const,
                 }));
             } catch {
-                const { data, error } = await supabase
-                    .from("decks").select("id,title,file_key,file_pages").limit(200);
+                const { data, error } = await supabase.from("decks").select("id,title,file_key,file_pages").limit(200);
                 if (!error) {
                     merged = (data || []).map((d: any) => ({
-                        id: d.id, title: d.title ?? null, file_key: d.file_key ?? null, file_pages: d.file_pages ?? null, origin: "db" as const
+                        id: d.id,
+                        title: d.title ?? null,
+                        file_key: d.file_key ?? null,
+                        file_pages: d.file_pages ?? null,
+                        origin: "db" as const,
                     }));
                 }
             }
@@ -558,18 +597,17 @@ export default function PdfLibraryPage() {
         }
     }, [fetchFromStorage, autoClean, setMissing]);
 
-    React.useEffect(() => { load(); }, [load]);
+    React.useEffect(() => {
+        load();
+    }, [load]);
 
     // 업로드 완료 → 새로고침
-    const onUploaded = React.useCallback(() => { load(); }, [load]);
+    const onUploaded = React.useCallback(() => {
+        load();
+    }, [load]);
 
-    // ── 불러오기: 사본 생성 → 변환 RPC → slides 폴링 → 배정 확인/새로고침 ──
-    async function createDeckFromFileKeyAndAssign(
-        fileKey: string,
-        roomId: string,
-        slot: number,
-        title?: string | null
-    ) {
+    // ── 불러오기: 사본 생성 → 슬라이드 복사(변환 없음) → 배정 확인 ──
+    async function createDeckFromFileKeyAndAssign(fileKey: string, roomId: string, slot: number, title?: string | null) {
         // (A) decks 생성
         const ins = await supabase.from("decks").insert({ title: title ?? "Imported" }).select("id").single();
         if (ins.error) throw ins.error;
@@ -587,7 +625,9 @@ export default function PdfLibraryPage() {
         if (!copied) {
             const dl = await supabase.storage.from("presentations").download(fileKey);
             if (dl.error) throw dl.error;
-            const up = await supabase.storage.from("presentations").upload(destKey, dl.data, { contentType: "application/pdf", upsert: true });
+            const up = await supabase.storage
+                .from("presentations")
+                .upload(destKey, dl.data, { contentType: "application/pdf", upsert: true });
             if (up.error) throw up.error;
         }
         logAssign(`PDF 사본: presentations/${destKey}`);
@@ -597,7 +637,7 @@ export default function PdfLibraryPage() {
         if (upDeck.error) throw upDeck.error;
 
         // (D) slides 복사 (변환 없음)
-        const srcSlidesPrefix = folderPrefixOfFileKey(fileKey);       // ex) decks/<slug>
+        const srcSlidesPrefix = folderPrefixOfFileKey(fileKey); // ex) decks/<slug>
         const dstSlidesPrefix = `rooms/${roomId}/decks/${newDeckId}`; // ex) rooms/<room>/decks/<deckId>
         if (srcSlidesPrefix) {
             // fast 경로 시도 → 실패 시 기존 재귀 복사
@@ -605,14 +645,14 @@ export default function PdfLibraryPage() {
                 logAssign(`슬라이드 복사 준비(.done.json 확인)…`);
                 await copySlidesFastByDone(srcSlidesPrefix, dstSlidesPrefix, (copied, total) => {
                     const pct = Math.max(12, Math.min(98, Math.floor(12 + (copied / Math.max(1, total)) * 85)));
-                    setAssign(a => ({ ...a, progress: pct, text: `슬라이드 복사 중… ${copied}/${total}` }));
+                    setAssign((a) => ({ ...a, progress: pct, text: `슬라이드 복사 중… ${copied}/${total}` }));
                 });
                 logAssign(`슬라이드 복사 완료(FAST): slides/${dstSlidesPrefix}`);
             } catch {
                 logAssign(`FAST 복사 폴백 → 재귀 복사 진행`);
                 await copySlidesDir(srcSlidesPrefix, dstSlidesPrefix, (copied, total) => {
                     const pct = Math.max(12, Math.min(98, Math.floor(12 + (copied / Math.max(1, total)) * 85)));
-                    setAssign(a => ({ ...a, progress: pct, text: `슬라이드 복사 중… ${copied}/${total}` }));
+                    setAssign((a) => ({ ...a, progress: pct, text: `슬라이드 복사 중… ${copied}/${total}` }));
                 });
                 logAssign(`슬라이드 복사 완료(FALLBACK): slides/${dstSlidesPrefix}`);
             }
@@ -637,8 +677,14 @@ export default function PdfLibraryPage() {
     }
 
     async function assignDeckToSlot(d: DeckRow, slot: number) {
-        if (!roomCode) { alert("room 파라미터가 필요합니다."); return; }
-        if (!d.file_key) { alert("파일이 없습니다."); return; }
+        if (!roomCode) {
+            alert("room 파라미터가 필요합니다.");
+            return;
+        }
+        if (!d.file_key) {
+            alert("파일이 없습니다.");
+            return;
+        }
 
         try {
             const rid = await ensureRoomId();
@@ -647,90 +693,90 @@ export default function PdfLibraryPage() {
             setAssign({ open: true, progress: 5, text: "사본(PDF) 생성 중…", deckId: null, logs: [] });
             logAssign(`시작: room=${rid}, slot=${slot}, file=${d.file_key}`);
 
-            const { newDeckId, srcSlidesPrefix, dstSlidesPrefix } =
-                await createDeckFromFileKeyAndAssign(d.file_key, rid, slot, d.title);
+            const { newDeckId } = await createDeckFromFileKeyAndAssign(d.file_key, rid, slot, d.title);
 
             // UI 업데이트
-            setAssign(a => ({ ...a, deckId: newDeckId }));
+            setAssign((a) => ({ ...a, deckId: newDeckId }));
 
             // 완료 & 새로고침
-            setAssign(a => ({ ...a, progress: 100, text: "완료! 목록을 갱신합니다…" }));
+            setAssign((a) => ({ ...a, progress: 100, text: "완료! 목록을 갱신합니다…" }));
             await load();
             setTimeout(() => setAssign({ open: false, progress: 0, text: "", deckId: null, logs: [] }), 600);
-
         } catch (e: any) {
             console.error(e);
             logAssign(`에러: ${e?.message || e}`);
-            setAssign(a => ({ ...a, text: `에러: ${e?.message || e}` }));
+            setAssign((a) => ({ ...a, text: `에러: ${e?.message || e}` }));
             alert(`불러오기 실패: ${e?.message || e}`);
             setAssign({ open: false, progress: 0, text: "", deckId: null, logs: [] });
         }
     }
 
     // 삭제(정리)
-    const deleteDeck = React.useCallback(async (d: DeckRow) => {
-        // 낙관적 제거
-        setDecks(prev => prev.filter(x => x.id !== d.id));
+    const deleteDeck = React.useCallback(
+        async (d: DeckRow) => {
+            // 낙관적 제거
+            setDecks((prev) => prev.filter((x) => x.id !== d.id));
 
-        try {
-            const bucket = "presentations";
-            const prefix = d.file_key ? folderPrefixOfFileKey(d.file_key) : null;
+            try {
+                const bucket = "presentations";
+                const prefix = d.file_key ? folderPrefixOfFileKey(d.file_key) : null;
 
-            if (d.origin === "db") {
-                // DB 연결 해제/삭제
-                try {
-                    const { error } = await supabase.rpc("delete_deck_deep", { p_deck_id: d.id });
-                    if (error) throw error;
-                } catch {
-                    await supabase.from("room_decks").delete().eq("deck_id", d.id);
-                    const del = await supabase.from("decks").delete().eq("id", d.id);
-                    if (del.error) throw del.error;
-                }
-                // 스토리지 정리
-                if (prefix) await removeTree(bucket, prefix);
-            } else {
-                // storage only
-                if (!prefix) throw new Error("file_key 없음");
-                await removeTree(bucket, prefix);
-            }
-
-            // 안전망
-            if (prefix) {
-                const ls = await supabase.storage.from(bucket).list(prefix);
-                if (!ls.error && (ls.data?.length || 0) > 0) {
+                if (d.origin === "db") {
+                    // DB 연결 해제/삭제
+                    try {
+                        const { error } = await supabase.rpc("delete_deck_deep", { p_deck_id: d.id });
+                        if (error) throw error;
+                    } catch {
+                        await supabase.from("room_decks").delete().eq("deck_id", d.id);
+                        const del = await supabase.from("decks").delete().eq("id", d.id);
+                        if (del.error) throw del.error;
+                    }
+                    // 스토리지 정리
+                    if (prefix) await removeTree(bucket, prefix);
+                } else {
+                    // storage only
+                    if (!prefix) throw new Error("file_key 없음");
                     await removeTree(bucket, prefix);
                 }
-            }
-        } catch (e: any) {
-            await load();
-            alert(e?.message ?? String(e));
-            return;
-        }
 
-        await load();
-    }, [load]);
+                // 안전망
+                if (prefix) {
+                    const ls = await supabase.storage.from(bucket).list(prefix);
+                    if (!ls.error && (ls.data?.length || 0) > 0) {
+                        await removeTree(bucket, prefix);
+                    }
+                }
+            } catch (e: any) {
+                await load();
+                alert(e?.message ?? String(e));
+                return;
+            }
+
+            await load();
+        },
+        [load],
+    );
 
     // 필터/검색
     const filtered = React.useMemo(() => {
         let arr = decks;
         if (view !== "all") {
-            arr = arr.filter(d => {
+            arr = arr.filter((d) => {
                 const isPdf = (d.file_key || "").includes("/decks/");
                 return view === "pdf" ? isPdf : !isPdf;
             });
         }
         if (!keyword.trim()) return arr;
         const k = keyword.trim().toLowerCase();
-        return arr.filter(d =>
-            (d.title || "").toLowerCase().includes(k) ||
-            (d.file_key || "").toLowerCase().includes(k)
+        return arr.filter(
+            (d) => (d.title || "").toLowerCase().includes(k) || (d.file_key || "").toLowerCase().includes(k),
         );
     }, [decks, view, keyword]);
 
     const tagAndColor = (d: DeckRow) => {
         const key = d.file_key || "";
         if (key.includes("/decks/")) return { label: "원본 PDF", color: "blue" as const };
-        if (key.includes("/rooms/")) return { label: "복제본",   color: "green" as const };
+        if (key.includes("/rooms/")) return { label: "복제본", color: "green" as const };
         return { label: d.origin.toUpperCase(), color: "slate" as const };
     };
 
@@ -743,44 +789,69 @@ export default function PdfLibraryPage() {
         flexDirection: "column",
         boxShadow: dark ? "0 6px 18px rgba(2,6,23,.55)" : "0 4px 14px rgba(15,23,42,.08)",
     };
-    const Btn = (p: BtnProps) => <button {...p} style={{ ...useBtnStyles(dark, p), ...(p.style || {}) }}>{p.children}</button>;
+    const Btn = (p: BtnProps) => (
+        <button {...p} style={{ ...useBtnStyles(dark, p), ...(p.style || {}) }}>
+            {p.children}
+        </button>
+    );
 
     return (
         <div className="px-4 py-4 max-w-7xl mx-auto">
             {/* 헤더 */}
             <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-2">
-                    <Btn variant="outline" onClick={() => nav(`/teacher?room=${encodeURIComponent(roomCode)}&mode=setup`)} small>← 뒤로</Btn>
+                    <Btn variant="outline" onClick={() => nav(`/teacher?room=${encodeURIComponent(roomCode)}&mode=setup`)} small>
+                        ← 뒤로
+                    </Btn>
                     <h1 className="text-xl font-semibold">자료함</h1>
                 </div>
-                <div className="text-sm opacity-70">room: <code>{roomCode || "(미지정)"}</code></div>
+                <div className="text-sm opacity-70">
+                    room: <code>{roomCode || "(미지정)"}</code>
+                </div>
             </div>
 
             {/* 업로더 */}
             <div className="panel mb-4" style={{ padding: 12 }}>
                 <div style={{ fontWeight: 700, marginBottom: 6 }}>자료함으로 업로드</div>
-                <div style={{ fontSize: 12, opacity: .75, marginBottom: 8 }}>
-                    PDF를 업로드하면 변환되어 자료함에 추가됩니다. (변환 완료 후 자동 갱신)
-                </div>
+                <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 8 }}>PDF를 업로드하면 변환되어 자료함에 추가됩니다. (변환 완료 후 자동 갱신)</div>
                 <PdfToSlidesUploader onFinished={onUploaded} />
             </div>
 
             {/* 교시 + 필터 */}
-            <div className="panel mb-2" style={{ padding: 12, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <div
+                className="panel mb-2"
+                style={{ padding: 12, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}
+            >
                 <div style={{ fontWeight: 700 }}>교시</div>
                 <select
                     className="px-2 py-1 border rounded-md text-sm"
                     value={slotSelGlobal}
                     onChange={(e) => setSlotSelGlobal(Number(e.target.value))}
                 >
-                    {slots.length ? slots.map(s => <option key={s} value={s}>{s}교시</option>) : <option value={1}>1교시</option>}
+                    {slots.length ? (
+                        slots.map((s) => (
+                            <option key={s} value={s}>
+                                {s}교시
+                            </option>
+                        ))
+                    ) : (
+                        <option value={1}>1교시</option>
+                    )}
                 </select>
-                <Btn onClick={createSlot} small variant="neutral">＋ 새 교시</Btn>
+                <Btn onClick={createSlot} small variant="neutral">
+                    ＋ 새 교시
+                </Btn>
 
                 <div style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
-                    <Btn small variant="ghost" pressed={view==="all"} onClick={() => setView("all")}>전체</Btn>
-                    <Btn small variant="ghost" pressed={view==="pdf"} onClick={() => setView("pdf")}>원본 PDF</Btn>
-                    <Btn small variant="ghost" pressed={view==="copies"} onClick={() => setView("copies")}>복제본</Btn>
+                    <Btn small variant="ghost" pressed={view === "all"} onClick={() => setView("all")}>
+                        전체
+                    </Btn>
+                    <Btn small variant="ghost" pressed={view === "pdf"} onClick={() => setView("pdf")}>
+                        원본 PDF
+                    </Btn>
+                    <Btn small variant="ghost" pressed={view === "copies"} onClick={() => setView("copies")}>
+                        복제본
+                    </Btn>
                 </div>
             </div>
 
@@ -798,7 +869,10 @@ export default function PdfLibraryPage() {
                             className="btn btn-outline btn-sm"
                             variant="outline"
                             small
-                            onClick={async () => { await detachMissingFileKeys(missing); await load(); }}
+                            onClick={async () => {
+                                await detachMissingFileKeys(missing);
+                                await load();
+                            }}
                             disabled={loading}
                         >
                             DB 정리
@@ -807,8 +881,12 @@ export default function PdfLibraryPage() {
                 )}
 
                 <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
-                    <Btn small variant="outline" onClick={() => setKeyword("")}>검색 초기화</Btn>
-                    <Btn small variant="neutral" onClick={load} disabled={loading}>{loading ? "갱신 중…" : "목록 새로고침"}</Btn>
+                    <Btn small variant="outline" onClick={() => setKeyword("")}>
+                        검색 초기화
+                    </Btn>
+                    <Btn small variant="neutral" onClick={load} disabled={loading}>
+                        {loading ? "갱신 중…" : "목록 새로고침"}
+                    </Btn>
                 </div>
             </div>
 
@@ -843,16 +921,21 @@ export default function PdfLibraryPage() {
                             </div>
                             <div className="text-[11px] opacity-60 mb-2">{d.origin === "db" ? "DB" : "Storage"}</div>
 
-                            {d.file_key
-                                ? <Thumb keyStr={d.file_key} badge={<Chip color={tag.color as any}>{tag.label}</Chip>} />
-                                : <div style={{ height: 120, borderRadius: 12, background: dark ? "rgba(2,6,23,.65)" : "#f1f5f9" }} />
-                            }
+                            {d.file_key ? (
+                                <Thumb keyStr={d.file_key} badge={<Chip color={tag.color as any}>{tag.label}</Chip>} />
+                            ) : (
+                                <div style={{ height: 120, borderRadius: 12, background: dark ? "rgba(2,6,23,.65)" : "#f1f5f9" }} />
+                            )}
 
                             <div className="mt-3 flex items-center gap-8">
                                 {d.file_key && <OpenSignedLink fileKey={d.file_key}>링크 열기</OpenSignedLink>}
                                 <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
-                                    <Btn small variant="neutral" onClick={() => openEdit(nav, roomCode, d)}>편집</Btn>
-                                    <Btn small variant="danger" onClick={() => deleteDeck(d)}>삭제</Btn>
+                                    <Btn small variant="neutral" onClick={() => openEdit(nav, roomCode, d)}>
+                                        편집
+                                    </Btn>
+                                    <Btn small variant="danger" onClick={() => deleteDeck(d)}>
+                                        삭제
+                                    </Btn>
                                 </div>
                             </div>
 
@@ -863,9 +946,15 @@ export default function PdfLibraryPage() {
                                     value={slot}
                                     onChange={(e) => setSlotSel((s) => ({ ...s, [d.id]: Number(e.target.value) }))}
                                 >
-                                    {(slots.length ? slots : [1,2,3,4,5,6]).map(n => <option key={n} value={n}>{n}교시</option>)}
+                                    {(slots.length ? slots : [1, 2, 3, 4, 5, 6]).map((n) => (
+                                        <option key={n} value={n}>
+                                            {n}교시
+                                        </option>
+                                    ))}
                                 </select>
-                                <Btn small variant="primary" onClick={() => assignDeckToSlot(d, slot)}>지금 불러오기</Btn>
+                                <Btn small variant="primary" onClick={() => assignDeckToSlot(d, slot)}>
+                                    지금 불러오기
+                                </Btn>
                             </div>
                         </div>
                     );
@@ -874,23 +963,62 @@ export default function PdfLibraryPage() {
 
             {/* 진행 모달 */}
             {assign.open && (
-                <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.45)", display:"grid", placeItems:"center", zIndex:1000 }}>
-                    <div style={{
-                        width:420, borderRadius:12, background:"#111827", color:"#fff",
-                        border:"1px solid rgba(148,163,184,.25)", padding:16, boxShadow:"0 14px 40px rgba(0,0,0,.6)"
-                    }}>
-                        <div style={{ fontWeight:700, marginBottom:8 }}>자료 불러오는 중</div>
-                        <div style={{ fontSize:13, opacity:.85, marginBottom:12 }}>{assign.text}</div>
-                        <div style={{ height:8, background:"rgba(148,163,184,.22)", borderRadius:999, overflow:"hidden", marginBottom:10 }}>
-                            <div style={{ width: `${assign.progress}%`, height:"100%", background:"#4f46e5", transition:"width .3s ease" }}/>
+                <div
+                    style={{
+                        position: "fixed",
+                        inset: 0,
+                        background: "rgba(0,0,0,.45)",
+                        display: "grid",
+                        placeItems: "center",
+                        zIndex: 1000,
+                    }}
+                >
+                    <div
+                        style={{
+                            width: 420,
+                            borderRadius: 12,
+                            background: "#111827",
+                            color: "#fff",
+                            border: "1px solid rgba(148,163,184,.25)",
+                            padding: 16,
+                            boxShadow: "0 14px 40px rgba(0,0,0,.6)",
+                        }}
+                    >
+                        <div style={{ fontWeight: 700, marginBottom: 8 }}>자료 불러오는 중</div>
+                        <div style={{ fontSize: 13, opacity: 0.85, marginBottom: 12 }}>{assign.text}</div>
+                        <div
+                            style={{
+                                height: 8,
+                                background: "rgba(148,163,184,.22)",
+                                borderRadius: 999,
+                                overflow: "hidden",
+                                marginBottom: 10,
+                            }}
+                        >
+                            <div
+                                style={{
+                                    width: `${assign.progress}%`,
+                                    height: "100%",
+                                    background: "#4f46e5",
+                                    transition: "width .3s ease",
+                                }}
+                            />
                         </div>
-                        <div style={{
-                            maxHeight: 200, overflow: "auto",
-                            background: "rgba(2,6,23,.55)", border: "1px solid rgba(148,163,184,.25)",
-                            borderRadius: 8, padding: 8, fontSize: 12,
-                            fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
-                        }}>
-                            {assign.logs.map((l, i) => <div key={i}>• {l}</div>)}
+                        <div
+                            style={{
+                                maxHeight: 200,
+                                overflow: "auto",
+                                background: "rgba(2,6,23,.55)",
+                                border: "1px solid rgba(148,163,184,.25)",
+                                borderRadius: 8,
+                                padding: 8,
+                                fontSize: 12,
+                                fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+                            }}
+                        >
+                            {assign.logs.map((l, i) => (
+                                <div key={i}>• {l}</div>
+                            ))}
                         </div>
                     </div>
                 </div>
@@ -902,8 +1030,14 @@ export default function PdfLibraryPage() {
 // ───────────────────────────────────────────────────────────────────────────────
 // helpers bound to UI items
 function openEdit(nav: ReturnType<typeof useNavigate>, roomCode: string, d: DeckRow) {
-    if (!roomCode) { alert("room 파라미터가 필요합니다."); return; }
-    if (!d.file_key) { alert("파일이 없습니다."); return; }
+    if (!roomCode) {
+        alert("room 파라미터가 필요합니다.");
+        return;
+    }
+    if (!d.file_key) {
+        alert("파일이 없습니다.");
+        return;
+    }
     if (d.origin === "db") nav(`/editor?room=${encodeURIComponent(roomCode)}&src=${encodeURIComponent(d.id)}`);
     else nav(`/editor?room=${encodeURIComponent(roomCode)}&srcKey=${encodeURIComponent(d.file_key)}`);
 }
