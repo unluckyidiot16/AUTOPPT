@@ -1,30 +1,7 @@
 // src/components/PdfToSlidesUploader.tsx
 import React, { useCallback, useRef, useState } from "react";
 import { supabase } from "../supabaseClient";
-
-/** ========== pdf.js 로더: jsDelivr 우선 + 다단계 폴백 ========== */
-/** ========== pdf.js 로더: 워커 비활성화(안전모드) ========== */
-async function loadPdfJs() {
-    // 레거시 빌드가 브라우저/번들러 호환성이 가장 높습니다.
-    try {
-        const pdf = await import("pdfjs-dist/legacy/build/pdf");
-        try {
-            // 혹시 남아있는 이전 설정을 무효화
-            (pdf as any).GlobalWorkerOptions.workerSrc = undefined;
-            (pdf as any).GlobalWorkerOptions.workerPort = undefined as any;
-        } catch {}
-        return pdf;
-    } catch {
-        // 최후: v5 빌드. 그래도 워커는 쓰지 않습니다.
-        const pdf = await import("pdfjs-dist/build/pdf");
-        try {
-            (pdf as any).GlobalWorkerOptions.workerSrc = undefined;
-            (pdf as any).GlobalWorkerOptions.workerPort = undefined as any;
-        } catch {}
-        return pdf;
-    }
-}
-
+import { loadPdfJs } from "../lib/pdfjs";
 
 /** ========== 유틸 ========== */
 async function fileToArrayBuffer(f: File): Promise<ArrayBuffer> { return await f.arrayBuffer(); }
