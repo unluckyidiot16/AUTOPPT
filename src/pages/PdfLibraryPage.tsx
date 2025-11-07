@@ -33,6 +33,26 @@ function usePrefersDark() {
     return dark;
 }
 
+const [assign, setAssign] = React.useState<{open:boolean, progress:number, text:string, deckId:string|null}>({
+    open:false, progress:0, text:"", deckId:null
+});
+
+async function pollSlidesProgress(roomId: string, deckId: string, expectedPages?: number, onTick?: (pct:number, count:number)=>void, timeoutMs = 120000) {
+    const start = Date.now();
+    const prefix = `rooms/${roomId}/decks/${deckId}`;
+    let count = 0;
+    while (Date.now() - start < timeoutMs) {
+        const { data } = await supabase.storage.from("slides").list(prefix);
+        count = data?.length || 0;
+        const pct = expectedPages ? Math.min(99, Math.floor((count / expectedPages) * 100)) : (count > 0 ? 100 : 5);
+        onTick?.(pct, count);
+        if (expectedPages ? count >= expectedPages : count > 0) return count;
+        await new Promise(r => setTimeout(r, 1200));
+    }
+    return count; // timeout
+}
+
+
 const chipPal = {
     blue:  { bgD: "rgba(59,130,246,.18)",  bgL: "rgba(59,130,246,.12)",  bdD: "rgba(59,130,246,.45)",  fgD: "#bfdbfe", fgL: "#1e40af" },
     green: { bgD: "rgba(16,185,129,.18)",  bgL: "rgba(16,185,129,.12)",  bdD: "rgba(16,185,129,.45)",  fgD: "#bbf7d0", fgL: "#065f46" },
@@ -442,19 +462,14 @@ export default function PdfLibraryPage() {
         slot: number,
         title?: string | null
     ) {
-        // (A) decks: 새 덱 생성
-        const ins = await supabase
-            .from("decks")
-            .insert({ title: title ?? "Imported" })
-            .select("id")
-            .single();
+        // 새 덱 생성
+        const ins = await supabase.from("decks").insert({ title: title ?? "Imported" }).select("id").single();
         if (ins.error) throw ins.error;
         const newDeckId = ins.data.id as string;
 
-        // (B) 스토리지 사본 생성: rooms/<room>/decks/<newDeck>/slides-*.pdf
+        // 사본 생성
         const ts = Date.now();
         const destKey = `rooms/${roomId}/decks/${newDeckId}/slides-${ts}.pdf`;
-
         let copied = false;
         try {
             const { error } = await supabase.storage.from("presentations").copy(fileKey, destKey);
@@ -463,30 +478,25 @@ export default function PdfLibraryPage() {
         if (!copied) {
             const dl = await supabase.storage.from("presentations").download(fileKey);
             if (dl.error) throw dl.error;
-            const up = await supabase.storage
-                .from("presentations")
-                .upload(destKey, dl.data, { contentType: "application/pdf", upsert: true });
+            const up = await supabase.storage.from("presentations").upload(destKey, dl.data, { contentType: "application/pdf", upsert: true });
             if (up.error) throw up.error;
         }
 
-        // (C) decks.file_key 업데이트
+        // decks.file_key 업데이트
         {
             const upDeck = await supabase.from("decks").update({ file_key: destKey }).eq("id", newDeckId);
             if (upDeck.error) throw upDeck.error;
         }
 
-        // (D) 변환 트리거: upsert_deck_file (없으면 무시하고 계속)
+        // 변환 트리거 (있으면 실행)
         try {
-            const { error } = await supabase.rpc("upsert_deck_file", {
-                p_deck_id: newDeckId,
-                p_file_key: destKey,
-            });
+            const { error } = await supabase.rpc("upsert_deck_file", { p_deck_id: newDeckId, p_file_key: destKey });
             if (error) console.warn("[LIB:assign] upsert_deck_file warn:", error.message || error);
         } catch (e) {
             console.warn("[LIB:assign] upsert_deck_file missing?", e);
         }
 
-        // (E) room_decks 배정 (room_id+slot 유니크)
+        // room_decks 배정
         const upMap = await supabase
             .from("room_decks")
             .upsert({ room_id: roomId, slot, deck_id: newDeckId }, { onConflict: "room_id,slot" })
@@ -494,16 +504,9 @@ export default function PdfLibraryPage() {
             .single();
         if (upMap.error) throw upMap.error;
 
-        // (F) 검증 + 변환 결과 간단 체크(있으면 몇 개 보이는지 로그)
-        console.log("[LIB:assign] mapped =>", upMap.data);
-        try {
-            const slidesPrefix = `rooms/${roomId}/decks/${newDeckId}`;
-            const { data: imgs } = await supabase.storage.from("slides").list(slidesPrefix);
-            console.log("[LIB:assign] slides/", slidesPrefix, "images:", (imgs || []).length);
-        } catch {}
-
         return { newDeckId, destKey };
     }
+
 
 // 2) 불러오기 핸들러(단일 경로로 통일: 항상 사본 생성 → 변환 → 배정)
     async function assignDeckToSlot(d: DeckRow, slot: number) {
@@ -512,14 +515,38 @@ export default function PdfLibraryPage() {
 
         try {
             const rid = await ensureRoomId();
-            await createDeckFromFileKeyAndAssign(d.file_key, rid, slot, d.title);
 
-            alert(`✅ ${slot}교시에 불러오고 변환을 시작했어요. (썸네일/슬라이드는 몇 초 뒤 반영될 수 있어요)`);
+            // 모달 열기: 준비중
+            setAssign({ open:true, progress:5, text:"사본 생성 중…", deckId:null });
+
+            const { newDeckId } = await createDeckFromFileKeyAndAssign(d.file_key, rid, slot, d.title);
+
+            setAssign({ open:true, progress:10, text:"변환 준비 중…", deckId:newDeckId });
+
+            // 예상 페이지 수 조회(없으면 undefined)
+            let expected: number | undefined = undefined;
+            try {
+                const { data } = await supabase.from("decks").select("file_pages").eq("id", newDeckId).maybeSingle();
+                if (data?.file_pages) expected = Number(data.file_pages);
+            } catch {}
+
+            // 폴링 시작 (slides 버킷에 이미지 생기는지 체크)
+            await pollSlidesProgress(rid, newDeckId, expected, (pct) => {
+                setAssign(a => ({ ...a, progress: pct, text: `변환 중… ${pct}%` }));
+            });
+
+            // 완료
+            setAssign(a => ({ ...a, progress: 100, text: "완료! 새로고침 합니다…" }));
+            await load(); // 목록 갱신
+            setTimeout(() => setAssign({ open:false, progress:0, text:"", deckId:null }), 500);
+
         } catch (e: any) {
             console.error(e);
+            setAssign({ open:false, progress:0, text:"", deckId:null });
             alert(`불러오기 실패: ${e?.message || e}`);
         }
     }
+
 
 
     // 삭제(정리)
@@ -726,6 +753,25 @@ export default function PdfLibraryPage() {
                     );
                 })}
             </div>
+            {assign.open && (
+                <div style={{
+                    position:"fixed", inset:0, background:"rgba(0,0,0,.45)", display:"grid", placeItems:"center", zIndex:1000
+                }}>
+                    <div style={{
+                        width:360, borderRadius:12, background:"#111827", color:"#fff",
+                        border:"1px solid rgba(148,163,184,.25)", padding:16, boxShadow:"0 14px 40px rgba(0,0,0,.6)"
+                    }}>
+                        <div style={{ fontWeight:700, marginBottom:8 }}>자료 불러오는 중</div>
+                        <div style={{ fontSize:13, opacity:.85, marginBottom:12 }}>{assign.text}</div>
+                        <div style={{ height:8, background:"rgba(148,163,184,.22)", borderRadius:999, overflow:"hidden" }}>
+                            <div style={{
+                                width: `${assign.progress}%`, height:"100%", background:"#4f46e5", transition:"width .3s ease"
+                            }}/>
+                        </div>
+                    </div>
+                </div>
+            )}
+
         </div>
     );
 }

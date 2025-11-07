@@ -305,7 +305,10 @@ export default function DeckEditorPage() {
                 // manifest 로드 (실패 무시)
                 try {
                     const m = await getManifestByRoom(roomCode);
-                    if (!cancel) setItems(m || []);
+                    if (!cancel) {
+                        const arr = Array.isArray(m) ? m : (Array.isArray((m as any)?.items) ? (m as any).items : []);
+                        setItems(arr);
+                    }
                 } catch {}
 
             } catch (e: any) {
@@ -395,7 +398,7 @@ export default function DeckEditorPage() {
                             roomId: roomIdState,
                             deleteDeckRow: true
                         } : undefined}
-                        onItemsChange={(next) => setItems(next)}
+                        onItemsChange={(next) => setItems(Array.isArray(next) ? next : [])}
                         onSelectPage={(p) => setPreviewPage(Math.max(0, p))}
                     />
                 </div>
