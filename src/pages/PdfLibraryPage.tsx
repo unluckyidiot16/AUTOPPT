@@ -51,6 +51,52 @@ type BtnProps = React.ButtonHTMLAttributes<HTMLButtonElement> & {
     small?: boolean;
     pressed?: boolean; // 토글/세그먼트용
 };
+
+// === storage helpers (REPLACE/ADD) ===
+async function listDir(bucket: string, prefix: string) {
+    return await supabase.storage.from(bucket).list(prefix, { limit: 1000, sortBy: { column: "name", order: "asc" } });
+}
+
+/** "decks/slug/.." 또는 "rooms/<room>/decks/<deckId>/.." → 상위 폴더 경로 */
+function folderPrefixOfFileKey(fileKey: string) {
+    if (!fileKey) return null;
+    // 파일이면 상위 폴더로, 이미 폴더면 그대로
+    return fileKey.endsWith("/") ? fileKey.replace(/\/+$/, "") : fileKey.split("/").slice(0, -1).join("/");
+}
+
+/** prefix 하위 모든 파일을 재귀적으로 수집해서 삭제 */
+async function removeTree(bucket: string, prefix: string) {
+    const b = supabase.storage.from(bucket);
+    const root = prefix.replace(/\/+$/, "");
+    const stack = [root];
+    const files: string[] = [];
+
+    while (stack.length) {
+        const cur = stack.pop()!;
+        const ls = await listDir(bucket, cur);
+        if (ls.error) throw ls.error;
+
+        for (const ent of ls.data || []) {
+            const child = `${cur}/${ent.name}`; // 파일이든 폴더든 일단 경로 합침
+            // 하위에 또 항목이 있는지 시도해 보고, 있으면 폴더로 간주(BFS)
+            const probe = await listDir(bucket, child);
+            if (!probe.error && (probe.data?.length || 0) > 0) {
+                stack.push(child);
+            } else {
+                files.push(child);
+            }
+        }
+    }
+
+    if (files.length) {
+        const rm = await b.remove(files);
+        if (rm.error) throw rm.error;
+    }
+
+    // 폴더 자체 오브젝트가 파일로 존재할 가능성 낮지만, 혹시 모를 잔여도 제거 시도
+    try { await b.remove([root]); } catch {}
+}
+
 function useBtnStyles(dark: boolean, { variant = "neutral", small, pressed }: BtnProps) {
     const base: React.CSSProperties = {
         borderRadius: 10,
@@ -365,50 +411,51 @@ export default function PdfLibraryPage() {
 
     // ===== 삭제(정리) =====
     const deleteDeck = React.useCallback(async (d: DeckRow) => {
-        if (d.origin === "db") {
-            if (!confirm("이 덱을 삭제할까요? 연결된 교시 배정도 해제될 수 있습니다.")) return;
-            try {
+        // UX: 낙관적 제거
+        setDecks(prev => prev.filter(x => x.id !== d.id));
+
+        try {
+            const bucket = "presentations";
+            const prefix = d.file_key ? folderPrefixOfFileKey(d.file_key) : null;
+
+            if (d.origin === "db") {
+                // 1) DB 연결 해제/삭제 (RPC 있으면 우선 사용)
                 try {
                     const { error } = await supabase.rpc("delete_deck_deep", { p_deck_id: d.id });
                     if (error) throw error;
                 } catch {
                     await supabase.from("room_decks").delete().eq("deck_id", d.id);
-                    const fileKey = d.file_key || "";
-                    if (fileKey.includes(`/decks/${d.id}/`) || /rooms\/.+\/decks\/.+\//.test(fileKey)) {
-                        const prefix = fileKey.split("/").slice(0, -1).join("/") + "/";
-                        const list = await supabase.storage.from("presentations").list(prefix);
-                        if (!list.error) {
-                            const targets = (list.data || []).map((f: any) => `${prefix}${f.name}`);
-                            if (targets.length) await supabase.storage.from("presentations").remove(targets);
-                        }
-                    }
-                    await supabase.from("decks").delete().eq("id", d.id);
+                    const del = await supabase.from("decks").delete().eq("id", d.id);
+                    if (del.error) throw del.error;
                 }
-                setDecks(prev => prev.filter(x => x.id !== d.id));
-            } catch (e:any) {
-                alert(e?.message ?? String(e));
+
+                // 2) 스토리지 정리 (원본/복제본 모두 커버)
+                if (prefix) await removeTree(bucket, prefix);
+            } else {
+                // origin === "storage" (DB에 행 없는 "원본" 폴더)
+                if (!prefix) throw new Error("file_key 없음");
+                await removeTree(bucket, prefix);
             }
-        } else {
-            if (!d.file_key) { alert("파일이 없습니다."); return; }
-            if (!confirm("원본 PDF 폴더를 삭제할까요? (되돌릴 수 없습니다)")) return;
-            try {
-                const parts = d.file_key.split("/");
-                const folder = parts.slice(0, 2).join("/") === "decks" ? parts[1] : parts[parts.indexOf("decks") + 1];
-                const prefix = `decks/${folder}`;
-                const bucket = supabase.storage.from("presentations");
-                const list = await bucket.list(prefix);
-                if (list.error) throw list.error;
-                const targets = (list.data || []).map((f: any) => `${prefix}/${f.name}`);
-                if (targets.length) {
-                    const rm = await bucket.remove(targets);
-                    if (rm.error) throw rm.error;
+
+            // (안전망) 정말 비었는지 확인 후 동기화
+            if (prefix) {
+                const ls = await supabase.storage.from(bucket).list(prefix);
+                if (!ls.error && (ls.data?.length || 0) > 0) {
+                    // 잔여가 있다면 한 번 더 재귀 삭제 (경쟁 상태 대비)
+                    await removeTree(bucket, prefix);
                 }
-                setDecks(prev => prev.filter(x => x.id !== d.id));
-            } catch (e:any) {
-                alert(e?.message ?? String(e));
             }
+        } catch (e: any) {
+            // 실패 시 목록 복구 + 알림
+            await load();
+            alert(e?.message ?? String(e));
+            return;
         }
-    }, []);
+
+        // 최종 동기화
+        await load();
+    }, [load]);
+
 
     // ===== 필터/검색 =====
     const filtered = React.useMemo(() => {
