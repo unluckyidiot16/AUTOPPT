@@ -15,6 +15,122 @@ type DeckRow = {
     origin: "db" | "storage";     // DB(decks 테이블) vs storage-only(폴더 스캔)
 };
 
+// ---- Theme helpers ----
+function usePrefersDark() {
+    const [dark, setDark] = React.useState<boolean>(
+        typeof window !== "undefined" && window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches
+    );
+    React.useEffect(() => {
+        if (typeof window === "undefined" || !window.matchMedia) return;
+        const mq = window.matchMedia("(prefers-color-scheme: dark)");
+        const on = (e: MediaQueryListEvent) => setDark(e.matches);
+        mq.addEventListener ? mq.addEventListener("change", on) : mq.addListener(on);
+        return () => {
+            mq.removeEventListener ? mq.removeEventListener("change", on) : mq.removeListener(on);
+        };
+    }, []);
+    return dark;
+}
+
+const chipPal = {
+    blue:  { bgD: "rgba(59,130,246,.18)",  bgL: "rgba(59,130,246,.12)",  bdD: "rgba(59,130,246,.45)",  fgD: "#bfdbfe", fgL: "#1e40af" },
+    green: { bgD: "rgba(16,185,129,.18)",  bgL: "rgba(16,185,129,.12)",  bdD: "rgba(16,185,129,.45)",  fgD: "#bbf7d0", fgL: "#065f46" },
+    slate: { bgD: "rgba(148,163,184,.18)", bgL: "rgba(148,163,184,.12)", bdD: "rgba(148,163,184,.35)", fgD: "#e2e8f0", fgL: "#334155" },
+    red:   { bgD: "rgba(239,68,68,.22)",   bgL: "rgba(239,68,68,.12)",   bdD: "rgba(239,68,68,.45)",   fgD: "#fecaca", fgL: "#7f1d1d" },
+} as const;
+
+function useQS() {
+    const { search, hash } = useLocation();
+    const part = hash.includes("?") ? hash.split("?")[1] : search.replace(/^\?/, "");
+    return React.useMemo(() => new URLSearchParams(part), [part]);
+}
+
+// ---- Reusable UI ----
+type BtnProps = React.ButtonHTMLAttributes<HTMLButtonElement> & {
+    variant?: "primary" | "neutral" | "outline" | "danger" | "ghost";
+    small?: boolean;
+    pressed?: boolean; // 토글/세그먼트용
+};
+function useBtnStyles(dark: boolean, { variant = "neutral", small, pressed }: BtnProps) {
+    const base: React.CSSProperties = {
+        borderRadius: 10,
+        padding: small ? "6px 10px" : "8px 12px",
+        fontSize: small ? 12 : 14,
+        lineHeight: 1.1,
+        transition: "all .15s ease",
+        cursor: "pointer",
+    };
+    const ring = dark ? "rgba(148,163,184,.28)" : "rgba(148,163,184,.35)";
+    const set = {
+        primary: {
+            background: pressed ? (dark ? "#4f46e5" : "#4338ca") : (dark ? "#6366f1" : "#4f46e5"),
+            color: "#fff",
+            border: "1px solid transparent",
+        },
+        neutral: {
+            background: dark ? "rgba(30,41,59,.6)" : "#fff",
+            color: dark ? "#e5e7eb" : "#111827",
+            border: `1px solid ${ring}`,
+        },
+        outline: {
+            background: "transparent",
+            color: dark ? "#e5e7eb" : "#111827",
+            border: `1px solid ${ring}`,
+        },
+        danger: {
+            background: dark ? "rgba(239,68,68,.25)" : "rgba(239,68,68,.10)",
+            color: dark ? "#fecaca" : "#7f1d1d",
+            border: `1px solid ${dark ? "rgba(239,68,68,.45)" : "rgba(239,68,68,.45)"}`,
+        },
+        ghost: {
+            background: pressed ? (dark ? "rgba(99,102,241,.18)" : "rgba(99,102,241,.12)") : "transparent",
+            color: dark ? "#e5e7eb" : "#111827",
+            border: `1px solid ${pressed ? (dark ? "rgba(99,102,241,.35)" : "rgba(99,102,241,.35)") : "transparent"}`,
+        },
+    } as const;
+    return { ...base, ...set[variant] };
+}
+
+function Chip({ color, children }: { color: "blue" | "green" | "slate" | "red"; children: React.ReactNode }) {
+    const dark = usePrefersDark();
+    const pal = chipPal[color];
+    return (
+        <span style={{
+            fontSize: 11, padding: "2px 6px", borderRadius: 999,
+            background: dark ? pal.bgD : pal.bgL,
+            color: dark ? pal.fgD : pal.fgL,
+            border: `1px solid ${dark ? pal.bdD : pal.bdD}`
+        }}>{children}</span>
+    );
+}
+
+function OpenSignedLink({ fileKey, children }: { fileKey: string; children: React.ReactNode }) {
+    const [href, setHref] = React.useState<string>("");
+    React.useEffect(() => {
+        let alive = true;
+        (async () => {
+            try {
+                const u = await getPdfUrlFromKey(fileKey, { ttlSec: 1800 });
+                if (alive) setHref(u);
+            } catch { if (alive) setHref(""); }
+        })();
+        return () => { alive = false; };
+    }, [fileKey]);
+    const dark = usePrefersDark();
+    const style = useBtnStyles(dark, { variant: "outline", small: true });
+    return (
+        <a
+            style={style}
+            href={href || "#"}
+            target="_blank"
+            rel="noreferrer"
+            onClick={(e) => { if (!href) e.preventDefault(); }}
+        >
+            {children}
+        </a>
+    );
+}
+
 // ---- Small utils ----
 function useSignedUrl(key: string | null | undefined, ttlSec = 1800) {
     const [url, setUrl] = React.useState<string>("");
@@ -34,46 +150,31 @@ function useSignedUrl(key: string | null | undefined, ttlSec = 1800) {
 
 function Thumb({ keyStr, badge }: { keyStr: string; badge: React.ReactNode }) {
     const fileUrl = useSignedUrl(keyStr);
+    const dark = usePrefersDark();
     return (
         <div
             style={{
                 position: "relative",
                 borderRadius: 12,
                 overflow: "hidden",
-                border: "1px solid rgba(148,163,184,0.35)",
+                border: `1px solid ${dark ? "rgba(148,163,184,.22)" : "rgba(148,163,184,.35)"}`,
                 height: 120,
                 display: "grid",
                 placeItems: "center",
-                background: "#fff",
+                background: dark ? "rgba(2,6,23,.65)" : "#fff",
             }}
         >
-            {fileUrl ? <PdfViewer fileUrl={fileUrl} page={1} maxHeight="120px" /> : <div style={{ height: 120 }} />}
+            {fileUrl
+                ? <PdfViewer fileUrl={fileUrl} page={1} maxHeight="120px" />
+                : <div style={{ width: "100%", display: "grid", placeItems: "center", maxHeight: 120, overflow: "hidden" }}>
+                    <div style={{ fontSize: 12, opacity: 0.7, padding: 8, color: dark ? "#cbd5e1" : "#475569" }}>
+                        파일을 불러올 수 없습니다.
+                    </div>
+                </div>
+            }
             <div style={{ position: "absolute", top: 6, left: 6 }}>{badge}</div>
         </div>
     );
-}
-
-function Chip({ color, children }: { color: "blue" | "green" | "slate" | "red"; children: React.ReactNode }) {
-    const map: any = {
-        blue:  { bg: "rgba(37,99,235,.12)",  bd: "rgba(37,99,235,.35)",  fg: "#1e40af" },
-        green: { bg: "rgba(5,150,105,.12)",  bd: "rgba(5,150,105,.35)",  fg: "#065f46" },
-        slate: { bg: "rgba(100,116,139,.12)",bd: "rgba(100,116,139,.35)",fg: "#334155" },
-        red:   { bg: "rgba(220,38,38,.12)",  bd: "rgba(220,38,38,.35)",  fg: "#7f1d1d" },
-    };
-    const s = map[color];
-    return (
-        <span style={{
-            fontSize: 11, padding: "2px 6px", borderRadius: 999,
-            background: s.bg, color: s.fg, border: `1px solid ${s.bd}`
-        }}>{children}</span>
-    );
-}
-
-function useQS() {
-    const { search, hash } = useLocation();
-    // hash-router 대응: #/library?room=CODE 형태 허용
-    const part = hash.includes("?") ? hash.split("?")[1] : search.replace(/^\?/, "");
-    return React.useMemo(() => new URLSearchParams(part), [part]);
 }
 
 // ---- Main ----
@@ -81,6 +182,7 @@ export default function PdfLibraryPage() {
     const nav = useNavigate();
     const qs = useQS();
     const roomCode = qs.get("room") || "";
+    const dark = usePrefersDark();
 
     // UI state
     const [loading, setLoading] = React.useState(false);
@@ -169,7 +271,6 @@ export default function PdfLibraryPage() {
         setLoading(true); setError(null);
         try {
             let merged: DeckRow[] = [];
-            // 1) RPC (가능하면)
             try {
                 const { data, error } = await supabase.rpc("list_library_decks", { p_limit: 200 });
                 if (error) throw error;
@@ -177,7 +278,6 @@ export default function PdfLibraryPage() {
                     id: d.id, title: d.title ?? null, file_key: d.file_key ?? null, file_pages: d.file_pages ?? null, origin: "db" as const
                 }));
             } catch {
-                // 2) 폴백: 직접 decks 조회
                 const { data, error } = await supabase
                     .from("decks").select("id,title,file_key,file_pages").not("file_key", "is", null).limit(200);
                 if (!error) {
@@ -186,7 +286,6 @@ export default function PdfLibraryPage() {
                     }));
                 }
             }
-            // 3) 스토리지 원본 병합(중복 제거: file_key 기준)
             try {
                 const sRows = await fetchFromStorage(120);
                 const byKey = new Map<string, DeckRow>();
@@ -194,7 +293,6 @@ export default function PdfLibraryPage() {
                 for (const r of sRows) if (r.file_key && !byKey.has(r.file_key)) byKey.set(r.file_key, r);
                 merged = Array.from(byKey.values());
             } catch {}
-
             setDecks(merged);
             if (merged.length === 0) setError("표시할 자료가 없습니다. (DB/RPC 또는 스토리지에 자료 없음)");
         } catch (e: any) {
@@ -206,20 +304,15 @@ export default function PdfLibraryPage() {
 
     React.useEffect(() => { load(); }, [load]);
 
-    // ===== 업로드: 자료함으로 업로드 (변환기 그대로 재사용) =====
-    const onUploaded = React.useCallback(() => {
-        alert("업로드 완료! 목록을 갱신합니다.");
-        load();
-    }, [load]);
+    // ===== 업로드 완료 → 새로고침 =====
+    const onUploaded = React.useCallback(() => { load(); }, [load]);
 
     // ===== 불러오기 =====
     async function createDeckFromFileKeyAndAssign(fileKey: string, roomId: string, slot: number) {
-        // DB 덱 생성
         const ins = await supabase.from("decks").insert({ title: "Imported", is_temp: true }).select("id").single();
         if (ins.error) throw ins.error;
         const newDeckId = ins.data.id as string;
 
-        // rooms/<roomId>/decks/<deckId>/slides-*.pdf 로 복제
         const ts = Date.now();
         const destKey = `rooms/${roomId}/decks/${newDeckId}/slides-${ts}.pdf`;
 
@@ -246,7 +339,6 @@ export default function PdfLibraryPage() {
             const rid = await ensureRoomId();
 
             if (d.origin === "db") {
-                // DB 덱: RPC 우선 → 폴백 upsert
                 try {
                     const { error } = await supabase.rpc("assign_room_deck_by_ext", { p_code: roomCode, p_deck_id: d.id, p_slot: slot });
                     if (error) throw error;
@@ -274,18 +366,15 @@ export default function PdfLibraryPage() {
     // ===== 삭제(정리) =====
     const deleteDeck = React.useCallback(async (d: DeckRow) => {
         if (d.origin === "db") {
-            // DB 덱: RPC 시도 → 폴백 수동 삭제
             if (!confirm("이 덱을 삭제할까요? 연결된 교시 배정도 해제될 수 있습니다.")) return;
             try {
                 try {
-                    const { error } = await supabase.rpc("delete_deck_deep", { p_deck_id: d.id }); // 있으면 사용
+                    const { error } = await supabase.rpc("delete_deck_deep", { p_deck_id: d.id });
                     if (error) throw error;
                 } catch {
-                    // 폴백: room_decks → decks → (가능하면 스토리지 폴더 제거)
                     await supabase.from("room_decks").delete().eq("deck_id", d.id);
                     const fileKey = d.file_key || "";
                     if (fileKey.includes(`/decks/${d.id}/`) || /rooms\/.+\/decks\/.+\//.test(fileKey)) {
-                        // prefix 폴더 전체 삭제
                         const prefix = fileKey.split("/").slice(0, -1).join("/") + "/";
                         const list = await supabase.storage.from("presentations").list(prefix);
                         if (!list.error) {
@@ -300,11 +389,9 @@ export default function PdfLibraryPage() {
                 alert(e?.message ?? String(e));
             }
         } else {
-            // 스토리지 원본 폴더 삭제
             if (!d.file_key) { alert("파일이 없습니다."); return; }
             if (!confirm("원본 PDF 폴더를 삭제할까요? (되돌릴 수 없습니다)")) return;
             try {
-                // decks/<folder>/<file>.pdf → decks/<folder>/* 모두 삭제
                 const parts = d.file_key.split("/");
                 const folder = parts.slice(0, 2).join("/") === "decks" ? parts[1] : parts[parts.indexOf("decks") + 1];
                 const prefix = `decks/${folder}`;
@@ -340,29 +427,32 @@ export default function PdfLibraryPage() {
         );
     }, [decks, view, keyword]);
 
-    // ===== Card helpers =====
     const tagAndColor = (d: DeckRow) => {
         const key = d.file_key || "";
         if (key.includes("/decks/")) return { label: "원본 PDF", color: "blue" as const };
         if (key.includes("/rooms/")) return { label: "복제본",   color: "green" as const };
         return { label: d.origin.toUpperCase(), color: "slate" as const };
     };
-    const cardBorder = (color: string) => color === "blue"
-        ? "1px solid rgba(37,99,235,.45)"
-        : color === "green"
-            ? "1px solid rgba(5,150,105,.45)"
-            : "1px solid rgba(148,163,184,.35)";
 
-    // ===== Render =====
+    // 카드 스타일(다크/라이트 자동 조정)
+    const cardBase: React.CSSProperties = {
+        borderRadius: 14,
+        background: dark ? "rgba(15,23,42,.92)" : "#fff", // slate-900 유사
+        border: `1px solid ${dark ? "rgba(148,163,184,.18)" : "rgba(148,163,184,.35)"}`,
+        padding: 12,
+        display: "flex",
+        flexDirection: "column",
+        boxShadow: dark ? "0 6px 18px rgba(2,6,23,.55)" : "0 4px 14px rgba(15,23,42,.08)",
+    };
+
+    const Btn = (p: BtnProps) => <button {...p} style={{ ...useBtnStyles(dark, p), ...(p.style || {}) }}>{p.children}</button>;
+
     return (
         <div className="px-4 py-4 max-w-7xl mx-auto">
             {/* 헤더 */}
             <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-2">
-                    <button
-                        className="px-3 py-2 rounded-md border border-slate-300"
-                        onClick={() => nav(`/teacher?room=${encodeURIComponent(roomCode)}&mode=setup`)}
-                    >← 뒤로</button>
+                    <Btn variant="outline" onClick={() => nav(`/teacher?room=${encodeURIComponent(roomCode)}&mode=setup`)} small>← 뒤로</Btn>
                     <h1 className="text-xl font-semibold">자료함</h1>
                 </div>
                 <div className="text-sm opacity-70">room: <code>{roomCode || "(미지정)"}</code></div>
@@ -377,7 +467,7 @@ export default function PdfLibraryPage() {
                 <PdfToSlidesUploader onFinished={onUploaded} />
             </div>
 
-            {/* 교시 선택/생성 */}
+            {/* 교시 + 필터 */}
             <div className="panel mb-4" style={{ padding: 12, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                 <div style={{ fontWeight: 700 }}>교시</div>
                 <select
@@ -387,15 +477,16 @@ export default function PdfLibraryPage() {
                 >
                     {slots.length ? slots.map(s => <option key={s} value={s}>{s}교시</option>) : <option value={1}>1교시</option>}
                 </select>
-                <button className="btn" onClick={createSlot}>＋ 새 교시</button>
-                <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
-                    <button className={`btn ${view==="all"?"":"opacity-70"}`} onClick={() => setView("all")}>전체</button>
-                    <button className={`btn ${view==="pdf"?"":"opacity-70"}`} onClick={() => setView("pdf")}>원본 PDF</button>
-                    <button className={`btn ${view==="copies"?"":"opacity-70"}`} onClick={() => setView("copies")}>복제본</button>
+                <Btn onClick={createSlot} small variant="neutral">＋ 새 교시</Btn>
+
+                <div style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
+                    <Btn small variant="ghost" pressed={view==="all"} onClick={() => setView("all")}>전체</Btn>
+                    <Btn small variant="ghost" pressed={view==="pdf"} onClick={() => setView("pdf")}>원본 PDF</Btn>
+                    <Btn small variant="ghost" pressed={view==="copies"} onClick={() => setView("copies")}>복제본</Btn>
                 </div>
             </div>
 
-            {/* 검색 */}
+            {/* 검색/갱신 */}
             <div className="flex items-center gap-2 mb-4">
                 <input
                     className="px-3 py-2 rounded-md border border-slate-300 w-full"
@@ -403,8 +494,8 @@ export default function PdfLibraryPage() {
                     value={keyword}
                     onChange={(e) => setKeyword(e.target.value)}
                 />
-                <button className="px-3 py-2 rounded-md border border-slate-300 bg-white" onClick={() => setKeyword("")}>초기화</button>
-                <button className="btn" onClick={load} disabled={loading}>{loading ? "갱신 중…" : "목록 새로고침"}</button>
+                <Btn small variant="outline" onClick={() => setKeyword("")}>초기화</Btn>
+                <Btn small variant="neutral" onClick={load} disabled={loading}>{loading ? "갱신 중…" : "목록 새로고침"}</Btn>
             </div>
 
             {error && <div className="text-red-600 mb-2">{error}</div>}
@@ -414,7 +505,7 @@ export default function PdfLibraryPage() {
                 style={{
                     display: "grid",
                     gap: 16,
-                    gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))",
+                    gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))",
                     alignItems: "start",
                 }}
             >
@@ -422,33 +513,27 @@ export default function PdfLibraryPage() {
                     const slot = slotSel[d.id] ?? slotSelGlobal;
                     const tag = tagAndColor(d);
                     return (
-                        <div
-                            key={d.id}
-                            style={{
-                                borderRadius: 14,
-                                border: cardBorder(tag.color),
-                                background: "#fff",
-                                padding: 12,
-                                display: "flex",
-                                flexDirection: "column",
-                            }}
-                        >
-                            <div className="text-sm font-medium line-clamp-2">{d.title || "Untitled"}</div>
+                        <div key={d.id} style={cardBase}>
+                            <div className="text-sm font-medium line-clamp-2" style={{ color: dark ? "#e5e7eb" : "#111827" }}>
+                                {d.title || "Untitled"}
+                            </div>
                             <div className="text-[11px] opacity-60 mb-2">{d.origin === "db" ? "DB" : "Storage"}</div>
 
                             {d.file_key
                                 ? <Thumb keyStr={d.file_key} badge={<Chip color={tag.color as any}>{tag.label}</Chip>} />
-                                : <div className="h-[120px] bg-slate-100 rounded-md" />
+                                : <div style={{ height: 120, borderRadius: 12, background: dark ? "rgba(2,6,23,.65)" : "#f1f5f9" }} />
                             }
 
-                            <div className="mt-3 flex items-center gap-2">
+                            <div className="mt-3 flex items-center gap-8">
                                 {d.file_key && <OpenSignedLink fileKey={d.file_key}>링크 열기</OpenSignedLink>}
-                                <button className="px-2 py-1 rounded-md bg-emerald-600 hover:bg-emerald-500 text-white text-sm ml-auto" onClick={() => openEdit(nav, roomCode, d)}>편집</button>
-                                <button className="px-2 py-1 rounded-md border text-sm" onClick={() => deleteDeck(d)}>삭제</button>
+                                <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+                                    <Btn small variant="neutral" onClick={() => openEdit(nav, roomCode, d)}>편집</Btn>
+                                    <Btn small variant="danger" onClick={() => deleteDeck(d)}>삭제</Btn>
+                                </div>
                             </div>
 
                             {/* 불러오기(교시 지정) */}
-                            <div className="mt-2 flex items-center gap-2">
+                            <div className="mt-2 flex items-center gap-6">
                                 <select
                                     className="px-2 py-1 border rounded-md text-sm"
                                     value={slot}
@@ -456,12 +541,7 @@ export default function PdfLibraryPage() {
                                 >
                                     {(slots.length ? slots : [1,2,3,4,5,6]).map(n => <option key={n} value={n}>{n}교시</option>)}
                                 </select>
-                                <button
-                                    className="px-2 py-1 rounded-md bg-indigo-600 hover:bg-indigo-500 text-white text-sm"
-                                    onClick={() => assignDeckToSlot(d, slot)}
-                                >
-                                    지금 불러오기
-                                </button>
+                                <Btn small variant="primary" onClick={() => assignDeckToSlot(d, slot)}>지금 불러오기</Btn>
                             </div>
                         </div>
                     );
@@ -477,29 +557,4 @@ function openEdit(nav: ReturnType<typeof useNavigate>, roomCode: string, d: Deck
     if (!d.file_key) { alert("파일이 없습니다."); return; }
     if (d.origin === "db") nav(`/editor?room=${encodeURIComponent(roomCode)}&src=${encodeURIComponent(d.id)}`);
     else nav(`/editor?room=${encodeURIComponent(roomCode)}&srcKey=${encodeURIComponent(d.file_key)}`);
-}
-
-function OpenSignedLink({ fileKey, children }: { fileKey: string; children: React.ReactNode }) {
-    const [href, setHref] = React.useState<string>("");
-    React.useEffect(() => {
-        let alive = true;
-        (async () => {
-            try {
-                const u = await getPdfUrlFromKey(fileKey, { ttlSec: 1800 });
-                if (alive) setHref(u);
-            } catch { if (alive) setHref(""); }
-        })();
-        return () => { alive = false; };
-    }, [fileKey]);
-    return (
-        <a
-            className="px-2 py-1 rounded-md border text-sm"
-            href={href || "#"}
-            target="_blank"
-            rel="noreferrer"
-            onClick={(e) => { if (!href) e.preventDefault(); }}
-        >
-            {children}
-        </a>
-    );
 }
