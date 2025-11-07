@@ -86,6 +86,37 @@ async function copySlidesDir(srcPrefix: string, destPrefix: string, onStep?: (co
     return copied;
 }
 
+// (추가) 빠른 슬라이드 복사: .done.json → 정확한 파일명 세트만 복사
+async function copySlidesFastByDone(slidesPrefixSrc: string, slidesPrefixDst: string, onStep?: (copied: number, total: number) => void) {
+    const slides = supabase.storage.from("slides");
+    // 1) .done.json 읽기
+    const doneKey = `${slidesPrefixSrc}/.done.json`;
+    const done = await slides.download(doneKey);
+    if (done.error) throw done.error;
+    const meta = JSON.parse(await done.data.text()) as { pages: number };
+    const total = Math.max(0, Number(meta.pages) || 0);
+    if (!total) return 0;
+
+    // 2) 필요한 파일 집합: 0..pages-1 + .done.json
+    const targets = Array.from({ length: total }, (_, i) => `${slidesPrefixSrc}/${i}.webp`);
+    targets.push(doneKey);
+
+    // 3) 순차 복사 (copy 폴백 download→upload)
+    let copied = 0;
+    for (const src of targets) {
+        const dst = src.replace(slidesPrefixSrc, slidesPrefixDst);
+        const { error: cErr } = await slides.copy(src, dst);
+        if (cErr) {
+            const dl = await slides.download(src);
+            if (dl.error) throw dl.error;
+            const up = await slides.upload(dst, dl.data, { upsert: true });
+            if (up.error) throw up.error;
+        }
+        copied++;
+        onStep?.(copied, targets.length);
+    }
+    return copied;
+}
 
 function useQS() {
     const { search, hash } = useLocation();
@@ -388,6 +419,18 @@ export default function PdfLibraryPage() {
     const [roomId, setRoomId] = React.useState<string | null>(null);
     const [slots, setSlots] = React.useState<number[]>([]);
 
+    const [assign, setAssign] = React.useState<{
+        open: boolean;
+        progress: number;
+        text: string;
+        deckId: string | null;
+        logs: string[];          // ⬅️ 추가: 진행 로그
+    }>({ open: false, progress: 0, text: "", deckId: null, logs: [] });
+
+    const logAssign = React.useCallback((m: string) => {
+        setAssign(a => ({ ...a, logs: [...a.logs, m].slice(-300) }));
+    }, []);
+
     // room/slot helpers
     const getRoomIdByCode = React.useCallback(async (code: string): Promise<string> => {
         const { data, error } = await supabase.from("rooms").select("id").eq("code", code).maybeSingle();
@@ -531,8 +574,9 @@ export default function PdfLibraryPage() {
         const ins = await supabase.from("decks").insert({ title: title ?? "Imported" }).select("id").single();
         if (ins.error) throw ins.error;
         const newDeckId = ins.data.id as string;
+        logAssign(`덱 생성: ${newDeckId}`);
 
-        // (B) PDF 사본 → presentations/rooms/<room>/decks/<deckId>/slides-*.pdf
+        // (B) PDF 사본
         const ts = Date.now();
         const destKey = `rooms/${roomId}/decks/${newDeckId}/slides-${ts}.pdf`;
         let copied = false;
@@ -543,32 +587,51 @@ export default function PdfLibraryPage() {
         if (!copied) {
             const dl = await supabase.storage.from("presentations").download(fileKey);
             if (dl.error) throw dl.error;
-            const up = await supabase.storage
-                .from("presentations")
-                .upload(destKey, dl.data, { contentType: "application/pdf", upsert: true });
+            const up = await supabase.storage.from("presentations").upload(destKey, dl.data, { contentType: "application/pdf", upsert: true });
             if (up.error) throw up.error;
         }
+        logAssign(`PDF 사본: presentations/${destKey}`);
 
         // (C) decks.file_key 업데이트
         const upDeck = await supabase.from("decks").update({ file_key: destKey }).eq("id", newDeckId);
         if (upDeck.error) throw upDeck.error;
 
-        // (D) slides 복사: slides/decks/<원본폴더> → slides/rooms/<room>/decks/<deckId>
-        const srcSlidesPrefix = folderPrefixOfFileKey(fileKey); // 'decks/brain-...'
-        const dstSlidesPrefix = `rooms/${roomId}/decks/${newDeckId}`;
+        // (D) slides 복사 (변환 없음)
+        const srcSlidesPrefix = folderPrefixOfFileKey(fileKey);       // ex) decks/<slug>
+        const dstSlidesPrefix = `rooms/${roomId}/decks/${newDeckId}`; // ex) rooms/<room>/decks/<deckId>
         if (srcSlidesPrefix) {
-            await copySlidesDir(srcSlidesPrefix, dstSlidesPrefix, (copied, total) => {
-                // 진행률 업데이트는 바깥에서 처리
-            });
+            // fast 경로 시도 → 실패 시 기존 재귀 복사
+            try {
+                logAssign(`슬라이드 복사 준비(.done.json 확인)…`);
+                await copySlidesFastByDone(srcSlidesPrefix, dstSlidesPrefix, (copied, total) => {
+                    const pct = Math.max(12, Math.min(98, Math.floor(12 + (copied / Math.max(1, total)) * 85)));
+                    setAssign(a => ({ ...a, progress: pct, text: `슬라이드 복사 중… ${copied}/${total}` }));
+                });
+                logAssign(`슬라이드 복사 완료(FAST): slides/${dstSlidesPrefix}`);
+            } catch {
+                logAssign(`FAST 복사 폴백 → 재귀 복사 진행`);
+                await copySlidesDir(srcSlidesPrefix, dstSlidesPrefix, (copied, total) => {
+                    const pct = Math.max(12, Math.min(98, Math.floor(12 + (copied / Math.max(1, total)) * 85)));
+                    setAssign(a => ({ ...a, progress: pct, text: `슬라이드 복사 중… ${copied}/${total}` }));
+                });
+                logAssign(`슬라이드 복사 완료(FALLBACK): slides/${dstSlidesPrefix}`);
+            }
+        } else {
+            logAssign(`슬라이드 원본 없음 → 복사 생략`);
         }
 
-        // (E) room_decks 배정
+        // (E) room_decks 배정(upsert) + 즉시 검증
         const upMap = await supabase
             .from("room_decks")
             .upsert({ room_id: roomId, slot, deck_id: newDeckId }, { onConflict: "room_id,slot" })
             .select("deck_id,slot")
             .single();
         if (upMap.error) throw upMap.error;
+        logAssign(`배정 완료: slot=${slot}, deck=${newDeckId}`);
+
+        const check = await supabase.from("room_decks").select("deck_id").eq("room_id", roomId).eq("slot", slot).maybeSingle();
+        if (!check.data?.deck_id) throw new Error("배정 검증 실패(조회 결과 없음)");
+        logAssign(`배정 검증 통과`);
 
         return { newDeckId, destKey, srcSlidesPrefix, dstSlidesPrefix };
     }
@@ -581,36 +644,26 @@ export default function PdfLibraryPage() {
             const rid = await ensureRoomId();
 
             // 단계 1: PDF 사본
-            setAssign({ open: true, progress: 5, text: "사본(PDF) 생성 중…", deckId: null });
+            setAssign({ open: true, progress: 5, text: "사본(PDF) 생성 중…", deckId: null, logs: [] });
+            logAssign(`시작: room=${rid}, slot=${slot}, file=${d.file_key}`);
+
             const { newDeckId, srcSlidesPrefix, dstSlidesPrefix } =
                 await createDeckFromFileKeyAndAssign(d.file_key, rid, slot, d.title);
 
-            // 단계 2: slides 복사(있을 때만 진행률 표시)
-            if (srcSlidesPrefix) {
-                setAssign({ open: true, progress: 10, text: "슬라이드 이미지 복사 준비…", deckId: newDeckId });
-                let lastPct = 10;
-                await copySlidesDir(srcSlidesPrefix, dstSlidesPrefix!, (copied, total) => {
-                    // 10% → 98% 사이로 보간
-                    const pct = Math.max(10, Math.min(98, Math.floor(10 + (copied / Math.max(1,total)) * 88)));
-                    if (pct > lastPct) {
-                        lastPct = pct;
-                        setAssign((a) => ({ ...a, progress: pct, text: `슬라이드 복사 중… ${pct}%` }));
-                    }
-                });
-            } else {
-                // slides 원본이 없으면 바로 95%로 스킵
-                setAssign((a) => ({ ...a, progress: 95, text: "슬라이드가 없어 복사를 생략합니다…" }));
-            }
+            // UI 업데이트
+            setAssign(a => ({ ...a, deckId: newDeckId }));
 
             // 완료 & 새로고침
-            setAssign((a) => ({ ...a, progress: 100, text: "완료! 새로고침 합니다…" }));
+            setAssign(a => ({ ...a, progress: 100, text: "완료! 목록을 갱신합니다…" }));
             await load();
-            setTimeout(() => setAssign({ open: false, progress: 0, text: "", deckId: null }), 500);
+            setTimeout(() => setAssign({ open: false, progress: 0, text: "", deckId: null, logs: [] }), 600);
 
         } catch (e: any) {
             console.error(e);
-            setAssign({ open: false, progress: 0, text: "", deckId: null });
+            logAssign(`에러: ${e?.message || e}`);
+            setAssign(a => ({ ...a, text: `에러: ${e?.message || e}` }));
             alert(`불러오기 실패: ${e?.message || e}`);
+            setAssign({ open: false, progress: 0, text: "", deckId: null, logs: [] });
         }
     }
 
@@ -821,19 +874,23 @@ export default function PdfLibraryPage() {
 
             {/* 진행 모달 */}
             {assign.open && (
-                <div style={{
-                    position:"fixed", inset:0, background:"rgba(0,0,0,.45)", display:"grid", placeItems:"center", zIndex:1000
-                }}>
+                <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.45)", display:"grid", placeItems:"center", zIndex:1000 }}>
                     <div style={{
-                        width:360, borderRadius:12, background:"#111827", color:"#fff",
+                        width:420, borderRadius:12, background:"#111827", color:"#fff",
                         border:"1px solid rgba(148,163,184,.25)", padding:16, boxShadow:"0 14px 40px rgba(0,0,0,.6)"
                     }}>
                         <div style={{ fontWeight:700, marginBottom:8 }}>자료 불러오는 중</div>
                         <div style={{ fontSize:13, opacity:.85, marginBottom:12 }}>{assign.text}</div>
-                        <div style={{ height:8, background:"rgba(148,163,184,.22)", borderRadius:999, overflow:"hidden" }}>
-                            <div style={{
-                                width: `${assign.progress}%`, height:"100%", background:"#4f46e5", transition:"width .3s ease"
-                            }}/>
+                        <div style={{ height:8, background:"rgba(148,163,184,.22)", borderRadius:999, overflow:"hidden", marginBottom:10 }}>
+                            <div style={{ width: `${assign.progress}%`, height:"100%", background:"#4f46e5", transition:"width .3s ease" }}/>
+                        </div>
+                        <div style={{
+                            maxHeight: 200, overflow: "auto",
+                            background: "rgba(2,6,23,.55)", border: "1px solid rgba(148,163,184,.25)",
+                            borderRadius: 8, padding: 8, fontSize: 12,
+                            fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+                        }}>
+                            {assign.logs.map((l, i) => <div key={i}>• {l}</div>)}
                         </div>
                     </div>
                 </div>
