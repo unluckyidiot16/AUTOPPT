@@ -10,6 +10,7 @@ import { useArrowNav } from "../hooks/useArrowNav";
 import { getBasePath } from "../utils/getBasePath";
 import { RoomQR } from "../components/RoomQR";
 import SlideStage, { type Overlay } from "../components/SlideStage";
+import PdfToSlidesUploader from "../components/PdfToSlidesUploader";
 
 type RpcOverlay = { id: string; z: number; type: string; payload: any };
 type RpcSlide = {
@@ -34,26 +35,6 @@ async function rpc<T = any>(fn: string, args?: Record<string, any>) {
     const { data, error } = await supabase.rpc(fn, args ?? {});
     if (error) { DBG.err("rpc error:", fn, error.message || error); throw error; }
     return data as T;
-}
-
-/** 안전 페이지 이동 (기존 흐름 유지) */
-async function gotoPageSafe(roomCode: string, nextPage: number): Promise<"ok" | "fallback-slide" | "local-only" | "fail"> {
-    const p = Math.max(1, nextPage);
-    try { await rpc("goto_page", { p_code: roomCode, p_page: p }); return "ok"; }
-    catch (e1) { DBG.err("goto_page failed", e1); }
-
-    try { await rpc("goto_slide", { p_code: roomCode, p_slide: p, p_step: 0 }); return "fallback-slide"; }
-    catch (e2) { DBG.err("goto_slide fallback failed", e2); }
-
-    try {
-        const { data: r } = await supabase.from("rooms").select("id,state").eq("code", roomCode).maybeSingle();
-        if (r?.id) {
-            const nextState = { ...(r.state ?? {}), page: p };
-            const { error: uerr } = await supabase.from("rooms").update({ state: nextState }).eq("id", r.id);
-            if (!uerr) return "local-only";
-        }
-    } catch (e3) { DBG.err("rooms.state direct update failed", e3); }
-    return "fail";
 }
 
 /** 쿼리스트링 */
@@ -130,8 +111,6 @@ export default function TeacherPage() {
         if (error) return;
         if (data) {
             setRoomId(data.id);
-            const pg = Number(data.state?.page ?? 1);
-            setPage(pg > 0 ? pg : 1);
         }
     }, [roomCode]);
     useEffect(() => { refreshRoomState(); }, [refreshRoomState]);
@@ -150,8 +129,24 @@ export default function TeacherPage() {
             setManifest(null);
         }
     }, [roomCode]);
-
     useEffect(() => { refreshManifest(); }, [refreshManifest]);
+
+    // activeSlot 변경 시 해당 교시의 current_index를 페이지에 반영
+    const syncPageFromSlot = useCallback(async (slot: number) => {
+        if (!roomId) return;
+        const { data } = await supabase
+            .from("room_lessons")
+            .select("current_index")
+            .eq("room_id", roomId)
+            .eq("slot", slot)
+            .maybeSingle();
+        const idx = Number(data?.current_index ?? 0);
+        setPage(idx + 1);
+    }, [roomId]);
+
+    useEffect(() => {
+        syncPageFromSlot(activeSlot);
+    }, [activeSlot, syncPageFromSlot]);
 
     const totalPages = useMemo(() => {
         const slot = manifest?.slots?.find(s => s.slot === activeSlot) ?? manifest?.slots?.[0];
@@ -178,36 +173,42 @@ export default function TeacherPage() {
     useEffect(() => {
         if (!lastMessage) return;
         if (lastMessage.type === "hello") {
-            send({ type: "goto", page });
+            send({ type: "goto", page, slot: activeSlot });
         }
-    }, [lastMessage, page, send]);
+    }, [lastMessage, page, activeSlot, send]);
 
-    // Controls
-    const gotoPage = useCallback(async (nextPage: number) => {
+    // Controls — 교시별 current_index 업데이트
+    const gotoPageForSlot = useCallback(async (slot: number, nextPage: number) => {
         const p = Math.max(1, nextPage);
-        const mode = await gotoPageSafe(roomCode, p);
-        if (mode === "fail") toast.show("서버 갱신 실패: 임시 동기화로 진행합니다");
+        if (!roomId) return;
+        // room_lessons.current_index 업데이트 (교시별 진도 저장)
+        const { error } = await supabase
+            .from("room_lessons")
+            .update({ current_index: p - 1 })
+            .eq("room_id", roomId)
+            .eq("slot", slot);
+        if (error) DBG.err("room_lessons.update", error);
         setPage(p);
-        send({ type: "goto", page: p });
-    }, [roomCode, send]);
+        send({ type: "goto", page: p, slot });
+    }, [roomId, send]);
 
     const next = useCallback(async () => {
         if (totalPages && page >= totalPages) return;
-        await gotoPage(page + 1);
-    }, [page, totalPages, gotoPage]);
+        await gotoPageForSlot(activeSlot, page + 1);
+    }, [page, totalPages, activeSlot, gotoPageForSlot]);
 
     const prev = useCallback(async () => {
         if (page <= 1) return;
-        await gotoPage(page - 1);
-    }, [page, gotoPage]);
+        await gotoPageForSlot(activeSlot, page - 1);
+    }, [page, activeSlot, gotoPageForSlot]);
 
     useArrowNav(prev, next);
 
-    // 학생 링크
+    // 학생 링크(현재 교시 포함)
     const studentUrl = useMemo(() => {
         const base = getBasePath();
-        return `${location.origin}${base}/#/student?room=${roomCode}`;
-    }, [roomCode]);
+        return `${location.origin}${base}/#/student?room=${roomCode}&slot=${activeSlot}`;
+    }, [roomCode, activeSlot]);
 
     // 최근 제출
     const [answers, setAnswers] = useState<any[]>([]);
@@ -224,118 +225,77 @@ export default function TeacherPage() {
         })();
     }, [roomId, page]);
 
-    // ========== 테스트 업로드(교시/업로드) ==========
+    // ====== 자료함(내 자료) 리스트 + 배정 ======
+    const [library, setLibrary] = useState<any[]>([]);
+    const refreshLibrary = useCallback(async () => {
+        const { data: u } = await supabase.auth.getUser();
+        const uid = u.user?.id;
+        if (!uid) return setLibrary([]);
+        const { data, error } = await supabase
+            .from("materials")
+            .select("id, title, created_at")
+            .eq("owner_id", uid)
+            .order("created_at", { ascending: false })
+            .limit(30);
+        if (error) DBG.err("materials list", error);
+        setLibrary(data || []);
+    }, []);
+    useEffect(() => { refreshLibrary(); }, [refreshLibrary]);
 
-    const [slotInput, setSlotInput] = useState<number>(1); // 교시 선택용
-    const [files, setFiles] = useState<FileList | null>(null);
-    const [uploading, setUploading] = useState(false);
-    const [ulog, setUlog] = useState<string[]>([]);
+    const createLessonFromMaterial = useCallback(async (materialId: string) => {
+        const { data: u } = await supabase.auth.getUser();
+        const uid = u.user?.id;
+        if (!uid) throw new Error("로그인이 필요합니다.");
 
-    useEffect(() => {
-        // 교시 초기값: activeSlot과 동기화
-        setSlotInput(activeSlot);
-    }, [activeSlot]);
+        // lesson 생성
+        const { data: lesson, error: el } = await supabase
+            .from("lessons")
+            .insert({ owner_id: uid, title: `Lesson of ${materialId}` })
+            .select()
+            .single();
+        if (el) throw el;
+        const lessonId: string = lesson.id;
 
-    const pushLog = (s: string) => setUlog((prev) => [s, ...prev].slice(0, 50));
+        // material_pages 조회 → lesson_slides 생성
+        const { data: pages, error: ep } = await supabase
+            .from("material_pages")
+            .select("page_index")
+            .eq("material_id", materialId)
+            .order("page_index");
+        if (ep) throw ep;
 
-    const handleTestUpload = useCallback(async () => {
-        try {
-            if (!roomId) { toast.show("방 정보를 불러오는 중입니다."); return; }
-            if (!files || files.length === 0) { toast.show("업로드할 이미지 파일을 선택하세요."); return; }
-
-            setUploading(true); setUlog([]);
-
-            // 로그인 사용자
-            const { data: u } = await supabase.auth.getUser();
-            const uid = u.user?.id;
-            if (!uid) { toast.show("로그인이 필요합니다."); return; }
-
-            // 1) materials 생성
-            const title = `AutoMat ${new Date().toISOString()}`;
-            const { data: mat, error: em } = await supabase
-                .from("materials")
-                .insert({ owner_id: uid, title, source_type: "images" })
-                .select()
-                .single();
-            if (em) throw em;
-            const matId: string = String(mat.id).toLowerCase();
-            pushLog(`materials 생성: ${matId}`);
-
-            // 정렬: 파일명 기준 오름차순
-            const list = Array.from(files).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
-
-            // 2) slides 업로드 + material_pages upsert
-            for (let i = 0; i < list.length; i++) {
-                const f = list[i];
-                const ext = (() => {
-                    const n = f.name.toLowerCase();
-                    const m = n.match(/\.(webp|png|jpg|jpeg)$/i);
-                    return m ? m[1] : "webp";
-                })();
-                const path = `${matId}/pages/${i}.${ext}`;
-                const { error: eu } = await supabase.storage.from("slides")
-                    .upload(path, f, { upsert: true, contentType: f.type || undefined, cacheControl: "3600" });
-                if (eu) throw eu;
-
-                await supabase.from("material_pages").upsert(
-                    {
-                        material_id: matId,
-                        page_index: i,
-                        image_key: path,
-                        width: 16,
-                        height: 16,
-                        thumb_key: null,
-                        ocr_json_key: null,
-                    },
-                    { onConflict: "material_id,page_index" }
-                );
-
-                pushLog(`업로드 완료: ${path}`);
-            }
-
-            // 3) lessons 생성
-            const { data: lesson, error: el } = await supabase
-                .from("lessons")
-                .insert({ owner_id: uid, title: `Lesson of ${matId}` })
-                .select()
-                .single();
-            if (el) throw el;
-            const lessonId: string = lesson.id;
-            pushLog(`lesson 생성: ${lessonId}`);
-
-            // 4) lesson_slides 벌크 생성
-            const slidesRows = list.map((_, i) => ({
-                lesson_id: lessonId,
-                sort_index: i,
-                kind: "material",
-                material_id: matId,
-                page_index: i,
-            }));
-            const { error: es } = await supabase.from("lesson_slides").insert(slidesRows);
+        const rows = (pages || []).map((p: any) => ({
+            lesson_id: lessonId,
+            sort_index: p.page_index,
+            kind: "material",
+            material_id: materialId,
+            page_index: p.page_index,
+        }));
+        if (rows.length) {
+            const { error: es } = await supabase.from("lesson_slides").insert(rows);
             if (es) throw es;
-            pushLog(`lesson_slides ${slidesRows.length}건 생성`);
+        }
+        return lessonId;
+    }, []);
 
-            // 5) room_lessons에 교시 배정(upsert)
-            const { error: erl } = await supabase.from("room_lessons").upsert(
-                { room_id: roomId, slot: slotInput, lesson_id: lessonId, current_index: 0 },
+    const assignMaterialToSlot = useCallback(async (materialId: string, slot: number) => {
+        if (!roomId) throw new Error("roomId 없음");
+        // 기존 lesson 확인: 같은 material 기반 lesson이 여러 개일 수 있으므로, 여기서는 새로 생성
+        const lessonId = await createLessonFromMaterial(materialId);
+        // room_lessons 배정
+        const { error: erl } = await supabase
+            .from("room_lessons")
+            .upsert(
+                { room_id: roomId, slot, lesson_id: lessonId, current_index: 0 },
                 { onConflict: "room_id,slot" }
             );
-            if (erl) throw erl;
-            pushLog(`room_lessons: ${slotInput}교시에 배정 완료`);
+        if (erl) throw erl;
 
-            // 6) 매니페스트 새로고침 + 페이지 1로
-            await refreshManifest();
-            setActiveSlot(slotInput);
-            await gotoPage(1);
-
-            toast.show("업로드/배정 완료!");
-        } catch (e: any) {
-            DBG.err("handleTestUpload", e);
-            toast.show(e?.message ?? String(e));
-        } finally {
-            setUploading(false);
-        }
-    }, [files, roomId, slotInput, toast, refreshManifest, gotoPage]);
+        await refreshManifest();
+        setActiveSlot(slot);
+        await gotoPageForSlot(slot, 1);
+        toast.show("배정 완료");
+    }, [roomId, createLessonFromMaterial, refreshManifest, gotoPageForSlot, toast]);
 
     // ===================== UI =====================
 
@@ -357,58 +317,53 @@ export default function TeacherPage() {
             </div>
             <div style={{ display: "flex", gap: 8, justifyContent: "center", marginTop: 10 }}>
                 <button className="btn" onClick={prev} disabled={page <= 1}>◀ 이전</button>
-                <button className="btn" onClick={() => gotoPage(page)}>🔓 현재 페이지 재전송</button>
+                <button className="btn" onClick={() => gotoPageForSlot(activeSlot, page)}>🔓 현재 페이지 재전송</button>
                 <button className="btn" onClick={next} disabled={!!totalPages && page >= totalPages}>다음 ▶</button>
             </div>
         </div>
     );
 
     const SetupRight = (
-        <div className="panel" style={{ display: "grid", gap: 12 }}>
-            {/* 교시 선택 */}
+        <div className="panel" style={{ display: "grid", gap: 16 }}>
+            {/* 교시 전환 */}
             <div>
-                <div style={{ fontWeight: 700, marginBottom: 6 }}>교시 선택</div>
-                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                    <select
-                        value={slotInput}
-                        onChange={(e) => setSlotInput(parseInt(e.target.value, 10))}
-                        className="input"
-                    >
-                        {[1,2,3,4,5,6].map(n => (
-                            <option key={n} value={n}>{n}교시</option>
-                        ))}
-                    </select>
-                    <button className="btn" onClick={() => setActiveSlot(slotInput)}>
-                        이 교시 보기
-                    </button>
-                    <span style={{ fontSize: 12, opacity: .7 }}>
-            (현재: {activeSlot}교시)
-          </span>
+                <div style={{ fontWeight: 700, marginBottom: 6 }}>교시 전환</div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <button className="btn" onClick={() => setActiveSlot(s => Math.max(1, s - 1))}>◀</button>
+                    <div className="badge">{activeSlot}교시</div>
+                    <button className="btn" onClick={() => setActiveSlot(s => Math.min(6, s + 1))}>▶</button>
+                    <span style={{ fontSize: 12, opacity: .7 }}>교시를 바꾸면 해당 교시의 진도(current_index)를 불러옵니다.</span>
                 </div>
             </div>
 
-            {/* 테스트 업로드 */}
+            {/* PDF 업로더(자료함) */}
             <div>
-                <div style={{ fontWeight: 700, marginBottom: 6 }}>테스트 업로드 (이미지 → 자료 생성 → 교시 배정)</div>
-                <div style={{ display: "grid", gap: 8 }}>
-                    <input
-                        type="file"
-                        multiple
-                        accept="image/*"
-                        onChange={(e) => setFiles(e.target.files)}
-                    />
-                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                        <button className="btn" onClick={handleTestUpload} disabled={uploading}>
-                            {uploading ? "업로드 중…" : `${slotInput}교시에 업로드+배정`}
-                        </button>
-                        <span style={{ fontSize: 12, opacity: .7 }}>
-              {files?.length ? `${files.length}개 선택됨` : "이미지 여러 장 선택 가능 (이름순으로 정렬)"}
-            </span>
-                    </div>
-                    {!!ulog.length && (
-                        <div style={{ maxHeight: 160, overflow: "auto", background: "#0b1220", color: "#cbd5e1", borderRadius: 8, padding: 8, fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace", fontSize: 12 }}>
-                            {ulog.map((l, i) => <div key={i}>• {l}</div>)}
-                        </div>
+                <PdfToSlidesUploader onFinished={({ materialId }) => {
+                    toast.show("자료함 업로드 완료");
+                    refreshLibrary();
+                }} />
+            </div>
+
+            {/* 자료함 목록 → 배정 */}
+            <div>
+                <div style={{ fontWeight: 700, marginBottom: 6 }}>내 자료(최근 30)</div>
+                <div style={{ display: "grid", gap: 8, maxHeight: 280, overflow: "auto" }}>
+                    {library.length === 0 ? (
+                        <div style={{ opacity: 0.6 }}>자료가 없습니다. 위의 업로더로 추가하세요.</div>
+                    ) : (
+                        library.map((m) => (
+                            <div key={m.id} style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 8, alignItems: "center" }}>
+                                <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                    <strong>{m.title || m.id}</strong>
+                                    <span style={{ fontSize: 12, opacity: .7, marginLeft: 8 }}>{new Date(m.created_at).toLocaleString()}</span>
+                                </div>
+                                <div style={{ display: "flex", gap: 6 }}>
+                                    <button className="btn" onClick={() => assignMaterialToSlot(m.id, activeSlot)}>
+                                        {activeSlot}교시에 배정
+                                    </button>
+                                </div>
+                            </div>
+                        ))
                     )}
                 </div>
             </div>
@@ -451,7 +406,7 @@ export default function TeacherPage() {
     );
 
     return (
-        <div className="app-shell" style={{ maxWidth: 940 }}>
+        <div className="app-shell" style={{ maxWidth: 980 }}>
             <div className="topbar" style={{ marginBottom: 12 }}>
                 <h1 style={{ fontSize: 18, margin: 0 }}>교사 화면</h1>
                 <span className="badge">room: {roomCode}</span>
@@ -463,7 +418,9 @@ export default function TeacherPage() {
             </div>
 
             {viewMode === "present" ? (
-                StageBlock
+                <div className="panel" style={{ padding: 12 }}>
+                    {StageBlock}
+                </div>
             ) : (
                 <div style={{ display: "grid", gridTemplateColumns: "1.25fr 0.75fr", gap: 16 }}>
                     <div className="panel">
@@ -479,7 +436,7 @@ export default function TeacherPage() {
                         </div>
                         <div style={{ display: "flex", gap: 8, justifyContent: "center", marginTop: 10 }}>
                             <button className="btn" onClick={prev} disabled={page <= 1}>◀ 이전</button>
-                            <button className="btn" onClick={() => gotoPage(page)}>🔓 현재 페이지 재전송</button>
+                            <button className="btn" onClick={() => gotoPageForSlot(activeSlot, page)}>🔓 현재 페이지 재전송</button>
                             <button className="btn" onClick={next} disabled={!!totalPages && page >= totalPages}>다음 ▶</button>
                         </div>
                     </div>
