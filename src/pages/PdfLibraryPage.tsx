@@ -3,7 +3,6 @@ import React from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { supabase } from "../supabaseClient";
 import PdfViewer from "../components/PdfViewer";
-import { getPdfUrlFromKey } from "../utils/supaFiles";
 import PdfToSlidesUploader from "../components/PdfToSlidesUploader";
 
 // ---- Types ----
@@ -150,52 +149,34 @@ function Chip({ color, children }: { color: "blue" | "green" | "slate" | "red"; 
     );
 }
 
-function OpenSignedLink({ fileKey, children }: { fileKey: string; children: React.ReactNode }) {
-    const [href, setHref] = React.useState<string>("");
-    React.useEffect(() => {
-        let alive = true;
-        (async () => {
-            try {
-                const u = await getPdfUrlFromKey(fileKey, { ttlSec: 1800 });
-                if (alive) setHref(u);
-            } catch { if (alive) setHref(""); }
-        })();
-        return () => { alive = false; };
-    }, [fileKey]);
+function OpenPublicLink({ fileKey, children }: { fileKey: string; children: React.ReactNode }) {
+    const { data } = supabase.storage.from("presentations").getPublicUrl(fileKey);
+    const href = data.publicUrl || "#";
     const dark = usePrefersDark();
     const style = useBtnStyles(dark, { variant: "outline", small: true });
     return (
-        <a
-            style={style}
-            href={href || "#"}
-            target="_blank"
-            rel="noreferrer"
-            onClick={(e) => { if (!href) e.preventDefault(); }}
-        >
+        <a style={style} href={href} target="_blank" rel="noreferrer">
             {children}
         </a>
     );
 }
 
+
 // ---- Small utils ----
-function useSignedUrl(key: string | null | undefined, ttlSec = 1800) {
+
+function usePublicUrl(key: string | null | undefined) {
     const [url, setUrl] = React.useState<string>("");
     React.useEffect(() => {
-        let alive = true;
-        (async () => {
-            if (!key) { setUrl(""); return; }
-            try {
-                const u = await getPdfUrlFromKey(key, { ttlSec });
-                if (alive) setUrl(u);
-            } catch { if (alive) setUrl(""); }
-        })();
-        return () => { alive = false; };
-    }, [key, ttlSec]);
+        if (!key) { setUrl(""); return; }
+        const { data } = supabase.storage.from("presentations").getPublicUrl(key);
+        setUrl(data.publicUrl || "");
+    }, [key]);
     return url;
 }
 
+
 function Thumb({ keyStr, badge }: { keyStr: string; badge: React.ReactNode }) {
-    const fileUrl = useSignedUrl(keyStr);
+    const fileUrl = usePublicUrl(keyStr);
     const dark = usePrefersDark();
     return (
         <div
@@ -572,7 +553,7 @@ export default function PdfLibraryPage() {
                             }
 
                             <div className="mt-3 flex items-center gap-8">
-                                {d.file_key && <OpenSignedLink fileKey={d.file_key}>링크 열기</OpenSignedLink>}
+                                {d.file_key && <OpenPublicLink fileKey={d.file_key}>링크 열기</OpenPublicLink>}
                                 <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
                                     <Btn small variant="neutral" onClick={() => openEdit(nav, roomCode, d)}>편집</Btn>
                                     <Btn small variant="danger" onClick={() => deleteDeck(d)}>삭제</Btn>

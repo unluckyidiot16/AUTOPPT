@@ -3,39 +3,28 @@ import React, { useCallback, useRef, useState } from "react";
 import { supabase } from "../supabaseClient";
 
 /** ========== pdf.js 로더: jsDelivr 우선 + 다단계 폴백 ========== */
-async function loadPdfJs(): Promise<{ pdfjs: any; workerReady: boolean; mode: string }> {
-    // 1) v5 ESM + module worker (jsDelivr)
+/** ========== pdf.js 로더: 워커 비활성화(안전모드) ========== */
+async function loadPdfJs() {
+    // 레거시 빌드가 브라우저/번들러 호환성이 가장 높습니다.
     try {
-        const pdf = await import("pdfjs-dist/build/pdf");
-        let workerReady = false;
-        let mode = "v5-esm";
-
+        const pdf = await import("pdfjs-dist/legacy/build/pdf");
         try {
-            const workerUrl = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdf.version}/build/pdf.worker.min.mjs`;
-            const worker = new Worker(workerUrl, { type: "module" as any });
-            pdf.GlobalWorkerOptions.workerPort = worker;
-            workerReady = true;
-            mode = "v5-esm:module-worker";
-        } catch {
-            // 2) 클래식 워커로 강제 (v3 호환 워커 경로 사용)
-            try {
-                pdf.GlobalWorkerOptions.workerSrc =
-                    "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js";
-                mode = "v5-esm:classic-worker";
-                workerReady = true; // v5에서 classic 지정은 권장되진 않지만 대부분 동작
-            } catch { /* 아래로 폴백 */ }
-        }
-        return { pdfjs: pdf, workerReady, mode };
-    } catch {
-        // 3) 레거시 빌드 (classic worker)
-        const legacy = await import("pdfjs-dist/legacy/build/pdf");
-        try {
-            legacy.GlobalWorkerOptions.workerSrc =
-                "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js";
+            // 혹시 남아있는 이전 설정을 무효화
+            (pdf as any).GlobalWorkerOptions.workerSrc = undefined;
+            (pdf as any).GlobalWorkerOptions.workerPort = undefined as any;
         } catch {}
-        return { pdfjs: legacy, workerReady: true, mode: "legacy-classic-worker" };
+        return pdf;
+    } catch {
+        // 최후: v5 빌드. 그래도 워커는 쓰지 않습니다.
+        const pdf = await import("pdfjs-dist/build/pdf");
+        try {
+            (pdf as any).GlobalWorkerOptions.workerSrc = undefined;
+            (pdf as any).GlobalWorkerOptions.workerPort = undefined as any;
+        } catch {}
+        return pdf;
     }
 }
+
 
 /** ========== 유틸 ========== */
 async function fileToArrayBuffer(f: File): Promise<ArrayBuffer> { return await f.arrayBuffer(); }
@@ -111,11 +100,11 @@ export default function PdfToSlidesUploader({ onFinished }: { onFinished?: (x:{ 
 
             // 3) pdf.js 로드 + 분석 (워커 실패시 메인스레드 모드)
             setStage("PDF 분석");
-            const { pdfjs, workerReady, mode } = await loadPdfJs();
-            pushLog(`pdf.js 로드: ${mode}${workerReady ? "" : " (워커 비활성화 모드)"}`);
+            const pdfjs: any = await loadPdfJs();
+            pushLog("pdf.js 로드: workerless-safe");
             const ab = await fileToArrayBuffer(file);
-
-            const loadingTask = pdfjs.getDocument({ data: ab, disableWorker: !workerReady });
+            const loadingTask = pdfjs.getDocument({ data: ab, disableWorker: true }); // ✅ 항상 워커 비활성화
+            
             const pdf = await loadingTask.promise;
             const total = pdf.numPages;
             setPageInfo({ cur: 0, total });
@@ -176,7 +165,7 @@ export default function PdfToSlidesUploader({ onFinished }: { onFinished?: (x:{ 
             pct(99);
             pushLog("모든 페이지 업로드 완료");
 
-            onFinished?.({ materialId, pageCount: pageInfo?.total ?? 0, deckId });
+            onFinished?.({ materialId, pageCount: total, deckId });
             setStage("완료");
             pct(100);
         } catch (e: any) {
