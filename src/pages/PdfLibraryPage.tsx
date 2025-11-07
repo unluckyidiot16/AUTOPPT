@@ -34,6 +34,58 @@ function usePrefersDark() {
     }, []);
     return dark;
 }
+async function copySlidesDir(srcPrefix: string, destPrefix: string, onStep?: (copied: number, total: number) => void) {
+    // srcPrefix/destPrefix는 'slides' 버킷 기준 경로 (예: 'decks/brain-storming-xxx' → 'rooms/<room>/decks/<deckId>')
+    const slides = supabase.storage.from("slides");
+
+    // 1) 소스 목록 재귀 수집
+    async function listAll(prefix: string): Promise<string[]> {
+        const out: string[] = [];
+        const stack = [prefix.replace(/\/+$/,'')];
+        while (stack.length) {
+            const cur = stack.pop()!;
+            const ls = await slides.list(cur);
+            if (ls.error) throw ls.error;
+            for (const ent of (ls.data || [])) {
+                const child = `${cur}/${ent.name}`;
+                // 폴더인지 파일인지 판별: 하위가 있으면 폴더
+                const probe = await slides.list(child);
+                if (!probe.error && (probe.data?.length || 0) > 0) {
+                    stack.push(child);
+                } else {
+                    out.push(child);
+                }
+            }
+        }
+        return out;
+    }
+
+    const files = await listAll(srcPrefix);
+    const total = files.length || 0;
+    if (!total) return 0;
+
+    // 2) 파일 복사 (없으면 download→upload 폴백)
+    let copied = 0;
+    for (const srcPath of files) {
+        const rel = srcPath.slice(srcPrefix.length).replace(/^\/+/,'');  // 하위 경로
+        const dstPath = `${destPrefix}/${rel}`;
+
+        // try native copy
+        const { error: cErr } = await slides.copy(srcPath, dstPath);
+        if (cErr) {
+            // 폴백: download → upload
+            const dl = await slides.download(srcPath);
+            if (dl.error) throw dl.error;
+            const up = await slides.upload(dstPath, dl.data, { upsert: true });
+            if (up.error) throw up.error;
+        }
+
+        copied++;
+        onStep?.(copied, total);
+    }
+    return copied;
+}
+
 
 function useQS() {
     const { search, hash } = useLocation();
@@ -475,12 +527,12 @@ export default function PdfLibraryPage() {
         slot: number,
         title?: string | null
     ) {
-        // 새 덱 생성
+        // (A) decks 생성
         const ins = await supabase.from("decks").insert({ title: title ?? "Imported" }).select("id").single();
         if (ins.error) throw ins.error;
         const newDeckId = ins.data.id as string;
 
-        // 사본 생성
+        // (B) PDF 사본 → presentations/rooms/<room>/decks/<deckId>/slides-*.pdf
         const ts = Date.now();
         const destKey = `rooms/${roomId}/decks/${newDeckId}/slides-${ts}.pdf`;
         let copied = false;
@@ -491,25 +543,26 @@ export default function PdfLibraryPage() {
         if (!copied) {
             const dl = await supabase.storage.from("presentations").download(fileKey);
             if (dl.error) throw dl.error;
-            const up = await supabase.storage.from("presentations").upload(destKey, dl.data, { contentType: "application/pdf", upsert: true });
+            const up = await supabase.storage
+                .from("presentations")
+                .upload(destKey, dl.data, { contentType: "application/pdf", upsert: true });
             if (up.error) throw up.error;
         }
 
-        // decks.file_key 업데이트
-        {
-            const upDeck = await supabase.from("decks").update({ file_key: destKey }).eq("id", newDeckId);
-            if (upDeck.error) throw upDeck.error;
+        // (C) decks.file_key 업데이트
+        const upDeck = await supabase.from("decks").update({ file_key: destKey }).eq("id", newDeckId);
+        if (upDeck.error) throw upDeck.error;
+
+        // (D) slides 복사: slides/decks/<원본폴더> → slides/rooms/<room>/decks/<deckId>
+        const srcSlidesPrefix = folderPrefixOfFileKey(fileKey); // 'decks/brain-...'
+        const dstSlidesPrefix = `rooms/${roomId}/decks/${newDeckId}`;
+        if (srcSlidesPrefix) {
+            await copySlidesDir(srcSlidesPrefix, dstSlidesPrefix, (copied, total) => {
+                // 진행률 업데이트는 바깥에서 처리
+            });
         }
 
-        // 변환 트리거 (있으면 실행)
-        try {
-            const { error } = await supabase.rpc("upsert_deck_file", { p_deck_id: newDeckId, p_file_key: destKey });
-            if (error) console.warn("[LIB:assign] upsert_deck_file warn:", error.message || error);
-        } catch (e) {
-            console.warn("[LIB:assign] upsert_deck_file missing?", e);
-        }
-
-        // room_decks 배정
+        // (E) room_decks 배정
         const upMap = await supabase
             .from("room_decks")
             .upsert({ room_id: roomId, slot, deck_id: newDeckId }, { onConflict: "room_id,slot" })
@@ -517,7 +570,7 @@ export default function PdfLibraryPage() {
             .single();
         if (upMap.error) throw upMap.error;
 
-        return { newDeckId, destKey };
+        return { newDeckId, destKey, srcSlidesPrefix, dstSlidesPrefix };
     }
 
     async function assignDeckToSlot(d: DeckRow, slot: number) {
@@ -527,29 +580,33 @@ export default function PdfLibraryPage() {
         try {
             const rid = await ensureRoomId();
 
-            // 모달: 준비중
-            setAssign({ open: true, progress: 5, text: "사본 생성 중…", deckId: null });
+            // 단계 1: PDF 사본
+            setAssign({ open: true, progress: 5, text: "사본(PDF) 생성 중…", deckId: null });
+            const { newDeckId, srcSlidesPrefix, dstSlidesPrefix } =
+                await createDeckFromFileKeyAndAssign(d.file_key, rid, slot, d.title);
 
-            const { newDeckId } = await createDeckFromFileKeyAndAssign(d.file_key, rid, slot, d.title);
+            // 단계 2: slides 복사(있을 때만 진행률 표시)
+            if (srcSlidesPrefix) {
+                setAssign({ open: true, progress: 10, text: "슬라이드 이미지 복사 준비…", deckId: newDeckId });
+                let lastPct = 10;
+                await copySlidesDir(srcSlidesPrefix, dstSlidesPrefix!, (copied, total) => {
+                    // 10% → 98% 사이로 보간
+                    const pct = Math.max(10, Math.min(98, Math.floor(10 + (copied / Math.max(1,total)) * 88)));
+                    if (pct > lastPct) {
+                        lastPct = pct;
+                        setAssign((a) => ({ ...a, progress: pct, text: `슬라이드 복사 중… ${pct}%` }));
+                    }
+                });
+            } else {
+                // slides 원본이 없으면 바로 95%로 스킵
+                setAssign((a) => ({ ...a, progress: 95, text: "슬라이드가 없어 복사를 생략합니다…" }));
+            }
 
-            setAssign({ open: true, progress: 10, text: "변환 준비 중…", deckId: newDeckId });
-
-            // 예상 페이지 수 조회(없으면 undefined)
-            let expected: number | undefined = undefined;
-            try {
-                const { data } = await supabase.from("decks").select("file_pages").eq("id", newDeckId).maybeSingle();
-                if (data?.file_pages) expected = Number(data.file_pages);
-            } catch {}
-
-            // slides 폴링
-            await pollSlidesProgress(rid, newDeckId, expected, (pct) => {
-                setAssign((a) => ({ ...a, progress: pct, text: `변환 중… ${pct}%` }));
-            });
-
-            // 완료 → 새로고침
+            // 완료 & 새로고침
             setAssign((a) => ({ ...a, progress: 100, text: "완료! 새로고침 합니다…" }));
             await load();
             setTimeout(() => setAssign({ open: false, progress: 0, text: "", deckId: null }), 500);
+
         } catch (e: any) {
             console.error(e);
             setAssign({ open: false, progress: 0, text: "", deckId: null });
