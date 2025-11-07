@@ -1,12 +1,29 @@
 // src/lib/pdfjs.ts
 export async function loadPdfJs() {
     try {
-        const pdf = await import("pdfjs-dist/legacy/build/pdf");   // 호환성 ↑
-        try { (pdf as any).GlobalWorkerOptions.workerSrc = undefined; (pdf as any).GlobalWorkerOptions.workerPort = undefined as any; } catch {}
+        const pdf: any = await import("pdfjs-dist/legacy/build/pdf");
+        try {
+            // 모든 호출에 대해 disableWorker 강제 주입
+            const orig = pdf.getDocument;
+            pdf.getDocument = (src: any) => {
+                const opts = (src && typeof src === "object") ? src : { url: src };
+                return orig({ ...opts, disableWorker: true });
+            };
+            pdf.GlobalWorkerOptions.workerSrc = undefined;
+            pdf.GlobalWorkerOptions.workerPort = undefined as any;
+        } catch {}
         return pdf;
     } catch {
-        const pdf = await import("pdfjs-dist/build/pdf");           // 최후의 보루
-        try { (pdf as any).GlobalWorkerOptions.workerSrc = undefined; (pdf as any).GlobalWorkerOptions.workerPort = undefined as any; } catch {}
+        const pdf: any = await import("pdfjs-dist/build/pdf");
+        try {
+            const orig = pdf.getDocument;
+            pdf.getDocument = (src: any) => {
+                const opts = (src && typeof src === "object") ? src : { url: src };
+                return orig({ ...opts, disableWorker: true });
+            };
+            pdf.GlobalWorkerOptions.workerSrc = undefined;
+            pdf.GlobalWorkerOptions.workerPort = undefined as any;
+        } catch {}
         return pdf;
     }
 }

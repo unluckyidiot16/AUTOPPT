@@ -9,6 +9,15 @@ import "./index.css";
 const rootEl = document.getElementById("root");
 if (!rootEl) throw new Error("#root not found");
 
+if (typeof window !== "undefined") {
+    window.addEventListener("error", (ev: any) => {
+        const msg = String(ev?.error?.message || ev?.message || "");
+        if (msg.includes('GlobalWorkerOptions') || msg.includes('pdf.worker')) {
+            console.warn("[PDFJS:WHO-CALLED]", ev?.error?.stack || msg);
+        }
+    }, true);
+}
+
 ReactDOM.createRoot(rootEl).render(
     <React.StrictMode>
         <HashRouter>
