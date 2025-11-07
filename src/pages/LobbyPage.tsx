@@ -28,14 +28,10 @@ export default function LobbyPage() {
 
     const enter = (code: string) => nav(`/teacher?room=${code}&mode=setup`);
 
-    const removeRoom = useCallback(async (id: string) => {
-        if (!confirm("정말 이 방을 삭제할까요? (교시/제출 로그가 함께 삭제됩니다)")) return;
-        try {
-            const { error } = await supabase.rpc("delete_room_deep", { p_room_id: id });
-            if (error) throw error;
-            await load();
-        } catch (e:any) { alert(e.message || String(e)); }
-    }, [load]);
+    const removeRoom = async (id: string) => {
+        await supabase.rpc("delete_room_deep", { p_room_id: id }); // id는 uuid
+    };
+
 
     return (
         <div className="app-shell" style={{ maxWidth: 900 }}>

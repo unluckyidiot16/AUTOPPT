@@ -125,7 +125,7 @@ export default function TeacherPage() {
             } catch (e:any) {
                 if (e.message === "ROOM_NOT_FOUND") {
                     alert("방이 없습니다. 로비에서 방을 생성/선택하세요.");
-                    location.href = "/#/lobby"; // 또는 nav("/lobby");
+                    location.href = "/AUTOPPT/#/lobby"; // 또는 nav("/lobby");
                 }
             }
         })();
@@ -168,6 +168,7 @@ export default function TeacherPage() {
     useEffect(() => { refreshSlotsList(); }, [refreshSlotsList]);
 
     // 교시 row 보장
+// ensureSlotRow: lesson_id 없이도 upsert 가능 (이제 NOT NULL 해제됨)
     const ensureSlotRow = useCallback(async (slot: number) => {
         const rid = await ensureRoomId();
         const { error } = await supabase
@@ -175,6 +176,7 @@ export default function TeacherPage() {
             .upsert({ room_id: rid, slot, current_index: 0 }, { onConflict: "room_id,slot" });
         if (error) throw error;
     }, [ensureRoomId]);
+
 
     // "교시 생성" (다음 비어있는 번호 자동 할당: 1..12)
     const createSlot = useCallback(async () => {
