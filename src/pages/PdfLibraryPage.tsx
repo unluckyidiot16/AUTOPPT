@@ -434,14 +434,15 @@ export default function PdfLibraryPage() {
     const onUploaded = React.useCallback(() => { load(); }, [load]);
 
     // 불러오기
-    // 1) 파일 키로 새 덱 만들어 rooms/<room>/decks/<newDeck>/... 로 복사 + 슬롯 배정
+    // 1) 파일 키로 새 덱을 만들고 rooms/<room>/decks/<newDeck>/slides-*.pdf 로 복사
+//    + 변환 RPC(upsert_deck_file)까지 호출 → materials/slides 생성 유도
     async function createDeckFromFileKeyAndAssign(
         fileKey: string,
         roomId: string,
         slot: number,
         title?: string | null
     ) {
-        // (A) decks: 새 덱 생성  (is_temp 제거)
+        // (A) decks: 새 덱 생성
         const ins = await supabase
             .from("decks")
             .insert({ title: title ?? "Imported" })
@@ -450,7 +451,7 @@ export default function PdfLibraryPage() {
         if (ins.error) throw ins.error;
         const newDeckId = ins.data.id as string;
 
-        // (B) 스토리지: rooms/<room>/decks/<newDeck>/slides-*.pdf 로 복제
+        // (B) 스토리지 사본 생성: rooms/<room>/decks/<newDeck>/slides-*.pdf
         const ts = Date.now();
         const destKey = `rooms/${roomId}/decks/${newDeckId}/slides-${ts}.pdf`;
 
@@ -469,79 +470,57 @@ export default function PdfLibraryPage() {
         }
 
         // (C) decks.file_key 업데이트
-        const upDeck = await supabase.from("decks").update({ file_key: destKey }).eq("id", newDeckId);
-        if (upDeck.error) throw upDeck.error;
+        {
+            const upDeck = await supabase.from("decks").update({ file_key: destKey }).eq("id", newDeckId);
+            if (upDeck.error) throw upDeck.error;
+        }
 
-        // (D) room_decks 배정 (room_id+slot 유니크 기준 업서트)
+        // (D) 변환 트리거: upsert_deck_file (없으면 무시하고 계속)
+        try {
+            const { error } = await supabase.rpc("upsert_deck_file", {
+                p_deck_id: newDeckId,
+                p_file_key: destKey,
+            });
+            if (error) console.warn("[LIB:assign] upsert_deck_file warn:", error.message || error);
+        } catch (e) {
+            console.warn("[LIB:assign] upsert_deck_file missing?", e);
+        }
+
+        // (E) room_decks 배정 (room_id+slot 유니크)
         const upMap = await supabase
             .from("room_decks")
             .upsert({ room_id: roomId, slot, deck_id: newDeckId }, { onConflict: "room_id,slot" })
-            .select("deck_id")
+            .select("deck_id,slot")
             .single();
         if (upMap.error) throw upMap.error;
 
-        // (E) 검증 로그(콘솔 확인용)
+        // (F) 검증 + 변환 결과 간단 체크(있으면 몇 개 보이는지 로그)
+        console.log("[LIB:assign] mapped =>", upMap.data);
         try {
-            const verify = await supabase
-                .from("room_decks")
-                .select("deck_id,slot")
-                .eq("room_id", roomId)
-                .eq("slot", slot)
-                .maybeSingle();
-            console.log("[LIB:assign] mapped =>", verify.data);
+            const slidesPrefix = `rooms/${roomId}/decks/${newDeckId}`;
+            const { data: imgs } = await supabase.storage.from("slides").list(slidesPrefix);
+            console.log("[LIB:assign] slides/", slidesPrefix, "images:", (imgs || []).length);
         } catch {}
 
-        return newDeckId;
+        return { newDeckId, destKey };
     }
 
-// 2) 불러오기 버튼 핸들러 (항상 복제 후 배정으로 통일)
+// 2) 불러오기 핸들러(단일 경로로 통일: 항상 사본 생성 → 변환 → 배정)
     async function assignDeckToSlot(d: DeckRow, slot: number) {
         if (!roomCode) { alert("room 파라미터가 필요합니다."); return; }
         if (!d.file_key) { alert("파일이 없습니다."); return; }
 
         try {
             const rid = await ensureRoomId();
-
-            // 출처(DB/Storage 상관없이) 항상 복제 후 새 덱으로 매핑
             await createDeckFromFileKeyAndAssign(d.file_key, rid, slot, d.title);
 
-            alert(`✅ ${slot}교시로 불러왔습니다.`);
+            alert(`✅ ${slot}교시에 불러오고 변환을 시작했어요. (썸네일/슬라이드는 몇 초 뒤 반영될 수 있어요)`);
         } catch (e: any) {
             console.error(e);
             alert(`불러오기 실패: ${e?.message || e}`);
         }
     }
 
-
-    async function assignDeckToSlot(d: DeckRow, slot: number) {
-        if (!roomCode) { alert("room 파라미터가 필요합니다."); return; }
-        try {
-            const rid = await ensureRoomId();
-
-            if (d.origin === "db") {
-                try {
-                    const { error } = await supabase.rpc("assign_room_deck_by_ext", { p_code: roomCode, p_deck_id: d.id, p_slot: slot });
-                    if (error) throw error;
-                } catch (e: any) {
-                    const msg = String(e?.message || "");
-                    const isMissing = msg.includes("Could not find the function") || e?.status === 404;
-                    if (!isMissing) throw e;
-                    const { error: upErr } = await supabase.from("room_decks").upsert(
-                        { room_id: rid, slot, deck_id: d.id },
-                        { onConflict: "room_id,slot" }
-                    );
-                    if (upErr) throw upErr;
-                }
-            } else {
-                if (!d.file_key) throw new Error("파일이 없습니다.");
-                await createDeckFromFileKeyAndAssign(d.file_key, rid, slot);
-            }
-            alert(`✅ ${slot}교시로 불러왔습니다.`);
-        } catch (e: any) {
-            console.error(e);
-            alert(`불러오기 실패: ${e?.message || e}`);
-        }
-    }
 
     // 삭제(정리)
     const deleteDeck = React.useCallback(async (d: DeckRow) => {

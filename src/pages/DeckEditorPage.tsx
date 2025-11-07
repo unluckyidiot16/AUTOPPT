@@ -134,7 +134,6 @@ export default function DeckEditorPage() {
             .from("decks")
             .insert({
                 title: "Untitled (편집)",
-                is_temp: true,
                 file_pages: pageCount // 페이지 수 초기 설정
             })
             .select("id")
