@@ -56,6 +56,15 @@ const chipPal = {
     red:   { bgD: "rgba(239,68,68,.22)",   bgL: "rgba(239,68,68,.12)",   bdD: "rgba(239,68,68,.45)",   fgD: "#fecaca", fgL: "#7f1d1d" },
 } as const;
 
+// ⬇ 진행 모달 상태 (컴포넌트 최상단에 둔다!)
+const [assign, setAssign] = React.useState<{
+    open: boolean;
+    progress: number;
+    text: string;
+    deckId: string | null;
+}>({ open: false, progress: 0, text: "", deckId: null });
+
+
 function useQS() {
     const { search, hash } = useLocation();
     const part = hash.includes("?") ? hash.split("?")[1] : search.replace(/^\?/, "");
@@ -508,9 +517,6 @@ export default function PdfLibraryPage() {
     async function assignDeckToSlot(d: DeckRow, slot: number) {
         if (!roomCode) { alert("room 파라미터가 필요합니다."); return; }
         if (!d.file_key) { alert("파일이 없습니다."); return; }
-        const [assign, setAssign] = React.useState<{open:boolean, progress:number, text:string, deckId:string|null}>({
-            open:false, progress:0, text:"", deckId:null
-        });
 
         try {
             const rid = await ensureRoomId();
