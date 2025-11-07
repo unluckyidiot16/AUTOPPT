@@ -33,10 +33,6 @@ function usePrefersDark() {
     return dark;
 }
 
-const [assign, setAssign] = React.useState<{open:boolean, progress:number, text:string, deckId:string|null}>({
-    open:false, progress:0, text:"", deckId:null
-});
-
 async function pollSlidesProgress(roomId: string, deckId: string, expectedPages?: number, onTick?: (pct:number, count:number)=>void, timeoutMs = 120000) {
     const start = Date.now();
     const prefix = `rooms/${roomId}/decks/${deckId}`;
@@ -512,6 +508,9 @@ export default function PdfLibraryPage() {
     async function assignDeckToSlot(d: DeckRow, slot: number) {
         if (!roomCode) { alert("room 파라미터가 필요합니다."); return; }
         if (!d.file_key) { alert("파일이 없습니다."); return; }
+        const [assign, setAssign] = React.useState<{open:boolean, progress:number, text:string, deckId:string|null}>({
+            open:false, progress:0, text:"", deckId:null
+        });
 
         try {
             const rid = await ensureRoomId();
