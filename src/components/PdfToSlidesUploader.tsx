@@ -2,40 +2,38 @@
 import React, { useCallback, useRef, useState } from "react";
 import { supabase } from "../supabaseClient";
 
-/** ========== pdf.js 로더: v5 ESM → 실패 시 legacy로 폴백 ========== */
-async function loadPdfJs() {
-    let pdfjs: any;
-    let ver = "";
-    async function setWorkerFor(pdf: any, version: string) {
-        try {
-            const isV5 = version.startsWith("5.");
-            if (isV5) {
-                // v5: module worker
-                const workerUrl = `https://unpkg.com/pdfjs-dist@${version}/build/pdf.worker.min.mjs`;
-                const worker = new Worker(workerUrl, { type: "module" as any });
-                pdf.GlobalWorkerOptions.workerPort = worker;
-            } else {
-                // v3: classic
-                const workerSrc = `https://unpkg.com/pdfjs-dist@${version || "3.11.174"}/build/pdf.worker.min.js`;
-                pdf.GlobalWorkerOptions.workerSrc = workerSrc;
-            }
-        } catch {
-            // 최후 폴백: classic workerSrc
-            const fallback = `https://unpkg.com/pdfjs-dist@${version || "3.11.174"}/build/pdf.worker.min.js`;
-            try { (pdf as any).GlobalWorkerOptions.workerSrc = fallback; } catch {}
-        }
-    }
-
+/** ========== pdf.js 로더: jsDelivr 우선 + 다단계 폴백 ========== */
+async function loadPdfJs(): Promise<{ pdfjs: any; workerReady: boolean; mode: string }> {
+    // 1) v5 ESM + module worker (jsDelivr)
     try {
-        pdfjs = await import("pdfjs-dist/build/pdf"); // v5 우선
-        ver = String(pdfjs.version || "");
-        await setWorkerFor(pdfjs, ver);
-        return pdfjs;
+        const pdf = await import("pdfjs-dist/build/pdf");
+        let workerReady = false;
+        let mode = "v5-esm";
+
+        try {
+            const workerUrl = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdf.version}/build/pdf.worker.min.mjs`;
+            const worker = new Worker(workerUrl, { type: "module" as any });
+            pdf.GlobalWorkerOptions.workerPort = worker;
+            workerReady = true;
+            mode = "v5-esm:module-worker";
+        } catch {
+            // 2) 클래식 워커로 강제 (v3 호환 워커 경로 사용)
+            try {
+                pdf.GlobalWorkerOptions.workerSrc =
+                    "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js";
+                mode = "v5-esm:classic-worker";
+                workerReady = true; // v5에서 classic 지정은 권장되진 않지만 대부분 동작
+            } catch { /* 아래로 폴백 */ }
+        }
+        return { pdfjs: pdf, workerReady, mode };
     } catch {
-        const legacy = await import("pdfjs-dist/legacy/build/pdf"); // legacy 폴백
-        ver = String((legacy as any).version || "");
-        await setWorkerFor(legacy, ver);
-        return legacy;
+        // 3) 레거시 빌드 (classic worker)
+        const legacy = await import("pdfjs-dist/legacy/build/pdf");
+        try {
+            legacy.GlobalWorkerOptions.workerSrc =
+                "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js";
+        } catch {}
+        return { pdfjs: legacy, workerReady: true, mode: "legacy-classic-worker" };
     }
 }
 
@@ -46,28 +44,16 @@ async function canvasToBlob(canvas: HTMLCanvasElement, type = "image/webp", qual
         canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("toBlob failed"))), type, quality);
     });
 }
-function slugify(s: string) {
-    return (s || "")
-        .toLowerCase()
-        .replace(/\.[^/.]+$/, "")
-        .replace(/[^a-z0-9]+/g, "-")
-        .replace(/^-+|-+$/g, "")
-        .slice(0, 60) || "untitled";
-}
+function slugify(s: string) { return (s || "").toLowerCase().replace(/\.[^/.]+$/, "").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "untitled"; }
 function shortId() { return Math.random().toString(36).slice(2, 7); }
 
 /** ========== 컴포넌트 ========== */
-export default function PdfToSlidesUploader({
-                                                onFinished,
-                                            }: {
-    onFinished?: (payload: { materialId: string; pageCount: number; deckId?: string }) => void;
-}) {
+export default function PdfToSlidesUploader({ onFinished }: { onFinished?: (x:{ materialId:string; pageCount:number; deckId?:string })=>void }) {
     const [file, setFile] = useState<File | null>(null);
 
-    // 진행/상태 표시
     const [busy, setBusy] = useState(false);
-    const [stage, setStage] = useState<string>("");                // 단계 텍스트
-    const [progress, setProgress] = useState<number>(0);           // 0~100 (대략치)
+    const [stage, setStage] = useState<string>("");
+    const [progress, setProgress] = useState<number>(0);
     const [pageInfo, setPageInfo] = useState<{ cur: number; total: number } | null>(null);
     const [log, setLog] = useState<string[]>([]);
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -85,12 +71,12 @@ export default function PdfToSlidesUploader({
             setStage("준비 중");
             pct(1);
 
-            // 인증 사용자 확인
+            // 로그인 확인
             const { data: u } = await supabase.auth.getUser();
             const uid = u.user?.id;
             if (!uid) throw new Error("로그인이 필요합니다.");
 
-            // 1) materials 생성
+            // 1) materials
             const title = file.name.replace(/\.[Pp][Dd][Ff]$/, "");
             setStage("기록 생성");
             const { data: mat, error: em } = await supabase
@@ -103,7 +89,7 @@ export default function PdfToSlidesUploader({
             pushLog(`materials 생성: ${materialId}`);
             pct(5);
 
-            // 2) 원본 PDF → presentations/decks/... 업로드 + decks 행 생성 (자료함 노출용)
+            // 2) 원본 PDF 업로드 + decks 생성
             setStage("원본 업로드");
             const baseFolder = `decks/${slugify(title)}-${shortId()}`;
             const pdfKey = `${baseFolder}/slides-${Date.now()}.pdf`;
@@ -114,7 +100,6 @@ export default function PdfToSlidesUploader({
             pushLog(`원본 PDF 업로드: ${pdfKey}`);
             pct(12);
 
-            // RLS 회피: 소유자 지정해서 decks 삽입
             const insDeck = await supabase.from("decks")
                 .insert({ title, file_key: pdfKey, owner_id: uid })
                 .select("id")
@@ -124,26 +109,27 @@ export default function PdfToSlidesUploader({
             pushLog(`decks 생성: ${deckId}`);
             pct(16);
 
-            // 3) pdf.js 로드 + 페이지 분석
+            // 3) pdf.js 로드 + 분석 (워커 실패시 메인스레드 모드)
             setStage("PDF 분석");
-            const pdfjs: any = await loadPdfJs();
+            const { pdfjs, workerReady, mode } = await loadPdfJs();
+            pushLog(`pdf.js 로드: ${mode}${workerReady ? "" : " (워커 비활성화 모드)"}`);
             const ab = await fileToArrayBuffer(file);
-            const loadingTask = pdfjs.getDocument({ data: ab });
+
+            const loadingTask = pdfjs.getDocument({ data: ab, disableWorker: !workerReady });
             const pdf = await loadingTask.promise;
             const total = pdf.numPages;
             setPageInfo({ cur: 0, total });
             pushLog(`PDF 페이지 수: ${total}`);
-            pct(25); // 분석까지 25%
+            pct(25);
 
-            // 4) 페이지 → webp 변환 + slides 버킷 업로드 + material_pages upsert
+            // 4) 페이지 변환/업로드
             setStage("페이지 변환/업로드");
             const canvas = canvasRef.current || document.createElement("canvas");
             canvasRef.current = canvas;
             const ctx = canvas.getContext("2d")!;
-
-            const maxW = 2048; // 페이지 최대 너비(px)
+            const maxW = 2048;
             const base = 25;
-            const perPage = total ? 70 / total : 70; // 페이지 구간: 25% → 95%
+            const perPage = total ? 70 / total : 70;
 
             for (let i = 1; i <= total; i++) {
                 if (cancelRef.current) { pushLog("사용자 취소"); break; }
@@ -190,7 +176,7 @@ export default function PdfToSlidesUploader({
             pct(99);
             pushLog("모든 페이지 업로드 완료");
 
-            onFinished?.({ materialId, pageCount: total, deckId });
+            onFinished?.({ materialId, pageCount: pageInfo?.total ?? 0, deckId });
             setStage("완료");
             pct(100);
         } catch (e: any) {
@@ -203,7 +189,6 @@ export default function PdfToSlidesUploader({
 
     const cancel = () => { if (busy) cancelRef.current = true; };
 
-    /** ========== UI ========== */
     return (
         <div style={{ display: "grid", gap: 10 }}>
             <div style={{ fontWeight: 700 }}>PDF → 이미지 업로더 (자료함)</div>
@@ -218,52 +203,25 @@ export default function PdfToSlidesUploader({
                         취소
                     </button>
                 )}
-                <span style={{ fontSize: 12, opacity: .7, minWidth: 160 }}>
-          {file ? file.name : "PDF 선택"}
-        </span>
+                <span style={{ fontSize: 12, opacity: .7, minWidth: 160 }}>{file ? file.name : "PDF 선택"}</span>
             </div>
 
-            {/* 진행도 바 + 단계/페이지 카운트 */}
             {busy && (
                 <div style={{ display: "grid", gap: 6 }}>
                     <div style={{ fontSize: 12, opacity: .8 }}>
                         {stage}{pageInfo ? ` · ${pageInfo.cur}/${pageInfo.total}` : ""}
                     </div>
-                    <div
-                        style={{
-                            position: "relative",
-                            height: 10,
-                            borderRadius: 999,
-                            background: "rgba(148,163,184,.22)",
-                            overflow: "hidden",
-                            border: "1px solid rgba(148,163,184,.35)"
-                        }}
-                        aria-label="upload progress"
-                    >
-                        <div
-                            style={{
-                                position: "absolute",
-                                left: 0, top: 0, bottom: 0,
-                                width: `${progress}%`,
-                                transition: "width .2s ease",
-                                background:
-                                    "repeating-linear-gradient(45deg, rgba(99,102,241,.9), rgba(99,102,241,.9) 12px, rgba(99,102,241,.75) 12px, rgba(99,102,241,.75) 24px)"
-                            }}
-                        />
+                    <div style={{ position: "relative", height: 10, borderRadius: 999, background: "rgba(148,163,184,.22)", overflow: "hidden", border: "1px solid rgba(148,163,184,.35)" }}>
+                        <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${progress}%`, transition: "width .2s ease",
+                            background:"repeating-linear-gradient(45deg, rgba(99,102,241,.9), rgba(99,102,241,.9) 12px, rgba(99,102,241,.75) 12px, rgba(99,102,241,.75) 24px)" }} />
                     </div>
                     <div style={{ fontSize: 11, opacity: .65 }}>{progress}%</div>
                 </div>
             )}
 
-            {/* 로그 */}
             {!!log.length && (
-                <div
-                    style={{
-                        maxHeight: 200, overflow: "auto", background: "#0b1220", color: "#cbd5e1",
-                        borderRadius: 8, padding: 8,
-                        fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace", fontSize: 12
-                    }}
-                >
+                <div style={{ maxHeight: 200, overflow: "auto", background: "#0b1220", color: "#cbd5e1", borderRadius: 8, padding: 8,
+                    fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace", fontSize: 12 }}>
                     {log.map((l, i) => <div key={i}>• {l}</div>)}
                 </div>
             )}
