@@ -19,51 +19,21 @@ type DeckRow = {
 // Theme helpers
 function usePrefersDark() {
     const [dark, setDark] = React.useState<boolean>(
-        typeof window !== "undefined" && window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches
+        typeof window !== "undefined" &&
+        (window as any).matchMedia &&
+        (window as any).matchMedia("(prefers-color-scheme: dark)").matches
     );
     React.useEffect(() => {
-        if (typeof window === "undefined" || !window.matchMedia) return;
-        const mq = window.matchMedia("(prefers-color-scheme: dark)");
+        if (typeof window === "undefined" || !(window as any).matchMedia) return;
+        const mq: MediaQueryList = (window as any).matchMedia("(prefers-color-scheme: dark)");
         const on = (e: MediaQueryListEvent) => setDark(e.matches);
-        mq.addEventListener ? mq.addEventListener("change", on) : mq.addListener(on);
+        (mq as any).addEventListener ? (mq as any).addEventListener("change", on) : (mq as any).addListener(on);
         return () => {
-            mq.removeEventListener ? mq.removeEventListener("change", on) : mq.removeListener(on);
+            (mq as any).removeEventListener ? (mq as any).removeEventListener("change", on) : (mq as any).removeListener(on);
         };
     }, []);
     return dark;
 }
-
-async function pollSlidesProgress(roomId: string, deckId: string, expectedPages?: number, onTick?: (pct:number, count:number)=>void, timeoutMs = 120000) {
-    const start = Date.now();
-    const prefix = `rooms/${roomId}/decks/${deckId}`;
-    let count = 0;
-    while (Date.now() - start < timeoutMs) {
-        const { data } = await supabase.storage.from("slides").list(prefix);
-        count = data?.length || 0;
-        const pct = expectedPages ? Math.min(99, Math.floor((count / expectedPages) * 100)) : (count > 0 ? 100 : 5);
-        onTick?.(pct, count);
-        if (expectedPages ? count >= expectedPages : count > 0) return count;
-        await new Promise(r => setTimeout(r, 1200));
-    }
-    return count; // timeout
-}
-
-
-const chipPal = {
-    blue:  { bgD: "rgba(59,130,246,.18)",  bgL: "rgba(59,130,246,.12)",  bdD: "rgba(59,130,246,.45)",  fgD: "#bfdbfe", fgL: "#1e40af" },
-    green: { bgD: "rgba(16,185,129,.18)",  bgL: "rgba(16,185,129,.12)",  bdD: "rgba(16,185,129,.45)",  fgD: "#bbf7d0", fgL: "#065f46" },
-    slate: { bgD: "rgba(148,163,184,.18)", bgL: "rgba(148,163,184,.12)", bdD: "rgba(148,163,184,.35)", fgD: "#e2e8f0", fgL: "#334155" },
-    red:   { bgD: "rgba(239,68,68,.22)",   bgL: "rgba(239,68,68,.12)",   bdD: "rgba(239,68,68,.45)",   fgD: "#fecaca", fgL: "#7f1d1d" },
-} as const;
-
-// ⬇ 진행 모달 상태 (컴포넌트 최상단에 둔다!)
-const [assign, setAssign] = React.useState<{
-    open: boolean;
-    progress: number;
-    text: string;
-    deckId: string | null;
-}>({ open: false, progress: 0, text: "", deckId: null });
-
 
 function useQS() {
     const { search, hash } = useLocation();
@@ -78,6 +48,13 @@ type BtnProps = React.ButtonHTMLAttributes<HTMLButtonElement> & {
     small?: boolean;
     pressed?: boolean; // 토글/세그먼트용
 };
+
+const chipPal = {
+    blue:  { bgD: "rgba(59,130,246,.18)",  bgL: "rgba(59,130,246,.12)",  bdD: "rgba(59,130,246,.45)",  fgD: "#bfdbfe", fgL: "#1e40af" },
+    green: { bgD: "rgba(16,185,129,.18)",  bgL: "rgba(16,185,129,.12)",  bdD: "rgba(16,185,129,.45)",  fgD: "#bbf7d0", fgL: "#065f46" },
+    slate: { bgD: "rgba(148,163,184,.18)", bgL: "rgba(148,163,184,.12)", bdD: "rgba(148,163,184,.35)", fgD: "#e2e8f0", fgL: "#334155" },
+    red:   { bgD: "rgba(239,68,68,.22)",   bgL: "rgba(239,68,68,.12)",   bdD: "rgba(239,68,68,.45)",   fgD: "#fecaca", fgL: "#7f1d1d" },
+} as const;
 
 function useBtnStyles(dark: boolean, { variant = "neutral", small, pressed }: BtnProps) {
     const base: React.CSSProperties = {
@@ -201,7 +178,7 @@ function Thumb({ keyStr, badge }: { keyStr: string; badge: React.ReactNode }) {
 // ───────────────────────────────────────────────────────────────────────────────
 // Storage helpers (삭제/스캔)
 async function listDir(bucket: string, prefix: string) {
-    return await supabase.storage.from(bucket).list(prefix, { limit: 1000, sortBy: { column: "name", order: "asc" } });
+    return await supabase.storage.from(bucket).list(prefix, { limit: 1000, sortBy: { column: "updated_at", order: "desc" } });
 }
 
 /** "decks/slug/.." 또는 "rooms/<room>/decks/<deckId>/.." → 상위 폴더 경로 */
@@ -305,12 +282,45 @@ async function detachMissingFileKeys(rows: DeckRow[]) {
 }
 
 // ───────────────────────────────────────────────────────────────────────────────
+// 변환 진행 폴링
+async function pollSlidesProgress(
+    roomId: string,
+    deckId: string,
+    expectedPages?: number,
+    onTick?: (pct: number, count: number) => void,
+    timeoutMs = 120000
+) {
+    const start = Date.now();
+    const prefix = `rooms/${roomId}/decks/${deckId}`;
+    let count = 0;
+    while (Date.now() - start < timeoutMs) {
+        const { data } = await supabase.storage.from("slides").list(prefix);
+        count = data?.length || 0;
+        const pct = expectedPages
+            ? Math.min(99, Math.floor((count / expectedPages) * 100))
+            : (count > 0 ? 100 : 5);
+        onTick?.(pct, count);
+        if (expectedPages ? count >= expectedPages : count > 0) return count;
+        await new Promise(r => setTimeout(r, 1200));
+    }
+    return count; // timeout
+}
+
+// ───────────────────────────────────────────────────────────────────────────────
 // Main
 export default function PdfLibraryPage() {
     const nav = useNavigate();
     const qs = useQS();
     const roomCode = qs.get("room") || "";
     const dark = usePrefersDark();
+
+    // 진행 모달 (※ 훅은 반드시 컴포넌트 내부에!)
+    const [assign, setAssign] = React.useState<{
+        open: boolean;
+        progress: number;
+        text: string;
+        deckId: string | null;
+    }>({ open: false, progress: 0, text: "", deckId: null });
 
     // UI state
     const [loading, setLoading] = React.useState(false);
@@ -458,9 +468,7 @@ export default function PdfLibraryPage() {
     // 업로드 완료 → 새로고침
     const onUploaded = React.useCallback(() => { load(); }, [load]);
 
-    // 불러오기
-    // 1) 파일 키로 새 덱을 만들고 rooms/<room>/decks/<newDeck>/slides-*.pdf 로 복사
-//    + 변환 RPC(upsert_deck_file)까지 호출 → materials/slides 생성 유도
+    // ── 불러오기: 사본 생성 → 변환 RPC → slides 폴링 → 배정 확인/새로고침 ──
     async function createDeckFromFileKeyAndAssign(
         fileKey: string,
         roomId: string,
@@ -512,8 +520,6 @@ export default function PdfLibraryPage() {
         return { newDeckId, destKey };
     }
 
-
-// 2) 불러오기 핸들러(단일 경로로 통일: 항상 사본 생성 → 변환 → 배정)
     async function assignDeckToSlot(d: DeckRow, slot: number) {
         if (!roomCode) { alert("room 파라미터가 필요합니다."); return; }
         if (!d.file_key) { alert("파일이 없습니다."); return; }
@@ -521,12 +527,12 @@ export default function PdfLibraryPage() {
         try {
             const rid = await ensureRoomId();
 
-            // 모달 열기: 준비중
-            setAssign({ open:true, progress:5, text:"사본 생성 중…", deckId:null });
+            // 모달: 준비중
+            setAssign({ open: true, progress: 5, text: "사본 생성 중…", deckId: null });
 
             const { newDeckId } = await createDeckFromFileKeyAndAssign(d.file_key, rid, slot, d.title);
 
-            setAssign({ open:true, progress:10, text:"변환 준비 중…", deckId:newDeckId });
+            setAssign({ open: true, progress: 10, text: "변환 준비 중…", deckId: newDeckId });
 
             // 예상 페이지 수 조회(없으면 undefined)
             let expected: number | undefined = undefined;
@@ -535,24 +541,21 @@ export default function PdfLibraryPage() {
                 if (data?.file_pages) expected = Number(data.file_pages);
             } catch {}
 
-            // 폴링 시작 (slides 버킷에 이미지 생기는지 체크)
+            // slides 폴링
             await pollSlidesProgress(rid, newDeckId, expected, (pct) => {
-                setAssign(a => ({ ...a, progress: pct, text: `변환 중… ${pct}%` }));
+                setAssign((a) => ({ ...a, progress: pct, text: `변환 중… ${pct}%` }));
             });
 
-            // 완료
-            setAssign(a => ({ ...a, progress: 100, text: "완료! 새로고침 합니다…" }));
-            await load(); // 목록 갱신
-            setTimeout(() => setAssign({ open:false, progress:0, text:"", deckId:null }), 500);
-
+            // 완료 → 새로고침
+            setAssign((a) => ({ ...a, progress: 100, text: "완료! 새로고침 합니다…" }));
+            await load();
+            setTimeout(() => setAssign({ open: false, progress: 0, text: "", deckId: null }), 500);
         } catch (e: any) {
             console.error(e);
-            setAssign({ open:false, progress:0, text:"", deckId:null });
+            setAssign({ open: false, progress: 0, text: "", deckId: null });
             alert(`불러오기 실패: ${e?.message || e}`);
         }
     }
-
-
 
     // 삭제(정리)
     const deleteDeck = React.useCallback(async (d: DeckRow) => {
@@ -758,6 +761,8 @@ export default function PdfLibraryPage() {
                     );
                 })}
             </div>
+
+            {/* 진행 모달 */}
             {assign.open && (
                 <div style={{
                     position:"fixed", inset:0, background:"rgba(0,0,0,.45)", display:"grid", placeItems:"center", zIndex:1000
@@ -776,7 +781,6 @@ export default function PdfLibraryPage() {
                     </div>
                 </div>
             )}
-
         </div>
     );
 }
