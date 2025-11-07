@@ -86,7 +86,7 @@ export default function TeacherPage() {
     const presence = usePresence(roomCode, "teacher");
     const { isFS, toggle: toggleFS } = useFullscreenTarget(".slide-stage");
 
-    const { connected, lastMessage, sendGoto } = useRealtime(roomCode, "teacher");
+    const { connected, lastMessage, sendGoto, sendRefresh } = useRealtime(roomCode, "teacher");
 
     // URL 정리
     useEffect(() => {
@@ -117,20 +117,20 @@ export default function TeacherPage() {
         (async () => {
             try {
                 await ensureRoomId();
-                // 호스트 잠금 원하면 주석 제거
+                // 필요 시 호스트 잠금
                 const { error } = await supabase.rpc("claim_host", { p_room_code: roomCode });
                 if (error && error.message.includes("BUSY")) {
-                    alert("다른 교사가 발표 중입니다."); // 읽기 전용 모드로 전환할 수도 있음
+                    alert("다른 교사가 발표 중입니다."); // 읽기 전용 전환 가능
                 }
             } catch (e:any) {
                 if (e.message === "ROOM_NOT_FOUND") {
                     alert("방이 없습니다. 로비에서 방을 생성/선택하세요.");
-                    location.href = "/AUTOPPT/#/lobby"; // 또는 nav("/lobby");
+                    location.href = "/AUTOPPT/#/lobby";
                 }
             }
         })();
     }, [ensureRoomId, roomCode]);
-    
+
     // manifest
     const [manifest, setManifest] = useState<RpcManifest | null>(null);
     const refreshManifest = useCallback(async () => {
@@ -167,8 +167,7 @@ export default function TeacherPage() {
     }, [ensureRoomId, activeSlot]);
     useEffect(() => { refreshSlotsList(); }, [refreshSlotsList]);
 
-    // 교시 row 보장
-// ensureSlotRow: lesson_id 없이도 upsert 가능 (이제 NOT NULL 해제됨)
+    // 교시 row 보장 (lesson_id 없이도 upsert)
     const ensureSlotRow = useCallback(async (slot: number) => {
         const rid = await ensureRoomId();
         const { error } = await supabase
@@ -177,8 +176,7 @@ export default function TeacherPage() {
         if (error) throw error;
     }, [ensureRoomId]);
 
-
-    // "교시 생성" (다음 비어있는 번호 자동 할당: 1..12)
+    // 교시 생성
     const createSlot = useCallback(async () => {
         try {
             await ensureRoomId();
@@ -190,10 +188,12 @@ export default function TeacherPage() {
             await refreshSlotsList();
             setActiveSlot(next);
             toast.show(`${next}교시 생성`);
+            // 학생에게 매니페스트 갱신 신호
+            sendRefresh("manifest");
         } catch (e: any) {
             toast.show(e?.message ?? String(e));
         }
-    }, [ensureRoomId, ensureSlotRow, refreshSlotsList, slots, toast]);
+    }, [ensureRoomId, ensureSlotRow, refreshSlotsList, slots, toast, sendRefresh]);
 
     // activeSlot의 current_index → 페이지 상태
     const [page, setPage] = useState<number>(1);
@@ -214,14 +214,14 @@ export default function TeacherPage() {
     }, [ensureRoomId]);
     useEffect(() => { syncPageFromSlot(activeSlot); }, [activeSlot, syncPageFromSlot]);
 
-    // 총 페이지 및 현재 슬라이드
+    // 총 페이지 및 현재 슬라이드 (폴백 제거!)
     const totalPages = useMemo(() => {
-        const slot = manifest?.slots?.find(s => s.slot === activeSlot) ?? manifest?.slots?.[0];
+        const slot = manifest?.slots?.find(s => s.slot === activeSlot);
         return slot?.slides?.length ?? 0;
     }, [manifest, activeSlot]);
 
     function currentSlide(): RpcSlide | null {
-        const slot = manifest?.slots?.find(s => s.slot === activeSlot) ?? manifest?.slots?.[0];
+        const slot = manifest?.slots?.find(s => s.slot === activeSlot);
         if (!slot) return null;
         const idx = Math.max(0, page - 1);
         return slot.slides[idx] ?? null;
@@ -257,7 +257,7 @@ export default function TeacherPage() {
             sendGoto(p, slot);
         } catch (e) {
             DBG.err("gotoPageForSlot", e);
-            setPage(p); // 로컬만이라도 반영
+            setPage(p); // 로컬이라도
             sendGoto(p, slot);
         }
     }, [ensureRoomId, sendGoto]);
@@ -338,27 +338,33 @@ export default function TeacherPage() {
             .order("page_index");
         if (ep) throw ep;
 
-        const rows = (pages || []).map((p: any) => ({
+        // 즉시 검증 포인트
+        if (!pages?.length) {
+            toast.show("이 자료에는 변환된 페이지가 없습니다.");
+            return null;
+        }
+
+        const rows = pages.map((p: any) => ({
             lesson_id: lessonId,
             sort_index: p.page_index,
             kind: "material",
             material_id: materialId,
             page_index: p.page_index,
         }));
-        if (rows.length) {
-            const { error: es } = await supabase.from("lesson_slides").insert(rows);
-            if (es) throw es;
-        }
-        return lessonId;
-    }, []);
+        const { error: es } = await supabase.from("lesson_slides").insert(rows);
+        if (es) throw es;
 
-    // 🔐 배정: roomId/교시 row 보장 → 배정 → manifest/슬롯/페이지 동기화
+        return lessonId;
+    }, [toast]);
+
+    // 🔐 배정: roomId/교시 row 보장 → 배정 → manifest/슬롯/페이지 동기화 + RT refresh
     const assignMaterialToSlot = useCallback(async (materialId: string, slot: number) => {
         try {
             const rid = await ensureRoomId();
-            await ensureSlotRow(slot); // 교시 row 미리 보장
+            await ensureSlotRow(slot); // 교시 row 보장
 
             const lessonId = await createLessonFromMaterial(materialId);
+            if (!lessonId) return; // 페이지 없음 안내 후 중단
 
             const { error: erl } = await supabase
                 .from("room_lessons")
@@ -373,12 +379,15 @@ export default function TeacherPage() {
             setActiveSlot(slot);
             await gotoPageForSlot(slot, 1);
 
+            // 학생에게 manifest 새로고침 신호
+            sendRefresh("manifest");
+
             toast.show("배정 완료");
         } catch (e: any) {
             toast.show(e?.message ?? String(e));
             console.error(e);
         }
-    }, [ensureRoomId, ensureSlotRow, createLessonFromMaterial, refreshManifest, refreshSlotsList, gotoPageForSlot, toast]);
+    }, [ensureRoomId, ensureSlotRow, createLessonFromMaterial, refreshManifest, refreshSlotsList, gotoPageForSlot, toast, sendRefresh]);
 
     // ===================== UI =====================
 
@@ -409,7 +418,7 @@ export default function TeacherPage() {
 
     const SetupRight = (
         <div className="panel" style={{ display: "grid", gap: 16 }}>
-            {/* 교시 생성 + 목록/선택 */}
+            {/* 교시 관리 */}
             <div>
                 <div style={{ fontWeight: 700, marginBottom: 6 }}>교시 관리</div>
                 <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
@@ -435,7 +444,7 @@ export default function TeacherPage() {
                 </div>
             </div>
 
-            {/* PDF 업로더(자료함) */}
+            {/* PDF 업로더 */}
             <div>
                 <PdfToSlidesUploader onFinished={() => {
                     toast.show("자료함 업로드 완료");

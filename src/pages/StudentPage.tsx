@@ -1,5 +1,5 @@
 // src/pages/StudentPage.tsx
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState, useCallback } from "react";
 import { supabase } from "../supabaseClient";
 import { useRoomId } from "../hooks/useRoomId";
 import { useRealtime } from "../hooks/useRealtime";
@@ -52,21 +52,21 @@ function useQuery() {
 }
 
 export default function StudentPage() {
-    const { room, slot } = useQuery();
+    const { slot } = useQuery();
     const roomCode = useRoomId("CLASS-XXXXXX");
     const studentId = useMemo(() => getOrSetStudentId(), []);
     const [nickname, setNicknameState] = useState(getNickname());
     const [editNick, setEditNick] = useState(false);
     const [nickInput, setNickInput] = useState(nickname);
 
-    // 교시는 URL의 ?slot= 우선, 없으면 1
+    // 교시: URL ?slot= 우선, 없으면 1
     const [activeSlot, setActiveSlot] = useState<number>(slot > 0 ? slot : 1);
 
-    // 페이지는 1-base. 서버/신호로 동기화.
+    // 페이지(1-base)
     const [pageRaw, setPageRaw] = useState<number | null>(null);
     const page = Number(pageRaw ?? 1) > 0 ? Number(pageRaw ?? 1) : 1;
 
-    // 매니페스트 (교시별 슬라이드/진도 포함)
+    // 매니페스트
     const [manifest, setManifest] = useState<RpcManifest | null>(null);
 
     // Presence
@@ -76,45 +76,48 @@ export default function StudentPage() {
         heartbeatSec: 10,
     });
 
-    // 매니페스트 로드
-    useEffect(() => {
-        let cancel = false;
-        (async () => {
-            if (!roomCode) return setManifest(null);
-            const { data, error } = await supabase.rpc("get_student_manifest_by_code", { p_room_code: roomCode });
-            if (!cancel) {
-                if (error) { DBG.err("manifest rpc", error.message || error); setManifest(null); }
-                else setManifest(data as RpcManifest);
-            }
-        })();
-        return () => { cancel = true; };
+    // 매니페스트 로더
+    const loadManifest = useCallback(async () => {
+        if (!roomCode) { setManifest(null); return; }
+        const { data, error } = await supabase.rpc("get_student_manifest_by_code", { p_room_code: roomCode });
+        if (error) { setManifest(null); return; }
+        setManifest(data);
     }, [roomCode]);
 
-    // (중요) 초기/교시 변경 시, 그 교시의 current_index로 페이지 맞추기
+    useEffect(() => { loadManifest(); }, [loadManifest]);
+
+    // 초기/교시 변경 시, 해당 교시 current_index로 페이지 동기화 (폴백 제거)
     useEffect(() => {
         if (!manifest) return;
-        const slotBundle = manifest.slots.find(s => s.slot === activeSlot) ?? manifest.slots[0];
+        const slotBundle = manifest.slots.find(s => s.slot === activeSlot);
         if (!slotBundle) return;
-        // current_index(0-base) → 화면 페이지(1-base)
         setPageRaw(Number(slotBundle.current_index ?? 0) + 1);
     }, [manifest, activeSlot]);
 
-    // realtime goto — 단일 effect로 통합
+    // RT 수신
     const { lastMessage } = useRealtime(roomCode, "student");
     useEffect(() => {
-        if (!lastMessage || lastMessage.type !== "goto") return;
-        if (typeof lastMessage.slot === "number") setActiveSlot(lastMessage.slot);
-        if (typeof lastMessage.page === "number") setPageRaw(Math.max(1, lastMessage.page));
-    }, [lastMessage]);
+        if (!lastMessage) return;
+        if (lastMessage.type === "goto") {
+            if (typeof lastMessage.slot === "number") setActiveSlot(lastMessage.slot);
+            if (typeof lastMessage.page === "number") setPageRaw(Math.max(1, lastMessage.page));
+            return;
+        }
+        if (lastMessage.type === "refresh" && lastMessage.scope === "manifest") {
+            loadManifest();
+            return;
+        }
+    }, [lastMessage, loadManifest]);
 
-    // 총 페이지/활성 슬라이드
+    // 총 페이지
     const totalPages = useMemo(() => {
-        const s = manifest?.slots?.find(v => v.slot === activeSlot) ?? manifest?.slots?.[0];
+        const s = manifest?.slots?.find(v => v.slot === activeSlot);
         return s?.slides?.length ?? 0;
     }, [manifest, activeSlot]);
 
+    // 활성 슬라이드 (폴백 제거)
     const active = useMemo(() => {
-        const s = manifest?.slots?.find(v => v.slot === activeSlot) ?? manifest?.slots?.[0];
+        const s = manifest?.slots?.find(v => v.slot === activeSlot);
         if (!s) return null;
         const idx = Math.max(0, page - 1);
         const slide = s.slides[idx] as RpcSlide | undefined;
