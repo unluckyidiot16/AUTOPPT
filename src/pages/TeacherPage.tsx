@@ -102,7 +102,7 @@ export default function TeacherPage() {
     const ensureRoomId = useCallback(async (): Promise<string> => {
         if (roomId) return roomId;
         const { data, error } = await supabase.from("rooms").select("id").eq("code", roomCode).maybeSingle();
-        if (error || !data?.id) throw new Error("roomId를 가져오지 못했습니다.");
+        if (error || !data?.id) throw new Error("ROOM_NOT_FOUND");
         setRoomId(data.id);
         return data.id;
     }, [roomId, roomCode]);
@@ -112,6 +112,25 @@ export default function TeacherPage() {
         (async () => { try { await ensureRoomId(); } catch (e) { DBG.err(e); } })();
     }, [ensureRoomId]);
 
+    // 2) 페이지 마운트 시 가드 + 호스트 잠금(옵션)
+    useEffect(() => {
+        (async () => {
+            try {
+                await ensureRoomId();
+                // 호스트 잠금 원하면 주석 제거
+                const { error } = await supabase.rpc("claim_host", { p_room_code: roomCode });
+                if (error && error.message.includes("BUSY")) {
+                    alert("다른 교사가 발표 중입니다."); // 읽기 전용 모드로 전환할 수도 있음
+                }
+            } catch (e:any) {
+                if (e.message === "ROOM_NOT_FOUND") {
+                    alert("방이 없습니다. 로비에서 방을 생성/선택하세요.");
+                    location.href = "/#/lobby"; // 또는 nav("/lobby");
+                }
+            }
+        })();
+    }, [ensureRoomId, roomCode]);
+    
     // manifest
     const [manifest, setManifest] = useState<RpcManifest | null>(null);
     const refreshManifest = useCallback(async () => {

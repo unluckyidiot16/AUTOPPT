@@ -8,6 +8,8 @@ import PdfLibraryPage from "./pages/PdfLibraryPage";
 import DeckEditorPage from "./pages/DeckEditorPage";
 import AdminPage from "./pages/AdminPage";
 import TestSlidesUpload from "./pages/TestSlidesUpload";
+import LobbyPage from "./pages/LobbyPage";
+
 
 export default function App() {
     return (
@@ -16,6 +18,7 @@ export default function App() {
             <Route path="/login" element={<LoginPage />} />
             <Route path="/student" element={<StudentPage />} />
             <Route path="/Test" element ={<TestSlidesUpload />} />
+            <Route path="/lobby" element={<LobbyPage />} />
             <Route
                 path="/teacher"
                 element={
