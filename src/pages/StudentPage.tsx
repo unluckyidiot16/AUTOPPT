@@ -15,14 +15,12 @@ type RpcSlide = {
     image_key: string | null; // slides 버킷 내부 경로
     overlays: RpcOverlay[];
 };
-
 type RpcSlot = {
     slot: number;
     lesson_id: string;
-    current_index: number;
+    current_index: number; // 0-base
     slides: RpcSlide[];
 };
-
 type RpcManifest = {
     room_code: string;
     slots: RpcSlot[];
@@ -45,20 +43,31 @@ function getOrSetStudentId() {
 function getNickname() { return localStorage.getItem("autoppt:nickname") || ""; }
 function setNicknameLS(v: string) { localStorage.setItem("autoppt:nickname", v); }
 
+function useQuery() {
+    const s = new URLSearchParams(location.hash.split("?")[1] ?? location.search);
+    return {
+        room: s.get("room"),
+        slot: Number(s.get("slot") ?? 1),
+    };
+}
+
 export default function StudentPage() {
+    const { room, slot } = useQuery();
     const roomCode = useRoomId("CLASS-XXXXXX");
     const studentId = useMemo(() => getOrSetStudentId(), []);
     const [nickname, setNicknameState] = useState(getNickname());
     const [editNick, setEditNick] = useState(false);
     const [nickInput, setNickInput] = useState(nickname);
 
-    // 페이지 인덱스(1-base). 신호는 기존 realtime과 rooms.state.page를 그대로 이용
+    // 교시는 URL의 ?slot= 우선, 없으면 1
+    const [activeSlot, setActiveSlot] = useState<number>(slot > 0 ? slot : 1);
+
+    // 페이지는 1-base. 서버/신호로 동기화.
     const [pageRaw, setPageRaw] = useState<number | null>(null);
     const page = Number(pageRaw ?? 1) > 0 ? Number(pageRaw ?? 1) : 1;
 
-    // 매니페스트 (RPC)
+    // 매니페스트 (교시별 슬라이드/진도 포함)
     const [manifest, setManifest] = useState<RpcManifest | null>(null);
-    const [activeSlot, setActiveSlot] = useState<number>(1); // 필요 시 slot=1 우선
 
     // Presence
     const presence = usePresence(roomCode, "student", {
@@ -66,22 +75,6 @@ export default function StudentPage() {
         nickname,
         heartbeatSec: 10,
     });
-
-    // 초기 rooms row → page 동기화
-    useEffect(() => {
-        let cancel = false;
-        (async () => {
-            const { data } = await supabase
-                .from("rooms")
-                .select("id, state")
-                .eq("code", roomCode)
-                .maybeSingle();
-            if (cancel) return;
-            const pg = Number(data?.state?.page ?? 1);
-            setPageRaw(pg > 0 ? pg : 1);
-        })();
-        return () => { cancel = true; };
-    }, [roomCode]);
 
     // 매니페스트 로드
     useEffect(() => {
@@ -97,41 +90,45 @@ export default function StudentPage() {
         return () => { cancel = true; };
     }, [roomCode]);
 
-    // realtime goto
+    // (중요) 초기/교시 변경 시, 그 교시의 current_index로 페이지 맞추기
+    useEffect(() => {
+        if (!manifest) return;
+        const slotBundle = manifest.slots.find(s => s.slot === activeSlot) ?? manifest.slots[0];
+        if (!slotBundle) return;
+        // current_index(0-base) → 화면 페이지(1-base)
+        setPageRaw(Number(slotBundle.current_index ?? 0) + 1);
+    }, [manifest, activeSlot]);
+
+    // realtime goto — 단일 effect로 통합
     const { lastMessage } = useRealtime(roomCode, "student");
     useEffect(() => {
-        if (!lastMessage) return;
-        if (lastMessage.type === "goto" && typeof lastMessage.page === "number") {
-            setPageRaw(Math.max(1, lastMessage.page));
-        }
+        if (!lastMessage || lastMessage.type !== "goto") return;
+        if (typeof lastMessage.slot === "number") setActiveSlot(lastMessage.slot);
+        if (typeof lastMessage.page === "number") setPageRaw(Math.max(1, lastMessage.page));
     }, [lastMessage]);
 
-    // 닉 저장
-    const saveNick = () => {
-        const v = nickInput.trim();
-        if (!v) { alert("닉네임을 입력하세요."); return; }
-        setNicknameLS(v); setNicknameState(v); setEditNick(false);
-        presence.track({ nick: v });
-    };
-
-    // 활성 슬라이드 계산
+    // 총 페이지/활성 슬라이드
     const totalPages = useMemo(() => {
-        const slot = manifest?.slots?.find(s => s.slot === activeSlot) ?? manifest?.slots?.[0];
-        return slot?.slides?.length ?? 0;
+        const s = manifest?.slots?.find(v => v.slot === activeSlot) ?? manifest?.slots?.[0];
+        return s?.slides?.length ?? 0;
     }, [manifest, activeSlot]);
 
     const active = useMemo(() => {
-        if (!manifest) return null;
-        const slot = manifest.slots.find(s => s.slot === activeSlot) ?? manifest.slots[0];
-        if (!slot) return null;
-        const idx = Math.max(0, page - 1);
-        const s = slot.slides[idx] as RpcSlide | undefined;
+        const s = manifest?.slots?.find(v => v.slot === activeSlot) ?? manifest?.slots?.[0];
         if (!s) return null;
-        const bgUrl = s.image_key ? supabase.storage.from("slides").getPublicUrl(s.image_key).data.publicUrl : null;
-        const overlays: Overlay[] = (s.overlays || []).map(o => ({ id: String(o.id), z: o.z, type: o.type, payload: o.payload }));
+        const idx = Math.max(0, page - 1);
+        const slide = s.slides[idx] as RpcSlide | undefined;
+        if (!slide) return null;
+        const bgUrl = slide.image_key
+            ? supabase.storage.from("slides").getPublicUrl(slide.image_key).data.publicUrl
+            : null;
+        const overlays: Overlay[] = (slide.overlays || []).map(o => ({
+            id: String(o.id), z: o.z, type: o.type, payload: o.payload
+        }));
         return { bgUrl, overlays };
     }, [manifest, activeSlot, page]);
 
+    // 답안 제출
     const submitAnswer = async (val: any) => {
         try {
             const payload = {
@@ -147,19 +144,29 @@ export default function StudentPage() {
         }
     };
 
+    // 닉 저장
+    const saveNick = () => {
+        const v = nickInput.trim();
+        if (!v) { alert("닉네임을 입력하세요."); return; }
+        setNicknameLS(v); setNicknameState(v); setEditNick(false);
+        presence.track({ nick: v });
+    };
+
     return (
         <div className="app-shell" style={{ maxWidth: 1080 }}>
             <div className="topbar" style={{ marginBottom: 14 }}>
                 <h1 style={{ fontSize: 18, margin: 0 }}>학생 화면</h1>
                 <span className="badge">room: {roomCode}</span>
                 <span className="badge">내 ID: {studentId}</span>
+                <span className="badge">교시: {activeSlot}</span>
                 <span className="badge">페이지: {page}{totalPages ? ` / ${totalPages}` : ""}</span>
                 {nickname ? (
                     <span className="badge">닉네임: {nickname}</span>
                 ) : (
                     <span className="badge">닉네임: 설정 안 됨</span>
                 )}
-                <button className="btn" style={{ marginLeft: 8 }} onClick={() => { setEditNick(v => !v); setNickInput(nickname); }}>
+                <button className="btn" style={{ marginLeft: 8 }}
+                        onClick={() => { setEditNick(v => !v); setNickInput(nickname); }}>
                     닉네임
                 </button>
             </div>
@@ -179,7 +186,6 @@ export default function StudentPage() {
                 </div>
             )}
 
-            {/* 닉네임 토스트 */}
             {editNick && (
                 <div style={{
                     position:"fixed", left:"50%", bottom:72, transform:"translateX(-50%)",

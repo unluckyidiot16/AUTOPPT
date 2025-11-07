@@ -2,12 +2,32 @@
 import React, { useCallback, useRef, useState } from "react";
 import { supabase } from "../supabaseClient";
 
-// pdf.js는 동적 import + CDN 워커를 사용해 Vite 번들 이슈 회피
+// v5 / v3 모두 대응: v5는 module worker, v3는 workerSrc로 처리
 async function loadPdfJs() {
-    const pdfjs: any = await import("pdfjs-dist/legacy/build/pdf");
-    // 고정 버전 CDN 워커 (원하면 프로젝트에 고정 파일로 두고 경로 바꿔도 됨)
-    pdfjs.GlobalWorkerOptions.workerSrc =
-        "https://unpkg.com/pdfjs-dist@3.11.174/build/pdf.worker.min.js";
+    // v5는 "pdfjs-dist/build/pdf" 가 ESM, v3는 legacy도 존재
+    const pdfjs: any = await import("pdfjs-dist/build/pdf");
+
+    const ver: string = String(pdfjs.version || "");
+    const isV5 = ver.startsWith("5.");
+
+    try {
+        if (isV5) {
+            // v5: module worker (CDN)
+            const workerUrl = `https://unpkg.com/pdfjs-dist@${ver}/build/pdf.worker.min.mjs`;
+            // cross-origin module worker 허용
+            const worker = new Worker(workerUrl, { type: "module" as any });
+            pdfjs.GlobalWorkerOptions.workerPort = worker;
+        } else {
+            // v3계열: classic workerSrc
+            const workerSrc = `https://unpkg.com/pdfjs-dist@${ver || "3.11.174"}/build/pdf.worker.min.js`;
+            pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
+        }
+    } catch (e) {
+        // 최후의 안전장치: 현재 버전에 맞춰 classic worker 경로로 재시도
+        const fallback = `https://unpkg.com/pdfjs-dist@${ver || "3.11.174"}/build/pdf.worker.min.js`;
+        try { pdfjs.GlobalWorkerOptions.workerSrc = fallback; } catch {}
+    }
+
     return pdfjs;
 }
 
@@ -39,12 +59,11 @@ export default function PdfToSlidesUploader({
             setBusy(true);
             setLog([]);
 
-            // 로그인 사용자
             const { data: u } = await supabase.auth.getUser();
             const uid = u.user?.id;
             if (!uid) throw new Error("로그인이 필요합니다.");
 
-            // materials 생성
+            // 1) materials 생성
             const title = file.name.replace(/\.[Pp][Dd][Ff]$/, "");
             const { data: mat, error: em } = await supabase
                 .from("materials")
@@ -55,14 +74,13 @@ export default function PdfToSlidesUploader({
             const materialId: string = String(mat.id).toLowerCase();
             pushLog(`materials 생성: ${materialId}`);
 
-            // pdf.js 로드
+            // 2) pdf.js 로드 + 렌더
             const pdfjs: any = await loadPdfJs();
             const ab = await fileToArrayBuffer(file);
             const loadingTask = pdfjs.getDocument({ data: ab });
             const pdf = await loadingTask.promise;
             pushLog(`PDF 페이지 수: ${pdf.numPages}`);
 
-            // 렌더용 캔버스
             const canvas = canvasRef.current || document.createElement("canvas");
             canvasRef.current = canvas;
             const ctx = canvas.getContext("2d")!;
@@ -72,49 +90,35 @@ export default function PdfToSlidesUploader({
             for (let i = 1; i <= pdf.numPages; i++) {
                 const page = await pdf.getPage(i);
                 const vp1 = page.getViewport({ scale: 1 });
-                const scale = Math.min(1, maxW / vp1.width) * 2; // 레티나 대응 살짝
+                const scale = Math.min(1, maxW / vp1.width) * 2;
                 const viewport = page.getViewport({ scale });
 
                 canvas.width = Math.round(viewport.width);
                 canvas.height = Math.round(viewport.height);
 
-                // 배경 지우기
                 ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-                // 렌더
-                await page.render({
-                    canvasContext: ctx,
-                    viewport,
-                    intent: "print",
-                }).promise;
+                await page.render({ canvasContext: ctx, viewport, intent: "print" }).promise;
 
-                // Blob 변환
                 const blob = await canvasToBlob(canvas, "image/webp", 0.92);
                 const path = `${materialId}/pages/${i - 1}.webp`;
 
-                // 업로드
-                const { error: eu } = await supabase.storage.from("slides").upload(path, blob, {
-                    upsert: true,
-                    contentType: "image/webp",
-                    cacheControl: "3600",
-                });
+                const { error: eu } = await supabase.storage.from("slides")
+                    .upload(path, blob, { upsert: true, contentType: "image/webp", cacheControl: "3600" });
                 if (eu) throw eu;
 
-                // material_pages upsert
-                await supabase
-                    .from("material_pages")
-                    .upsert(
-                        {
-                            material_id: materialId,
-                            page_index: i - 1,
-                            image_key: path,
-                            width: canvas.width,
-                            height: canvas.height,
-                            thumb_key: null,
-                            ocr_json_key: null,
-                        },
-                        { onConflict: "material_id,page_index" }
-                    );
+                await supabase.from("material_pages").upsert(
+                    {
+                        material_id: materialId,
+                        page_index: i - 1,
+                        image_key: path,
+                        width: canvas.width,
+                        height: canvas.height,
+                        thumb_key: null,
+                        ocr_json_key: null,
+                    },
+                    { onConflict: "material_id,page_index" }
+                );
 
                 pushLog(`업로드 완료: ${path}`);
             }
@@ -132,18 +136,12 @@ export default function PdfToSlidesUploader({
     return (
         <div style={{ display: "grid", gap: 8 }}>
             <div style={{ fontWeight: 700 }}>PDF → 이미지 업로더 (자료함)</div>
-            <input
-                type="file"
-                accept="application/pdf"
-                onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-            />
+            <input type="file" accept="application/pdf" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
             <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                 <button className="btn" onClick={handleUpload} disabled={!file || busy}>
                     {busy ? "변환/업로드 중…" : "자료함으로 업로드"}
                 </button>
-                <span style={{ fontSize: 12, opacity: .7 }}>
-          {file ? file.name : "PDF 선택"}
-        </span>
+                <span style={{ fontSize: 12, opacity: .7 }}>{file ? file.name : "PDF 선택"}</span>
             </div>
             {!!log.length && (
                 <div
@@ -155,7 +153,6 @@ export default function PdfToSlidesUploader({
                     {log.map((l, i) => <div key={i}>• {l}</div>)}
                 </div>
             )}
-            {/* 렌더링용 캔버스(비표시) */}
             <canvas ref={canvasRef} style={{ display: "none" }} />
         </div>
     );

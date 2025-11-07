@@ -180,17 +180,23 @@ export default function TeacherPage() {
     // Controls — 교시별 current_index 업데이트
     const gotoPageForSlot = useCallback(async (slot: number, nextPage: number) => {
         const p = Math.max(1, nextPage);
-        if (!roomId) return;
-        // room_lessons.current_index 업데이트 (교시별 진도 저장)
+        if (!roomId) {
+            console.warn("[gotoPageForSlot] roomId 없음");
+            return;
+        }
         const { error } = await supabase
             .from("room_lessons")
             .update({ current_index: p - 1 })
             .eq("room_id", roomId)
             .eq("slot", slot);
-        if (error) DBG.err("room_lessons.update", error);
+        if (error) {
+            console.error("[room_lessons.update]", error);
+            toast.show("교시 진도 업데이트 실패");
+        }
         setPage(p);
         send({ type: "goto", page: p, slot });
-    }, [roomId, send]);
+    }, [roomId, send, toast]);
+
 
     const next = useCallback(async () => {
         if (totalPages && page >= totalPages) return;
@@ -278,24 +284,70 @@ export default function TeacherPage() {
         return lessonId;
     }, []);
 
+    // 기존 assignMaterialToSlot 함수 전체를 아래로 교체
     const assignMaterialToSlot = useCallback(async (materialId: string, slot: number) => {
-        if (!roomId) throw new Error("roomId 없음");
-        // 기존 lesson 확인: 같은 material 기반 lesson이 여러 개일 수 있으므로, 여기서는 새로 생성
-        const lessonId = await createLessonFromMaterial(materialId);
-        // room_lessons 배정
-        const { error: erl } = await supabase
-            .from("room_lessons")
-            .upsert(
-                { room_id: roomId, slot, lesson_id: lessonId, current_index: 0 },
-                { onConflict: "room_id,slot" }
-            );
-        if (erl) throw erl;
+        try {
+            // roomId가 없으면 최신화
+            if (!roomId) {
+                const { data } = await supabase.from("rooms").select("id").eq("code", roomCode).maybeSingle();
+                if (!data?.id) throw new Error("roomId를 가져오지 못했습니다.");
+                setRoomId(data.id);
+            }
 
-        await refreshManifest();
-        setActiveSlot(slot);
-        await gotoPageForSlot(slot, 1);
-        toast.show("배정 완료");
-    }, [roomId, createLessonFromMaterial, refreshManifest, gotoPageForSlot, toast]);
+            const { data: u } = await supabase.auth.getUser();
+            const uid = u.user?.id;
+            if (!uid) throw new Error("로그인이 필요합니다.");
+
+            // lesson 생성
+            const { data: lesson, error: el } = await supabase
+                .from("lessons")
+                .insert({ owner_id: uid, title: `Lesson of ${materialId}` })
+                .select()
+                .single();
+            if (el) throw el;
+            const lessonId: string = lesson.id;
+
+            // material_pages → lesson_slides
+            const { data: pages, error: ep } = await supabase
+                .from("material_pages")
+                .select("page_index")
+                .eq("material_id", materialId)
+                .order("page_index");
+            if (ep) throw ep;
+
+            if ((pages?.length ?? 0) === 0) throw new Error("이 자료에는 페이지가 없습니다.");
+
+            const rows = pages!.map((p: any) => ({
+                lesson_id: lessonId,
+                sort_index: p.page_index,
+                kind: "material",
+                material_id: materialId,
+                page_index: p.page_index,
+            }));
+            const { error: es } = await supabase.from("lesson_slides").insert(rows);
+            if (es) throw es;
+
+            // room_lessons upsert
+            const targetRoomId = (roomId ?? (await supabase.from("rooms").select("id").eq("code", roomCode).maybeSingle()).data?.id)!;
+            const { error: erl } = await supabase
+                .from("room_lessons")
+                .upsert(
+                    { room_id: targetRoomId, slot, lesson_id: lessonId, current_index: 0 },
+                    { onConflict: "room_id,slot" }
+                );
+            if (erl) throw erl;
+
+            // manifest 갱신 → 교시 전환 → 1페이지로 이동
+            await refreshManifest();
+            setActiveSlot(slot);
+            await gotoPageForSlot(slot, 1);
+            toast.show("배정 완료");
+        } catch (e: any) {
+            toast.show(e?.message ?? String(e));
+            console.error(e);
+        }
+    }, [roomId, roomCode, refreshManifest, gotoPageForSlot, toast]);
+
 
     // ===================== UI =====================
 
