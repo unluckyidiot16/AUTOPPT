@@ -1,4 +1,4 @@
-// src/main.tsx  (드롭-인 교체)
+// src/main.tsx
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { HashRouter } from "react-router-dom";
@@ -9,13 +9,39 @@ import "./index.css";
 const rootEl = document.getElementById("root");
 if (!rootEl) throw new Error("#root not found");
 
+// PDF.js 워커 관련 에러를 조용히 처리
 if (typeof window !== "undefined") {
-    window.addEventListener("error", (ev: any) => {
+    // 전역 에러 핸들러
+    window.addEventListener("error", (ev: ErrorEvent) => {
         const msg = String(ev?.error?.message || ev?.message || "");
-        if (msg.includes('GlobalWorkerOptions') || msg.includes('pdf.worker')) {
-            console.warn("[PDFJS:WHO-CALLED]", ev?.error?.stack || msg);
+
+        // PDF.js 워커 관련 에러들을 무시
+        if (
+            msg.includes('GlobalWorkerOptions') ||
+            msg.includes('pdf.worker') ||
+            msg.includes('Worker') ||
+            msg.includes('workerSrc')
+        ) {
+            ev.preventDefault(); // 에러 전파 차단
+            console.debug("[PDF.js] Worker-related error suppressed:", msg);
+            return;
         }
     }, true);
+
+    // Promise rejection 핸들러
+    window.addEventListener("unhandledrejection", (ev: PromiseRejectionEvent) => {
+        const msg = String(ev?.reason?.message || ev?.reason || "");
+
+        if (
+            msg.includes('GlobalWorkerOptions') ||
+            msg.includes('pdf.worker') ||
+            msg.includes('Worker')
+        ) {
+            ev.preventDefault(); // 에러 전파 차단
+            console.debug("[PDF.js] Worker-related rejection suppressed:", msg);
+            return;
+        }
+    });
 }
 
 ReactDOM.createRoot(rootEl).render(
