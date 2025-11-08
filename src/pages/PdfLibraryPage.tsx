@@ -319,9 +319,18 @@ function Thumb({ keyStr, badge }: { keyStr: string; badge: React.ReactNode }) {
     // presentations/* → slides/* 프리픽스 계산 그대로 사용
     const slidesPrefix = slidesPrefixOfPresentationsFile(keyStr);
     const slidesKey = slidesPrefix ? `${slidesPrefix}/0.webp` : null;
-    const slidesUrl = slidesKey
-        ? supabase.storage.from("slides").getPublicUrl(slidesKey).data.publicUrl
-        : null;
+    const [slidesUrl, setSlidesUrl] = React.useState<string | null>(null);
+      React.useEffect(() => {
+            let off = false;
+            (async () => {
+                  if (!slidesKey) { setSlidesUrl(null); return; }
+                  const { data } = await supabase.storage.from("slides").createSignedUrl(slidesKey, 1800);
+                  if (!off && data?.signedUrl) { setSlidesUrl(data.signedUrl); return; }
+                  const { data: pub } = supabase.storage.from("slides").getPublicUrl(slidesKey);
+                  if (!off) setSlidesUrl(pub.publicUrl || null);
+                })();
+            return () => { off = true; };
+          }, [slidesKey]);
 
     const [ok, setOk] = React.useState<boolean>(true);
     React.useEffect(() => { setOk(true); }, [slidesUrl]);

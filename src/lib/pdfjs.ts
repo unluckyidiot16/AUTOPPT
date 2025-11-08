@@ -1,25 +1,23 @@
-// src/lib/pdfjs.ts
-import * as pdfjs from "pdfjs-dist";
-import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+// src/lib/pdfjs.ts  ✨ 전체 교체
+import * as pdfjs from "pdfjs-dist/legacy/build/pdf";
 
-// ① 전역 워커 경로(필요 시에만 쓰임)
-pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
-
-// ② 공통 로더
+/** 공통 로더 */
 export async function loadPdfJs() {
     return pdfjs;
 }
 
-// ③ 문서 열기 헬퍼 (worker/workerless 선택)
+/** 문서 열기 (항상 workerless) */
 type OpenSrc = string | ArrayBuffer | Uint8Array;
-type OpenOpts = Partial<{
-    disableWorker: boolean;
-    withCredentials: boolean;
-}>;
+type OpenOpts = Partial<{ withCredentials: boolean }>;
+
 export function openPdf(src: OpenSrc, opts: OpenOpts = {}) {
     const base =
         typeof src === "string"
             ? { url: src, withCredentials: opts.withCredentials ?? false }
             : { data: src };
-    return (pdfjs as any).getDocument({ ...base, disableWorker: !!opts.disableWorker });
+    return (pdfjs as any).getDocument({
+        ...base,
+        disableWorker: true,      // ✅ 중요한 한 줄
+        isEvalSupported: false,   // Safari 등 안정성
+    });
 }
