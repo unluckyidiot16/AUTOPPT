@@ -8,10 +8,15 @@ let _ready = false;
 function ensurePdfReady() {
     if (_ready) return;
     const ver = (pdfjs as any).version || "4.8.69";
-    // 일부 환경은 disableWorker여도 workerSrc 문자열 검사함 → CDN 문자열 지정
+    // 일부 환경은 disableWorker여도 workerSrc 문자열 검사 → CDN 문자열 지정
     (pdfjs as any).GlobalWorkerOptions.workerSrc =
         `https://cdn.jsdelivr.net/npm/pdfjs-dist@${ver}/build/pdf.worker.min.js`;
     _ready = true;
+}
+
+/** pdf.js 워커 경로만 미리 세팅(실행은 여전히 workerless) */
+export function primePdfWorkerless() {
+    ensurePdfReady();
 }
 
 /** 워커 비활성으로 문서 열기 */
