@@ -1,171 +1,153 @@
 // src/components/PdfToSlidesUploader.tsx
 import React, { useCallback, useRef, useState } from "react";
 import { supabase } from "../supabaseClient";
-import { loadPdfJs } from "../lib/pdfjs"; // 워커 비활성화 로더
 
-function slugify(s: string) {
-    return (s || "")
-        .toLowerCase()
-        .replace(/[^a-z0-9가-힣]+/gi, "-")
-        .replace(/^-+|-+$/g, "")
-        .slice(0, 60) || "untitled";
-}
-function shortId() { return Math.random().toString(36).slice(2, 7); }
-async function canvasToBlob(canvas: HTMLCanvasElement, type = "image/webp", quality = 0.92): Promise<Blob> {
-    return await new Promise((res, rej) => canvas.toBlob(b => b ? res(b) : rej(new Error("toBlob failed")), type, quality));
-}
-
-// 슬라이드 변환 여부 마커
-async function hasDoneMarker(slug: string) {
-    const { data } = await supabase.storage.from("slides").list(`decks/${slug}`);
-    if (!data) return false;
-    return data.some(e => e.name === ".done.json") || data.some(e => e.name === "0.webp");
-}
-async function writeDoneMarker(slug: string, pages: number) {
-    const blob = new Blob([JSON.stringify({ pages, ts: Date.now() })], { type: "application/json" });
-    await supabase.storage.from("slides").upload(`decks/${slug}/.done.json`, blob, { upsert: true, contentType: "application/json" });
-}
-
-export default function PdfToSlidesUploader({ onFinished }: { onFinished?: (v: { deckId: string; pages: number; fileKey: string }) => void }) {
-    const [file, setFile] = useState<File | null>(null);
-    const [busy, setBusy] = useState(false);
-    const [stage, setStage] = useState("");
-    const [pct, setPct] = useState(0);
-    const [log, setLog] = useState<string[]>([]);
-    const canvasRef = useRef<HTMLCanvasElement | null>(null);
-
-    const push = (m: string) => setLog(x => [...x, m].slice(-300));
-
-    const handleUpload = useCallback(async () => {
-        if (!file) return;
-        setBusy(true); setStage("준비"); setPct(2); setLog([]);
-        const t0 = performance.now();
-
+/** pdf.js 로더: jsDelivr ESM + module worker 우선, 실패 시 classic 워커 폴백 */
+async function loadPdfJs(): Promise<any> {
+    // 1) ESM
+    try {
+        const pdfjs = await import("pdfjs-dist/build/pdf");
         try {
-            // 1) 메타
-            const title = file.name.replace(/\.pdf$/i, "");
-            const slug = `${slugify(title)}-${shortId()}`;
-            const fileKey = `decks/${slug}/slides-${Date.now()}.pdf`;
-            push(`파일명: ${file.name} (${(file.size/1024/1024).toFixed(2)} MB)`);
+            // module worker (v4/v5 대응)
+            const workerUrl = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${(pdfjs as any).version}/build/pdf.worker.min.mjs`;
+            const worker = new Worker(workerUrl, { type: "module" as any });
+            (pdfjs as any).GlobalWorkerOptions.workerPort = worker as any;
+        } catch {
+            // classic worker src 폴백
+            (pdfjs as any).GlobalWorkerOptions.workerSrc =
+                `https://cdn.jsdelivr.net/npm/pdfjs-dist@${(pdfjs as any).version}/build/pdf.worker.min.js`;
+        }
+        return pdfjs;
+    } catch {
+        // 2) CDN ESM 직로딩 폴백
+        const pdfjs = await import(/* @vite-ignore */ "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69/build/pdf.min.mjs");
+        (pdfjs as any).GlobalWorkerOptions.workerSrc =
+            "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69/build/pdf.worker.min.js";
+        return pdfjs;
+    }
+}
 
-            // 2) 원본 PDF 업로드
-            setStage("원본 업로드");
-            const up = await supabase.storage.from("presentations")
-                .upload(fileKey, file, { upsert: true, contentType: "application/pdf" });
-            if (up.error) throw up.error;
-            push(`원본 업로드 완료 → presentations/${fileKey}`);
-            setPct(10);
+function slugify(basename: string) {
+    return basename
+        .replace(/\.[^.]+$/, "")
+        .replace(/[^\p{L}\p{N}]+/gu, "-")
+        .replace(/^-+|-+$/g, "")
+        .toLowerCase() || ("deck-" + Date.now());
+}
 
-            // 3) 덱 생성
-            const ins = await supabase.from("decks").insert({ title, file_key: fileKey }).select("id").single();
-            if (ins.error) throw ins.error;
-            const deckId = ins.data.id as string;
-            push(`decks 생성: ${deckId}`);
-            setPct(15);
+async function toWebpBlob(canvas: HTMLCanvasElement, quality = 0.92): Promise<Blob> {
+    return new Promise((resolve, reject) => {
+        canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("toBlob failed"))), "image/webp", quality);
+    });
+}
 
-            // 4) 이미 변환돼 있으면 스킵
-            if (await hasDoneMarker(slug)) {
-                push("기존 슬라이드 감지 → 변환 생략");
-                setPct(100);
-                onFinished?.({ deckId, pages: 0, fileKey });
-                return;
+export default function PdfToSlidesUploader({
+                                                onDone,
+                                            }: {
+    /** 업로드 완료 후 호출: pdfKey(presentations/*), slidesPrefix(slides/*), pages */
+    onDone?: (info: { pdfKey: string; slidesPrefix: string; pages: number }) => void;
+}) {
+    const inputRef = useRef<HTMLInputElement | null>(null);
+    const [busy, setBusy] = useState(false);
+    const [log, setLog] = useState<string[]>([]);
+    const [progress, setProgress] = useState<number>(0);
+
+    const push = (m: string) => setLog((L) => [...L, m].slice(-300));
+
+    const handlePick = useCallback(() => inputRef.current?.click(), []);
+    const handleFile = useCallback(async (file: File) => {
+        setBusy(true); setLog([]); setProgress(0);
+        try {
+            const base = slugify(file.name);
+            const pdfKey = `presentations/decks/${base}/slides-${Date.now()}.pdf`;
+            push(`원본 PDF 업로드: ${pdfKey}`);
+            const upPdf = await supabase.storage.from("presentations").upload(pdfKey, file, {
+                contentType: "application/pdf", upsert: true,
+            });
+            if (upPdf.error) throw upPdf.error;
+
+            const pdfjs = await loadPdfJs();
+            const buf = await file.arrayBuffer();
+            const doc = await (pdfjs as any).getDocument({ data: buf }).promise;
+            const pages = doc.numPages;
+            push(`변환 시작: ${pages} 페이지`);
+
+            const slidesPrefix = `decks/${base}`; // slides 버킷 내부 경로(원본)
+            const pageNames: string[] = [];
+            const canvas = document.createElement("canvas");
+            const ctx = canvas.getContext("2d")!;
+
+            for (let i = 1; i <= pages; i++) {
+                const p = await doc.getPage(i);
+                // 가로 기준 1920px로 스케일 (세로는 비율 유지)
+                const viewport = p.getViewport({ scale: 1 });
+                const targetW = 1920;
+                const scale = targetW / viewport.width;
+                const vp = p.getViewport({ scale });
+                canvas.width = Math.round(vp.width);
+                canvas.height = Math.round(vp.height);
+                // @ts-ignore
+                await p.render({ canvasContext: ctx, viewport: vp }).promise;
+                const blob = await toWebpBlob(canvas, 0.92);
+                const name = `${i - 1}.webp`; // 0-base
+                const full = `${slidesPrefix}/${name}`;
+                pageNames.push(name);
+
+                const up = await supabase.storage.from("slides").upload(full, blob, {
+                    contentType: "image/webp", upsert: true,
+                });
+                if (up.error) throw up.error;
+
+                setProgress(Math.floor((i / pages) * 95));
+                push(`업로드 완료: slides/${full}`);
             }
 
-            // 5) 변환 (클라이언트 1회 렌더)
-            setStage("PDF 분석/렌더링");
-            const pdfjs: any = await loadPdfJs();
-            const ab = await file.arrayBuffer();
-            const task = pdfjs.getDocument({ data: ab, disableWorker: true });
-            const pdf = await task.promise;
-            const total: number = pdf.numPages;
-            push(`페이지 수: ${total}`);
-            setPct(20);
+            // 변환 메타 저장(.done.json) → 빠른 복사용
+            const doneJson = {
+                pages,
+                names: pageNames,
+                ts: Date.now(),
+                w: canvas.width,
+                h: canvas.height,
+            };
+            await supabase.storage.from("slides").upload(
+                `${slidesPrefix}/.done.json`,
+                new Blob([JSON.stringify(doneJson)], { type: "application/json" }),
+                { upsert: true, contentType: "application/json" },
+            );
+            push(`메타 저장: slides/${slidesPrefix}/.done.json`);
 
-            const canvas = canvasRef.current || document.createElement("canvas");
-            const ctx = (canvas.getContext("2d") as CanvasRenderingContext2D);
-            canvasRef.current = canvas;
-
-            const base = 20, perPage = total ? 78 / total : 78;
-            const maxW = 2048;
-            let totalBytes = 0;
-
-            for (let i = 1; i <= total; i++) {
-                const page = await pdf.getPage(i);
-                const vp = page.getViewport({ scale: 1 });
-                const scale = Math.min(1, maxW / vp.width) * 2; // 고해상도 대비 2x
-                const viewport = page.getViewport({ scale });
-
-                canvas.width = Math.round(viewport.width);
-                canvas.height = Math.round(viewport.height);
-                ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-                const tRender = performance.now();
-                await page.render({ canvasContext: ctx, viewport, intent: "print" }).promise;
-                const tAfter = performance.now();
-
-                const blob = await canvasToBlob(canvas, "image/webp", 0.92);
-                totalBytes += blob.size;
-
-                const path = `decks/${slug}/${i - 1}.webp`;
-                const upImg = await supabase.storage.from("slides").upload(path, blob, { upsert: true, contentType: "image/webp" });
-                if (upImg.error) throw upImg.error;
-
-                const renderMs = (tAfter - tRender).toFixed(0);
-                if (i === 1 || i === total || i % Math.max(1, Math.floor(total / 8)) === 0) {
-                    push(`p${i}/${total} 렌더 ${renderMs}ms → 업로드 slides/${path} (${Math.round(blob.size/1024)} KB)`);
-                }
-                setPct(Math.min(98, Math.floor(base + perPage * i)));
-            }
-
-            await writeDoneMarker(slug, total);
-            push(`완료 마커 기록: slides/decks/${slug}/.done.json`);
-            // decks.file_pages 업데이트(목록/필터 가속)
-            await supabase.from("decks").update({ file_pages: total }).eq("id", deckId).throwOnError();
-            push(`decks.file_pages = ${total} 갱신`);
-
-            const t1 = performance.now();
-            push(`총 업로드 용량 ≈ ${(totalBytes/1024/1024).toFixed(2)} MB, 총 소요 ${(t1 - t0).toFixed(0)}ms`);
-            setPct(100); setStage("완료");
-            onFinished?.({ deckId, pages: total, fileKey });
+            setProgress(100);
+            push("완료!");
+            onDone?.({ pdfKey, slidesPrefix, pages });
         } catch (e: any) {
-            push(`에러: ${e?.message || e}`);
-            alert(e?.message || String(e));
+            push(`에러: ${e?.message ?? String(e)}`);
         } finally {
             setBusy(false);
         }
-    }, [file, onFinished]);
+    }, [onDone]);
 
     return (
-        <div style={{ display: "grid", gap: 10 }}>
-            <div style={{ fontWeight: 700 }}>PDF 업로드 (1회 변환)</div>
-            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                <input type="file" accept="application/pdf" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
-                <button className="btn" onClick={handleUpload} disabled={!file || busy}>
-                    {busy ? "진행 중…" : "자료함으로 업로드"}
-                </button>
-                <span style={{ fontSize: 12, opacity: .7 }}>{file ? file.name : "PDF 선택"}</span>
+        <div className="panel" style={{ display: "grid", gap: 8 }}>
+            <div style={{ display: "flex", gap: 8 }}>
+                <button className="btn" onClick={handlePick} disabled={busy}>자료함으로 업로드</button>
+                {busy && <div style={{ alignSelf: "center" }}>{progress}%</div>}
             </div>
-
-            {busy && (
-                <div style={{ display: "grid", gap: 6 }}>
-                    <div style={{ fontSize: 12, opacity: .8 }}>{stage}</div>
-                    <div style={{ height: 8, background: "rgba(148,163,184,.22)", borderRadius: 999 }}>
-                        <div style={{ width: `${pct}%`, height: "100%", background: "#4f46e5", transition: "width .25s ease" }} />
-                    </div>
-                </div>
+            <input
+                ref={inputRef}
+                type="file"
+                accept="application/pdf"
+                style={{ display: "none" }}
+                onChange={(e) => {
+                    const f = e.currentTarget.files?.[0]; if (f) handleFile(f);
+                    e.currentTarget.value = "";
+                }}
+            />
+            {log.length > 0 && (
+                <pre style={{ whiteSpace: "pre-wrap", fontSize: 12, opacity: 0.9, background: "#0b1220", padding: 8, borderRadius: 8 }}>
+{log.join("\n")}
+        </pre>
             )}
-
-            {!!log.length && (
-                <div style={{
-                    maxHeight: 220, overflow: "auto", background: "#0b1220", color: "#cbd5e1",
-                    borderRadius: 8, padding: 8,
-                    fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace", fontSize: 12
-                }}>
-                    {log.map((l, i) => <div key={i}>• {l}</div>)}
-                </div>
-            )}
-
-            <canvas ref={canvasRef} style={{ display: "none" }} />
         </div>
     );
 }
