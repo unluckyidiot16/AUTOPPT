@@ -1,6 +1,8 @@
 // src/components/PdfToSlidesUploader.tsx
 import React, { useCallback, useRef, useState } from "react";
 import { supabase } from "../supabaseClient";
+import * as pdfjs from "pdfjs-dist/legacy/build/pdf";
+
 
 /** pdf.js 로더: v4/v5 공용, module worker 대신 workerSrc 고정(안정) */
 async function loadPdfJs(): Promise<any> {
@@ -86,13 +88,19 @@ export default function PdfToSlidesUploader({
             setProgress(8);
 
             // 3) pdf.js 로드
-            push("pdf.js 로딩…");
-            const pdfjs = await loadPdfJs();
+            push("pdf.js (legacy) 준비…");
+            // 정적 import라 await 불필요. 충돌 피하려고 worker는 끔.
+            (pdfjs as any).GlobalWorkerOptions.workerSrc = undefined;
             setProgress(10);
 
-            // 4) PDF 열기
+            // 4) PDF 열기 (workerless 모드)
             const buf = await file.arrayBuffer();
-            const doc = await (pdfjs as any).getDocument({ data: buf, disableWorker: false }).promise;
+            const doc = await (pdfjs as any).getDocument({
+                data: buf,
+                disableWorker: true,     // ✅ 워커 완전 비활성
+                isEvalSupported: false,  // ✅ Safari 등에서 안전
+            }).promise;
+
             const pages = doc.numPages;
             push(`변환 시작: 총 ${pages} 페이지`);
 
