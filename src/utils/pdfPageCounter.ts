@@ -1,18 +1,5 @@
 // src/utils/pdfPageCounter.ts
-import { getDocument, GlobalWorkerOptions } from "pdfjs-dist";
-// @ts-ignore
-import PdfJsWorker from "pdfjs-dist/build/pdf.worker.min.mjs?worker";
-
-let WORKER_BOUND = false;
-function ensureWorker() {
-    if (!WORKER_BOUND) {
-        const w = new PdfJsWorker();
-        GlobalWorkerOptions.workerPort = w;
-        // @ts-ignore
-        (globalThis as any).__autoppt_pdf_worker = w;
-        WORKER_BOUND = true;
-    }
-}
+import { getDocument } from "pdfjs-dist";
 
 /**
  * PDF 파일의 실제 페이지 수를 가져오는 함수
@@ -21,62 +8,53 @@ function ensureWorker() {
  */
 export async function getPdfPageCountFromUrl(fileUrl: string): Promise<number> {
     try {
-        ensureWorker();
-        
-        const loadingTask = getDocument({ 
-            url: fileUrl, 
-            withCredentials: false 
+        const loadingTask = getDocument({
+            url: fileUrl,
+            withCredentials: false,
+            disableWorker: true,        // ✅ 워커 비활성 (빌드 충돌 회피)
         });
-        
         const pdf = await loadingTask.promise;
         const pageCount = pdf.numPages;
-        
-        // 메모리 정리
-        await pdf.destroy();
-        
+        await pdf.destroy();          // 메모리 정리
         return pageCount;
     } catch (error) {
         console.error("Failed to get PDF page count:", error);
-        // 오류 발생 시 기본값 반환
-        return 10;
+        return 10; // 안전 기본값
     }
 }
 
 /**
  * Supabase storage의 file key로부터 페이지 수를 가져오는 함수
- * @param supabase - Supabase 클라이언트
- * @param fileKey - Storage의 파일 경로
- * @returns 페이지 수
  */
 export async function getPdfPageCountFromKey(
-    supabase: any, 
+    supabase: any,
     fileKey: string
 ): Promise<number> {
     try {
-        // 먼저 DB에서 기존 정보 확인
+        // 1) DB 캐시 우선
         const { data: existingDeck } = await supabase
             .from("decks")
             .select("file_pages")
             .eq("file_key", fileKey)
             .maybeSingle();
-        
+
         if (existingDeck?.file_pages && existingDeck.file_pages > 0) {
             return existingDeck.file_pages;
         }
-        
-        // 서명된 URL 생성
+
+        // 2) 서명 URL 생성 (✅ 상대키로!)
+        const rel = fileKey.replace(/^presentations\//, "");
         const { data: signedData, error: signError } = await supabase.storage
             .from("presentations")
-            .createSignedUrl(fileKey, 60); // 1분 유효
-        
+            .createSignedUrl(rel, 60); // 1분 유효
+
         if (signError || !signedData?.signedUrl) {
             console.error("Failed to create signed URL:", signError);
             return 10;
         }
-        
-        // PDF 페이지 수 계산
+
+        // 3) 페이지 수 계산 (워커 비활성)
         const pageCount = await getPdfPageCountFromUrl(signedData.signedUrl);
-        
         return pageCount;
     } catch (error) {
         console.error("Failed to get PDF page count from key:", error);
