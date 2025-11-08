@@ -1,4 +1,4 @@
-// src/components/WebpSlide.tsx  ← 전체 교체
+// src/components/WebpSlide.tsx
 import React, { useEffect, useState } from "react";
 import { resolveWebpUrl } from "../utils/supaFiles";
 
@@ -7,7 +7,7 @@ type Props = {
     page: number;             // 1-base
     height?: number | string;
     style?: React.CSSProperties;
-    version?: number | string;    // 캐시버스터용(선택)
+    version?: number | string;    // 캐시버스터(선택)
     versionKey?: number | string; // (구버전 호환)
 };
 
@@ -21,7 +21,7 @@ export default function WebpSlide({
         let off = false;
         (async () => {
             if (!fileKey || !page || page < 1) { if (!off) setUrl(null); return; }
-            // ✅ 1→0 변환 + slidesPrefix 계산 + Signed URL 생성까지 한 번에
+            // ✅ 1→0 변환 + slidesPrefix 계산 + Signed URL 생성
             const u = await resolveWebpUrl(fileKey, page, { ttlSec: 1800, cachebuster: !!ver });
             if (!off) setUrl(u);
         })();
