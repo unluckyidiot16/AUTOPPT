@@ -16,7 +16,7 @@ type RpcSlide = {
     image_key: string | null;    // slides/* 내부 키 (있으면 우선)
     overlays: RpcOverlay[];
 };
-type RpcSlot = { slot: number; lesson_id: string; current_index: number; slides: RpcSlide[] };
+type RpcSlot = { slot: number; lesson_id: string | null; current_index: number; slides: RpcSlide[] };
 type RpcManifest = { room_code: string; slots: RpcSlot[]; error?: string };
 
 const DEBUG = true;
@@ -44,6 +44,7 @@ export default function StudentPage() {
     const { slot } = useQuery();
     const roomCode = useRoomId("CLASS-XXXXXX");
 
+    // room_id (slides 경로 계산용)
     const [roomId, setRoomId] = useState<string | null>(null);
     useEffect(() => {
         (async () => {
@@ -58,30 +59,79 @@ export default function StudentPage() {
     const [editNick, setEditNick] = useState(false);
     const [nickInput, setNickInput] = useState(nickname);
 
-    // 교시: URL ?slot= 우선, 없으면 1
     const [activeSlot, setActiveSlot] = useState<number>(slot > 0 ? slot : 1);
 
     // 페이지(1-base)
     const [pageRaw, setPageRaw] = useState<number | null>(null);
     const page = Number(pageRaw ?? 1) > 0 ? Number(pageRaw ?? 1) : 1;
 
-    // Presence / RT
+    // Presence / RT (roomCode 기준)
     const presence = usePresence(roomCode, "student");
     const { lastMessage } = useRealtime(roomCode, "student");
 
     // Manifest
     const [manifest, setManifest] = useState<RpcManifest | null>(null);
+
+    /** ★ RPC 실패 시 폴백 manifest 조립 */
+    const buildManifestFallback = useCallback(async (roomCodeStr: string): Promise<RpcManifest | null> => {
+        try {
+            const { data: roomRow } = await supabase.from("rooms").select("id").eq("code", roomCodeStr).maybeSingle();
+            const rid = roomRow?.id as string | undefined;
+            if (!rid) return null;
+
+            const { data: lessons } = await supabase
+                .from("room_lessons")
+                .select("slot,current_index")
+                .eq("room_id", rid)
+                .order("slot", { ascending: true });
+
+            const { data: maps } = await supabase.from("room_decks").select("slot,deck_id").eq("room_id", rid);
+
+            const deckIds = Array.from(new Set((maps ?? []).map((m: any) => m.deck_id).filter(Boolean)));
+            const decks: Record<string, { file_key: string | null; file_pages: number | null }> = {};
+            if (deckIds.length) {
+                const { data: ds } = await supabase.from("decks").select("id,file_key,file_pages").in("id", deckIds);
+                for (const d of ds ?? []) decks[d.id as string] = { file_key: d.file_key ?? null, file_pages: d.file_pages ?? null };
+            }
+
+            const slots: RpcSlot[] = (lessons ?? []).map((L: any) => {
+                const slot = Number(L.slot);
+                const map = (maps ?? []).find((m: any) => Number(m.slot) === slot);
+                const deckId = map?.deck_id ?? null;
+                const d = deckId ? decks[deckId] : null;
+                const pages = Math.max(0, Number(d?.file_pages ?? 0));
+
+                const slides: RpcSlide[] = Array.from({ length: pages }, (_, i) => ({
+                    index: i,
+                    kind: "image",
+                    material_id: deckId,
+                    page_index: i,
+                    image_key: null,
+                    overlays: [],
+                }));
+
+                return { slot, lesson_id: null, current_index: Number(L.current_index ?? 0), slides };
+            });
+
+            return { room_code: roomCodeStr, slots };
+        } catch (e) {
+            DBG.err("fallback manifest error", e);
+            return null;
+        }
+    }, []);
+
+    /** 기존 RPC → 실패 시 폴백 */
     const loadManifest = useCallback(async () => {
         if (!roomCode) { setManifest(null); return; }
         try {
             const { data, error } = await supabase.rpc("get_student_manifest_by_code", { p_room_code: roomCode });
             if (error) throw error;
             setManifest(data ?? null);
-        } catch (e) {
-            DBG.err("manifest", e);
-            setManifest(null);
+        } catch {
+            const fb = await buildManifestFallback(roomCode);
+            setManifest(fb);
         }
-    }, [roomCode]);
+    }, [roomCode, buildManifestFallback]);
 
     useEffect(() => { loadManifest(); }, [loadManifest]);
 
@@ -110,50 +160,47 @@ export default function StudentPage() {
         return s?.slides?.length ?? 0;
     }, [manifest, activeSlot]);
 
-    // ▼▼▼ 배경 URL 해석 (signed URL + 3단 폴백) ▼▼▼
-    const deckPrefixCache = useRef(new Map<string, string>()); // deckId -> slidesPrefix(decks/<slug>)
+    const deckPrefixCache = useRef(new Map<string, string>()); // deckId -> slidesPrefix
     const [activeBgUrl, setActiveBgUrl] = useState<string | null>(null);
     const [activeOverlays, setActiveOverlays] = useState<Overlay[]>([]);
 
-    const refreshActive = useCallback(async () => {
-        const s = manifest?.slots?.find(v => v.slot === activeSlot);
-        if (!s) { setActiveBgUrl(null); setActiveOverlays([]); return; }
-        const idx = Math.max(0, page - 1);
-        const slide = s.slides[idx] as RpcSlide | undefined;
-        if (!slide) { setActiveBgUrl(null); setActiveOverlays([]); return; }
+    // 현재 페이지의 배경 이미지 / 오버레이 계산
+    useEffect(() => {
+        const run = async () => {
+            const s = manifest?.slots?.find(v => v.slot === activeSlot);
+            if (!s) { setActiveBgUrl(null); setActiveOverlays([]); return; }
+            const idx = Math.max(0, page - 1);
+            const slide = s.slides[idx] as RpcSlide | undefined;
+            if (!slide) { setActiveBgUrl(null); setActiveOverlays([]); return; }
 
-        setActiveOverlays((slide.overlays || []).map(o => ({ id: String(o.id), z: o.z, type: o.type, payload: o.payload })));
+            setActiveOverlays((slide.overlays || []).map(o => ({ id: String(o.id), z: o.z, type: o.type, payload: o.payload })));
 
-        const pageIdx0 = Number(slide.page_index ?? idx); // 0-base
-        let key: string | null = slide.image_key ?? null;
+            const pageIdx0 = Number(slide.page_index ?? idx);
+            let key: string | null = slide.image_key ?? null;
 
-        // 1) rooms/<roomId>/decks/<deckId>/<page>.webp
-        if (!key && roomId && slide.material_id) {
-            key = `rooms/${roomId}/decks/${slide.material_id}/${Math.max(0, pageIdx0)}.webp`;
-        }
-
-        // 2) decks/<slug>/<page>.webp (자료함 원본 폴백)
-        if (!key && slide.material_id) {
-            let prefix = deckPrefixCache.current.get(slide.material_id);
-            if (!prefix) {
-                const { data } = await supabase.from("decks").select("file_key").eq("id", slide.material_id).maybeSingle();
-                const p = slidesPrefixOfPresentationsFile(data?.file_key ?? null);
-                if (p) { prefix = p; deckPrefixCache.current.set(slide.material_id, p); }
+            if (!key && roomId && slide.material_id) {
+                key = `rooms/${roomId}/decks/${slide.material_id}/${Math.max(0, pageIdx0)}.webp`;
             }
-            if (prefix) key = `${prefix}/${Math.max(0, pageIdx0)}.webp`;
-        }
+            if (!key && slide.material_id) {
+                let prefix = deckPrefixCache.current.get(slide.material_id);
+                if (!prefix) {
+                    const { data } = await supabase.from("decks").select("file_key").eq("id", slide.material_id).maybeSingle();
+                    const p = slidesPrefixOfPresentationsFile(data?.file_key ?? null);
+                    if (p) { prefix = p; deckPrefixCache.current.set(slide.material_id, p); }
+                }
+                if (prefix) key = `${prefix}/${Math.max(0, pageIdx0)}.webp`;
+            }
 
-        if (key) {
-            const url = await signedSlidesUrl(key, 1800);
-            setActiveBgUrl(url);
-        } else {
-            setActiveBgUrl(null);
-        }
+            if (key) {
+                const url = await signedSlidesUrl(key, 1800);
+                setActiveBgUrl(url);
+            } else {
+                setActiveBgUrl(null);
+            }
+        };
+        run();
     }, [manifest, activeSlot, page, roomId]);
 
-    useEffect(() => { refreshActive(); }, [refreshActive]);
-
-    // 제출 (샘플: quiz_short)
     const submitAnswer = async (val: any) => {
         try {
             const payload = {
@@ -161,7 +208,7 @@ export default function StudentPage() {
                 p_slide: page,
                 p_step: 0,
                 p_student_id: studentId,
-                p_answer: typeof val?.value === "string" ? val.value : JSON.stringify(val),
+                p_answer: typeof (val as any)?.value === "string" ? (val as any).value : JSON.stringify(val),
             };
             await supabase.rpc("submit_answer_v2", payload);
         } catch (e: any) {
