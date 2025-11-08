@@ -4,7 +4,8 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { supabase } from "../supabaseClient";
 import PdfToSlidesUploader from "../components/PdfToSlidesUploader";
 import { useRealtime } from "../hooks/useRealtime"; // ⬅︎ 추가
-import { slidesPrefixOfPresentationsFile } from "../utils/supaFiles";
+import { slidesPrefixOfPresentationsFile, signedSlidesUrl } from "../utils/supaFiles";
+
 
 // ───────────────────────────────────────────────────────────────────────────────
 // Types
@@ -320,17 +321,16 @@ function Thumb({ keyStr, badge }: { keyStr: string; badge: React.ReactNode }) {
     const slidesPrefix = slidesPrefixOfPresentationsFile(keyStr);
     const slidesKey = slidesPrefix ? `${slidesPrefix}/0.webp` : null;
     const [slidesUrl, setSlidesUrl] = React.useState<string | null>(null);
-      React.useEffect(() => {
-            let off = false;
-            (async () => {
-                  if (!slidesKey) { setSlidesUrl(null); return; }
-                  const { data } = await supabase.storage.from("slides").createSignedUrl(slidesKey, 1800);
-                  if (!off && data?.signedUrl) { setSlidesUrl(data.signedUrl); return; }
-                  const { data: pub } = supabase.storage.from("slides").getPublicUrl(slidesKey);
-                  if (!off) setSlidesUrl(pub.publicUrl || null);
-                })();
-            return () => { off = true; };
-          }, [slidesKey]);
+
+    React.useEffect(() => {
+        let off = false;
+        (async () => {
+            if (!slidesKey) { setSlidesUrl(null); return; }
+            const url = await signedSlidesUrl(slidesKey, 1800);
+            if (!off) setSlidesUrl(url);
+        })();
+        return () => { off = true; };
+    }, [slidesKey]);
 
     const [ok, setOk] = React.useState<boolean>(true);
     React.useEffect(() => { setOk(true); }, [slidesUrl]);
