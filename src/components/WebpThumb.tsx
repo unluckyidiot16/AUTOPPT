@@ -1,9 +1,14 @@
 // src/components/WebpThumb.tsx
 import React from "react";
-import { resolveWebpUrl } from "../utils/supaFiles";
+import { supabase } from "../supabaseClient";
+
+function buildWebpKey(fileKey: string, page: number) {
+    const rel = String(fileKey).replace(/^presentations\//i, "").replace(/\.pdf$/i, "");
+    return `${rel}/${page}.webp`;
+}
 
 export default function WebpThumb({
-                                      fileKey, page, width = 120, height = 80, style, title,
+                                      fileKey, page, width = 120, height = 80, style, title, version,
                                   }: {
     fileKey: string;
     page: number;
@@ -11,16 +16,22 @@ export default function WebpThumb({
     height?: number;
     style?: React.CSSProperties;
     title?: string;
+    /** 캐시 무효화용 키(선택) */
+    version?: number | string;
 }) {
     const [src, setSrc] = React.useState<string | null>(null);
+
     React.useEffect(() => {
         let alive = true;
         (async () => {
-            const url = await resolveWebpUrl(fileKey, page, { ttlSec: 600, cachebuster: true });
-            if (alive) setSrc(url);
+            const key = buildWebpKey(fileKey, page);
+            const { data } = supabase.storage.from("presentations").getPublicUrl(key);
+            const url = data?.publicUrl || null;
+            if (!alive) return;
+            setSrc(url ? (version != null ? `${url}?v=${encodeURIComponent(String(version))}` : url) : null);
         })();
         return () => { alive = false; };
-    }, [fileKey, page]);
+    }, [fileKey, page, version]);
 
     return (
         <div style={{ width, height, overflow: "hidden", borderRadius: 8, background: "#111827", ...style }} title={title}>

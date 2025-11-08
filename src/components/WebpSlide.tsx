@@ -1,6 +1,6 @@
 // src/components/WebpSlide.tsx
 import React from "react";
-import { resolveWebpUrl } from "../utils/supaFiles";
+import { supabase } from "../supabaseClient";
 
 type FitMode = "height" | "width";
 type Props = {
@@ -8,13 +8,20 @@ type Props = {
     fileKey: string;
     page: number;                // 1..N
     fit?: FitMode;               // 기본: height
-    maxHeight?: string;          // fit=height일 때 사용 (ex "80vh")
-    versionKey?: string;         // 캐시버스터용(덱/페이지 변화 트래킹 문자열)
+    maxHeight?: string;          // fit=height일 때 사용
+    /** 캐시 무효화용 키 (예: cacheVer) */
+    versionKey?: string | number;
     style?: React.CSSProperties;
 };
 
+function buildWebpKey(fileKey: string, page: number) {
+    // bucket prefix 제거 + .pdf 제거 → rooms/.../slides-TS/1.webp
+    const rel = String(fileKey).replace(/^presentations\//i, "").replace(/\.pdf$/i, "");
+    return `${rel}/${page}.webp`;
+}
+
 export default function WebpSlide({
-                                      fileKey, page, fit = "height", maxHeight = "82vh", versionKey, style
+                                      fileKey, page, fit = "height", maxHeight = "82vh", versionKey, style,
                                   }: Props) {
     const [src, setSrc] = React.useState<string | null>(null);
     const [err, setErr] = React.useState<string | null>(null);
@@ -24,10 +31,18 @@ export default function WebpSlide({
         setSrc(null);
         setErr(null);
         (async () => {
-            const url = await resolveWebpUrl(fileKey, page, { ttlSec: 1800, cachebuster: true });
-            if (!alive) return;
-            if (url) setSrc(url);
-            else setErr("이미지 찾기 실패");
+            try {
+                const key = buildWebpKey(fileKey, page);
+                const { data } = supabase.storage.from("presentations").getPublicUrl(key);
+                const url = data?.publicUrl || null;
+                if (!alive) return;
+                if (!url) { setErr("이미지 URL 생성 실패"); return; }
+                // 캐시버스터(선택)
+                setSrc(versionKey != null ? `${url}?v=${encodeURIComponent(String(versionKey))}` : url);
+            } catch (e: any) {
+                if (!alive) return;
+                setErr(e?.message || "이미지 찾기 실패");
+            }
         })();
         return () => { alive = false; };
     }, [fileKey, page, versionKey]);
@@ -55,12 +70,8 @@ export default function WebpSlide({
 
     return (
         <div
-            className="pdf-stage" // 기존 풀스크린 토글 대상 재사용
-            style={{
-                display: "grid", placeItems: "center",
-                width: "100%", height: fit === "width" ? "100%" : "auto",
-                ...style
-            }}
+            className="pdf-stage"
+            style={{ display: "grid", placeItems: "center", width: "100%", height: fit === "width" ? "100%" : "auto", ...style }}
         >
             {content}
         </div>
