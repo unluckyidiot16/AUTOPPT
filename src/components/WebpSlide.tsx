@@ -1,78 +1,62 @@
-// src/components/WebpSlide.tsx
-import React from "react";
-import { resolveWebpUrl } from "../utils/supaFiles";
+// src/components/WebpSlide.tsx  ★ 전체 교체
+import React, { useEffect, useMemo, useState } from "react";
+import { supabase } from "../supabaseClient";
 
-type FitMode = "height" | "width";
-type Props = {
-    /** decks.file_key (ex: rooms/<room>/decks/<deck>/slides-TS.pdf) */
-    fileKey: string;
-    page: number;                // 1..N
-    fit?: FitMode;               // 기본: height
-    maxHeight?: string;          // fit=height일 때 사용 (ex "80vh")
-    versionKey?: string;         // 캐시버스터용
-    style?: React.CSSProperties;
-};
+function slidesPrefixFromPdfKey(fileKey: string) {
+    return String(fileKey).replace(/^presentations\//i, "").replace(/\.pdf$/i, "");
+}
 
 export default function WebpSlide({
-                                      fileKey, page, fit = "height", maxHeight = "80vh", versionKey, style,
-                                  }: Props) {
-    const [src, setSrc] = React.useState<string | null>(null);
-    const [loading, setLoading] = React.useState<boolean>(false);
+                                      fileKey,
+                                      page,
+                                      height = "60vh",
+                                      version = 0,
+                                      style,
+                                  }: {
+    fileKey: string;
+    page: number;
+    height?: string | number;
+    version?: number;
+    style?: React.CSSProperties;
+}) {
+    const [url, setUrl] = useState<string | null>(null);
+    const prefix = useMemo(() => slidesPrefixFromPdfKey(fileKey), [fileKey]);
 
-    React.useEffect(() => {
-        let alive = true;
-
-        // page<1 이거나 fileKey 없음 → 네트워크 호출 금지
-        if (!fileKey || !page || page < 1) {
-            setSrc(null);
-            return;
-        }
-
+    useEffect(() => {
+        let dead = false;
         (async () => {
-            setLoading(true);
-            const url = await resolveWebpUrl(fileKey, page);
-            if (!alive) return;
-            setSrc(url);
-            setLoading(false);
+            if (!fileKey || !page || page < 1) {
+                setUrl(null);
+                return;
+            }
+            const fname = `${prefix}/${page}.webp`;
+
+            // slides 버킷 → presentations 버킷 순서로 public URL 생성
+            const s1 = supabase.storage.from("slides").getPublicUrl(fname).data.publicUrl;
+            if (s1 && !dead) { setUrl(`${s1}?v=${version}`); return; }
+
+            const s2 = supabase.storage.from("presentations").getPublicUrl(fname).data.publicUrl;
+            if (s2 && !dead) { setUrl(`${s2}?v=${version}`); return; }
+
+            setUrl(null);
         })();
+        return () => { dead = true; };
+    }, [fileKey, page, prefix, version]);
 
-        return () => { alive = false; };
-    }, [fileKey, page, versionKey]);
-
-    let content: React.ReactNode = (
-        <div style={{ opacity: 0.6, padding: 12 }}>이미지 없음</div>
-    );
-
-    if (loading) {
-        content = <div style={{ opacity: .6, padding: 12 }}>로딩 중…</div>;
-    } else if (src) {
-        content = (
-            <img
-                src={src}
-                alt={`p${page}`}
-                loading="eager"
-                style={{
-                    display: "block",
-                    maxWidth: "100%",
-                    height: fit === "height" ? "auto" : "100%",
-                    maxHeight: fit === "height" ? maxHeight : undefined,
-                    objectFit: "contain",
-                    borderRadius: 12,
-                }}
-            />
-        );
+    if (!fileKey || !page || page < 1) {
+        return <div style={{ height, display: "grid", placeItems: "center", opacity: 0.6 }}>이미지 없음</div>;
     }
-
+    if (!url) {
+        return <div style={{ height, display: "grid", placeItems: "center", opacity: 0.6 }}>로드 중…</div>;
+    }
     return (
-        <div
-            className="pdf-stage"
-            style={{
-                display: "grid", placeItems: "center",
-                width: "100%", height: fit === "width" ? "100%" : "auto",
-                ...style
-            }}
-        >
-            {content}
+        <div style={{ height, overflow: "hidden", ...style }}>
+            <img
+                src={url}
+                alt={`slide ${page}`}
+                style={{ height: "100%", width: "auto", display: "block", margin: "0 auto" }}
+                draggable={false}
+            />
         </div>
     );
 }
