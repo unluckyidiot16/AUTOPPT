@@ -326,19 +326,6 @@ export default function TeacherPage() {
                 </div>
             </div>
 
-            {/* 자료함 이동 */}
-            <div>
-                <div style={{ fontWeight: 700, marginBottom: 6 }}>자료 관리</div>
-                <div style={{ display: "grid", gap: 8 }}>
-                    <button className="btn" onClick={() => nav(`/library?room=${roomCode}`)}>
-                        자료함 열기 (업로드/불러오기/삭제)
-                    </button>
-                    <span style={{ fontSize: 12, opacity: .7 }}>
-            PDF 업로드 및 불러오기는 이제 자료함에서 처리합니다.
-          </span>
-                </div>
-            </div>
-
             {/* 최근 제출 */}
             <div>
                 <div style={{ fontWeight: 700, marginBottom: 6 }}>최근 제출(50)</div>

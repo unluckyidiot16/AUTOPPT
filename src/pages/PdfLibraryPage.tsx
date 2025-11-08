@@ -35,6 +35,33 @@ function usePrefersDark() {
     return dark;
 }
 
+
+async function ensureSlotRow(roomId: string, slot: number) {
+    const { error } = await supabase
+        .from("room_lessons")
+        .upsert({ room_id: roomId, slot, current_index: 0 }, { onConflict: "room_id,slot" });
+    if (error) throw error;
+}
+
+async function readPagesFromDoneOrList(prefix: string): Promise<number> {
+    // prefix 예: rooms/<room>/decks/<deckId>
+    // 1) .done.json 우선
+    const done = await supabase.storage.from("slides").download(`${prefix}/.done.json`);
+    if (!done.error) {
+        try {
+            const meta = JSON.parse(await done.data.text());
+            const pages = Number(meta?.pages);
+            if (Number.isFinite(pages) && pages > 0) return pages;
+        } catch {}
+    }
+    // 2) 폴백: .webp 개수 카운트
+    const { data, error } = await supabase.storage.from("slides").list(prefix);
+    if (!error && data?.length) {
+        return data.filter(f => /\.webp$/i.test(f.name)).length;
+    }
+    return 0;
+}
+
 async function copySlidesDir(
     srcPrefix: string,
     destPrefix: string,
@@ -260,9 +287,22 @@ function useReadableUrl(key: string | null | undefined, ttlSec = 3600 * 24) {
     return url;
 }
 
+// 교체 전: function Thumb({ keyStr, badge }) { ...PdfViewer... }
+// 교체 후:
 function Thumb({ keyStr, badge }: { keyStr: string; badge: React.ReactNode }) {
-    const fileUrl = useReadableUrl(keyStr);
     const dark = usePrefersDark();
+    const [useSlidesImg, setUseSlidesImg] = React.useState(true);
+
+    // fileKey -> slides의 썸네일(0.webp) 경로 추론
+    const folder = folderPrefixOfFileKey(keyStr); // e.g. 'decks/<slug>' or 'rooms/<room>/decks/<deckId>'
+    const slidesKey = folder ? `${folder}/0.webp` : null;
+    const slidesUrl = slidesKey
+        ? supabase.storage.from("slides").getPublicUrl(slidesKey).data.publicUrl
+        : null;
+
+    // PDF 프리뷰 URL (폴백)
+    const pdfUrl = useReadableUrl(keyStr);
+
     return (
         <div
             style={{
@@ -276,10 +316,17 @@ function Thumb({ keyStr, badge }: { keyStr: string; badge: React.ReactNode }) {
                 background: dark ? "rgba(2,6,23,.65)" : "#fff",
             }}
         >
-            {fileUrl ? (
-                <PdfViewer fileUrl={fileUrl} page={1} maxHeight="120px" />
+            {useSlidesImg && slidesUrl ? (
+                <img
+                    src={slidesUrl}
+                    style={{ maxHeight: 120, width: "100%", objectFit: "contain" }}
+                    alt="slide thumb"
+                    onError={() => setUseSlidesImg(false)} // 없으면 PDF 프리뷰로 폴백
+                />
+            ) : pdfUrl ? (
+                <PdfViewer fileUrl={pdfUrl} page={1} maxHeight="120px" />
             ) : (
-                <div style={{ width: "100%", display: "grid", placeItems: "center", maxHeight: 120, overflow: "hidden" }}>
+                <div style={{ width: "100%", display: "grid", placeItems: "center", maxHeight: 120 }}>
                     <div style={{ fontSize: 12, opacity: 0.7, padding: 8, color: dark ? "#cbd5e1" : "#475569" }}>
                         파일을 불러올 수 없습니다.
                     </div>
@@ -289,6 +336,7 @@ function Thumb({ keyStr, badge }: { keyStr: string; badge: React.ReactNode }) {
         </div>
     );
 }
+
 
 // ───────────────────────────────────────────────────────────────────────────────
 // Storage helpers (삭제/스캔)
@@ -607,14 +655,23 @@ export default function PdfLibraryPage() {
     }, [load]);
 
     // ── 불러오기: 사본 생성 → 슬라이드 복사(변환 없음) → 배정 확인 ──
-    async function createDeckFromFileKeyAndAssign(fileKey: string, roomId: string, slot: number, title?: string | null) {
+    // 기존 createDeckFromFileKeyAndAssign(...) 전체를 다음으로 교체
+    async function createDeckFromFileKeyAndAssign(
+        fileKey: string,
+        roomId: string,
+        slot: number,
+        title?: string | null
+    ) {
+        // (0) 교시 row 보장
+        await ensureSlotRow(roomId, slot);
+
         // (A) decks 생성
         const ins = await supabase.from("decks").insert({ title: title ?? "Imported" }).select("id").single();
         if (ins.error) throw ins.error;
         const newDeckId = ins.data.id as string;
         logAssign(`덱 생성: ${newDeckId}`);
 
-        // (B) PDF 사본
+        // (B) PDF 사본 (presentations)
         const ts = Date.now();
         const destKey = `rooms/${roomId}/decks/${newDeckId}/slides-${ts}.pdf`;
         let copied = false;
@@ -636,23 +693,22 @@ export default function PdfLibraryPage() {
         const upDeck = await supabase.from("decks").update({ file_key: destKey }).eq("id", newDeckId);
         if (upDeck.error) throw upDeck.error;
 
-        // (D) slides 복사 (변환 없음)
-        const srcSlidesPrefix = folderPrefixOfFileKey(fileKey); // ex) decks/<slug>
-        const dstSlidesPrefix = `rooms/${roomId}/decks/${newDeckId}`; // ex) rooms/<room>/decks/<deckId>
+        // (D) slides 복사 (FAST → Fallback)
+        const srcSlidesPrefix = folderPrefixOfFileKey(fileKey);
+        const dstSlidesPrefix = `rooms/${roomId}/decks/${newDeckId}`;
         if (srcSlidesPrefix) {
-            // fast 경로 시도 → 실패 시 기존 재귀 복사
             try {
                 logAssign(`슬라이드 복사 준비(.done.json 확인)…`);
                 await copySlidesFastByDone(srcSlidesPrefix, dstSlidesPrefix, (copied, total) => {
                     const pct = Math.max(12, Math.min(98, Math.floor(12 + (copied / Math.max(1, total)) * 85)));
-                    setAssign((a) => ({ ...a, progress: pct, text: `슬라이드 복사 중… ${copied}/${total}` }));
+                    setAssign(a => ({ ...a, progress: pct, text: `슬라이드 복사 중… ${copied}/${total}` }));
                 });
                 logAssign(`슬라이드 복사 완료(FAST): slides/${dstSlidesPrefix}`);
             } catch {
-                logAssign(`FAST 복사 폴백 → 재귀 복사 진행`);
+                logAssign(`FAST 복사 실패 → 재귀 복사 진행`);
                 await copySlidesDir(srcSlidesPrefix, dstSlidesPrefix, (copied, total) => {
                     const pct = Math.max(12, Math.min(98, Math.floor(12 + (copied / Math.max(1, total)) * 85)));
-                    setAssign((a) => ({ ...a, progress: pct, text: `슬라이드 복사 중… ${copied}/${total}` }));
+                    setAssign(a => ({ ...a, progress: pct, text: `슬라이드 복사 중… ${copied}/${total}` }));
                 });
                 logAssign(`슬라이드 복사 완료(FALLBACK): slides/${dstSlidesPrefix}`);
             }
@@ -660,7 +716,20 @@ export default function PdfLibraryPage() {
             logAssign(`슬라이드 원본 없음 → 복사 생략`);
         }
 
-        // (E) room_decks 배정(upsert) + 즉시 검증
+        // (E) 페이지 수 기록 (매니페스트 확장을 위해 중요)
+        try {
+            const pages = await readPagesFromDoneOrList(dstSlidesPrefix);
+            if (pages > 0) {
+                await supabase.from("decks").update({ file_pages: pages }).eq("id", newDeckId).throwOnError();
+                logAssign(`decks.file_pages = ${pages} 갱신`);
+            } else {
+                logAssign(`경고: 페이지 수를 확인하지 못했습니다`);
+            }
+        } catch (e:any) {
+            logAssign(`페이지 수 갱신 실패: ${e?.message || e}`);
+        }
+
+        // (F) room_decks 배정(upsert) + 검증
         const upMap = await supabase
             .from("room_decks")
             .upsert({ room_id: roomId, slot, deck_id: newDeckId }, { onConflict: "room_id,slot" })
@@ -675,6 +744,7 @@ export default function PdfLibraryPage() {
 
         return { newDeckId, destKey, srcSlidesPrefix, dstSlidesPrefix };
     }
+
 
     async function assignDeckToSlot(d: DeckRow, slot: number) {
         if (!roomCode) {
