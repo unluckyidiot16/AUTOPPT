@@ -6,16 +6,16 @@ import DeckEditor from "../components/DeckEditor";
 import EditorPreviewPane from "../components/EditorPreviewPane";
 import type { ManifestItem } from "../types/manifest";
 import { getManifestByRoom } from "../api/overrides";
+import { slidesPrefixOfPresentationsFile } from "../utils/supaFiles"; // ★ 추가
+
 
 type RoomRow = { id: string; current_deck_id: string | null };
+
 
 function withSlash(p: string) {
     return p.endsWith("/") ? p : `${p}/`;
 }
-function slidesPrefixFromPdfKey(pdfKey: string) {
-    // presentations/rooms/.../decks/.../slides-TS.pdf → rooms/.../decks/.../slides-TS
-    return String(pdfKey).replace(/^presentations\//i, "").replace(/\.pdf$/i, "");
-}
+
 
 async function listAll(bucket: string, prefix: string) {
     const out: { name: string }[] = [];
@@ -60,14 +60,35 @@ async function copyDirSameBucket(bucket: string, fromPrefix: string, toPrefix: s
     }
 }
 
+async function copyDirCrossBuckets(
+    fromBucket: "presentations" | "slides",
+    toBucket: "slides",
+    fromPrefix: string,
+    toPrefix: string,
+    onlyExt: RegExp
+) {
+    // 목적지에 이미 있으면 스킵
+    const dstProbe = await listAll(toBucket, toPrefix);
+    if ((dstProbe ?? []).length > 0) return;
+
+    const src = await listAll(fromBucket, fromPrefix);
+    for (const f of src) {
+        if (!onlyExt.test(f.name)) continue;
+        const from = `${withSlash(fromPrefix)}${f.name}`;
+        const to   = `${withSlash(toPrefix)}${f.name}`;
+
+        // download from 'fromBucket'
+        const dl = await supabase.storage.from(fromBucket).download(from);
+        if (dl.error) throw dl.error;
+        // upload to 'slides'
+        const up = await supabase.storage.from(toBucket).upload(to, dl.data, { upsert: true, contentType: "image/webp" });
+        if (up.error) throw up.error;
+    }
+}
+
+
 /** 원본 파일 키로부터 편집용 덱을 생성. PDF는 복사만, WEBP는 있으면 폴더 복제(재변환 없음). */
-async function ensureEditingDeckFromFileKey_noConvert({
-                                                          roomCode,
-                                                          fileKey, // presentations/.../slides-TS.pdf
-                                                      }: {
-    roomCode: string;
-    fileKey: string;
-}) {
+async function ensureEditingDeckFromFileKey_noConvert({ roomCode, fileKey }: { roomCode: string; fileKey: string; }) {
     // room
     const { data: room, error: eRoom } = await supabase.from("rooms").select("id").eq("code", roomCode).maybeSingle();
     if (eRoom || !room?.id) throw eRoom ?? new Error("room not found");
@@ -84,23 +105,28 @@ async function ensureEditingDeckFromFileKey_noConvert({
     const srcRel = String(fileKey).replace(/^presentations\//i, "");
     await copyObjectInBucket("presentations", srcRel, destPdfKey, "application/pdf");
 
-    // WEBP 복제: slides 버킷 우선, 없으면 presentations 버킷도 탐색
-    const srcPrefix = slidesPrefixFromPdfKey(srcRel);
-    const dstPrefix = slidesPrefixFromPdfKey(destPdfKey);
+    // ★★★ WebP 복제: 항상 slides 버킷의 rooms/<rid>/decks/<deckId>로 맞춘다
+    const srcPrefix =
+        slidesPrefixOfPresentationsFile(fileKey) ??
+        slidesPrefixOfPresentationsFile(srcRel) ?? null; // 유연 처리
+    const dstPrefix = `rooms/${roomId}/decks/${deckId}`;
 
     let pages = 0;
-    // 1) slides 버킷에서 찾아 복제
-    const slidesCount = await countWebps("slides", srcPrefix).catch(() => 0);
-    if (slidesCount > 0) {
-        await copyDirSameBucket("slides", srcPrefix, dstPrefix, /\.webp$/i);
-        pages = await countWebps("slides", dstPrefix);
-    } else {
-        // 2) presentations 버킷에 WEBP가 있는 경우도 지원(과거 구조 호환)
-        const presCount = await countWebps("presentations", srcPrefix).catch(() => 0);
-        if (presCount > 0) {
-            await copyDirSameBucket("presentations", srcPrefix, dstPrefix, /\.webp$/i);
-            pages = await countWebps("presentations", dstPrefix);
+
+    if (srcPrefix) {
+        // 1) slides 버킷에 이미 있으면 same-bucket 복사
+        const slidesCount = await countWebps("slides", srcPrefix).catch(() => 0);
+        if (slidesCount > 0) {
+            await copyDirSameBucket("slides", srcPrefix, dstPrefix, /\.webp$/i);
+        } else {
+            // 2) presentations 버킷에만 있으면 → slides로 '크로스 버킷' 복제
+            const presCount = await countWebps("presentations", srcPrefix).catch(() => 0);
+            if (presCount > 0) {
+                await copyDirCrossBuckets("presentations", "slides", srcPrefix, dstPrefix, /\.webp$/i);
+            }
         }
+        // 목적지(slides) 기준으로 페이지 수 확정
+        pages = await countWebps("slides", dstPrefix).catch(() => 0);
     }
 
     // 덱 업데이트

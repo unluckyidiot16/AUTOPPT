@@ -3,13 +3,14 @@ import React, { useEffect, useState } from "react";
 import { resolveWebpUrl } from "../utils/supaFiles";
 
 type Props = {
-    fileKey: string;
-    page: number;                    // 1-base
-    height?: number | string;
+    fileKey: string;              // presentations/.../slides-TS.pdf  (또는 decks/.../slides-TS.pdf)
+    page: number;                 // 1-base
+    height?: number | string;     // CSS height
     style?: React.CSSProperties;
-    /** EditorPreviewPane이 넘기는 이름 호환용 */
+    /** 캐시 무효화를 위해 외부에서 넘겨주는 임의 버전 문자열(분 단위 등) */
     version?: number | string;
-    versionKey?: number | string;    // (백워드 호환)
+    /** (구버전 호환) */
+    versionKey?: number | string;
 };
 
 export default function WebpSlide({
@@ -22,7 +23,7 @@ export default function WebpSlide({
         let off = false;
         (async () => {
             if (!fileKey || !page || page < 1) { if (!off) setUrl(null); return; }
-            // resolveWebpUrl: slidesPrefix 계산 + 1→0 변환 + Signed URL 생성까지 처리
+            // ✅ slidesPrefix 계산 + 1→0 변환 + Signed URL 발급까지 한 번에 처리
             const u = await resolveWebpUrl(fileKey, page, { ttlSec: 1800, cachebuster: !!ver });
             if (!off) setUrl(u);
         })();
