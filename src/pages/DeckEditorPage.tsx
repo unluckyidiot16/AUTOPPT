@@ -40,6 +40,7 @@ export default function DeckEditorPage() {
     const onItemsChange = (next: ManifestItem[]) => setItems(next);
 
     // DeckEditorPage.tsx
+    // DeckEditorPage.tsx
     async function ensureEditingDeckFromFileKey({
                                                     roomCode, fileKey, slot = 1,
                                                 }: { roomCode: string; fileKey: string; slot?: number; }) {
@@ -84,6 +85,7 @@ export default function DeckEditorPage() {
 
         return { roomId, deckId: newDeckId, file_key: destKey, totalPages: 0 };
     }
+
 
 
     useEffect(() => {
@@ -136,7 +138,10 @@ export default function DeckEditorPage() {
 
                 try {
                     const m = await getManifestByRoom(roomCode);
-                    if (!cancel) setItems(m || []);
+                    const arr: ManifestItem[] =
+                        Array.isArray(m) ? m :
+                            (Array.isArray((m as any)?.items) ? (m as any).items : []);
+                    if (!cancel) setItems(arr);
                 } catch { /* ignore */ }
 
             } catch (e: any) {
@@ -146,7 +151,7 @@ export default function DeckEditorPage() {
             }
         })();
         return () => { cancel = true; };
-    }, [roomCode, deckFromQS, sourceDeckId]);
+    }, [roomCode, deckFromQS, sourceDeckId, sourceDeckKey]);
 
     useEffect(() => {
         if (previewOnce.current || loading) return;

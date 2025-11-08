@@ -23,15 +23,18 @@ export default function EditorThumbnailStrip({
     const ver = String(version ?? "");
     return (
         <div style={{ display: "flex", gap: 8, overflowX: "auto", padding: 8 }}>
-            {items.map((it) => (
-                <div key={it.id} style={{ display: "grid", gap: 6, placeItems: "center" }}>
-                    <div onClick={() => onSelect(it.id)} style={{ cursor: "pointer" }}>
-                        {fileKey ? (
-                            <WebpThumb key={`${fileKey}-${it.page}-${ver}`} fileKey={fileKey} page={it.page} width={thumbWidth} height={height} />
-                        ) : (
-                            <div style={{ width: thumbWidth, height, background: "#111827", borderRadius: 8 }} />
-                        )}
-                    </div>
+            {items.map((it) => {
+                const isBlank = (it.page ?? 0) <= 0 || !fileKey;
+                return (
+                    <div key={it.id} style={{ display:"grid", gap:6, placeItems:"center" }}>
+                        <div onClick={() => onSelect(it.id)} style={{ cursor:"pointer" }}>
+                            {isBlank ? (
+                                <div style={{ width: thumbWidth, height, background:"#111827", borderRadius:8,
+                                    display:"grid", placeItems:"center", fontSize:12, opacity:.7 }}>0</div>
+                            ) : (
+                                <WebpThumb key={`${fileKey}-${it.page}-${ver}`} fileKey={fileKey!} page={it.page} width={thumbWidth} height={height} />
+                            )}
+                        </div>
                     <div style={{ display: "flex", gap: 6 }}>
                         <button className="btn" onClick={() => onDuplicate(it.id)}>복제</button>
                         <button className="btn" onClick={() => onDelete(it.id)}>삭제</button>

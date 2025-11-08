@@ -13,6 +13,8 @@ type Props = {
 
 export default function EditorPreviewPane({ fileKey, page, style, height, version }: Props) {
     const key = `${fileKey ?? "none"}-${page}-${version ?? ""}`;
+    const isBlank = !fileKey || (page ?? 0) <= 0;
+    
     return (
         <div
             style={{
@@ -26,10 +28,12 @@ export default function EditorPreviewPane({ fileKey, page, style, height, versio
                 ...style
             }}
         >
-            {fileKey ? (
-                <WebpSlide key={key} fileKey={fileKey} page={page} fit="height" maxHeight="calc(100vh - 180px)" />
+            {isBlank ? (
+                <div style={{ display:"grid", placeItems:"center", height:"100%", opacity:.6 }}>
+                    빈 페이지 (0)
+                </div>
             ) : (
-                <div style={{ display: "grid", placeItems: "center", height: "100%", opacity: 0.6 }}>자료 없음</div>
+                <WebpSlide key={key} fileKey={fileKey!} page={page} fit="height" maxHeight="calc(100vh - 180px)" />
             )}
         </div>
     );

@@ -79,7 +79,9 @@ export default function DeckEditor({
             setLoading(true);
             try {
                 const m = await getManifestByRoom(roomCode);
-                let next = m;
+                let next: ManifestItem[] =
+                    Array.isArray(m) ? m :
+                        (Array.isArray((m as any)?.items) ? (m as any).items : []);
                 const hasPage = next.some(it => it.type === "page");
                 if ((!next.length || !hasPage) && (totalPages ?? 0) > 0) {
                     const pages = ensureManifestPages(totalPages!);
