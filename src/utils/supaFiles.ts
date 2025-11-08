@@ -6,10 +6,17 @@ function stripBucketPrefix(key: string, bucket: string) {
     return key.replace(new RegExp(`^${bucket}/`, "i"), "");
 }
 
+export function normalizeSlidesKey(key: string | null | undefined): string {
+    if (!key) return "";
+    if (/^https?:\/\//i.test(key)) return key;       // 이미 절대 URL이면 그대로
+    return String(key).replace(/^\/+/, "").replace(/^slides\/+/i, "");
+}
+
 /** presentations/* PDF → slides/* 디렉토리 프리픽스 계산 */
 export function slidesPrefixOfPresentationsFile(fileKey?: string | null): string | null {
     if (!fileKey) return null;
-
+    const rel = String(fileKey).replace(/^presentations\//i, "");
+    
     // 0) 이미 slides 경로가 들어온 경우
     let m = fileKey.match(/^slides\/(.+)$/i);
     if (m) return m[1];
@@ -54,17 +61,13 @@ export function resolveSlidesKey(fileKey: string, page: number): string | null {
 }
 
 /** slides/* 키 → 읽기 URL (Signed 우선, 실패 시 Public 폴백) */
-export async function signedSlidesUrl(key: string, ttlSec = 1800): Promise<string | null> {
-    const b = supabase.storage.from("slides");
-    try {
-        const { data } = await b.createSignedUrl(key, ttlSec);
-        if (data?.signedUrl) return data.signedUrl;
-    } catch {}
-    try {
-        const { data } = await b.getPublicUrl(key);
-        if (data?.publicUrl) return data.publicUrl;
-    } catch {}
-    return null;
+export async function signedSlidesUrl(slidesKey: string, ttlSec = 1800): Promise<string> {
+    const key = normalizeSlidesKey(slidesKey);
+    if (!key) return "";
+    const { data } = await supabase.storage.from("slides").createSignedUrl(key, ttlSec);
+    if (data?.signedUrl) return data.signedUrl;
+    const { data: pub } = supabase.storage.from("slides").getPublicUrl(key);
+    return pub.publicUrl || "";
 }
 
 /** 파일키 + 페이지(1-base) → WebP 이미지 URL */

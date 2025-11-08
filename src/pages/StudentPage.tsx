@@ -5,7 +5,7 @@ import { useRoomId } from "../hooks/useRoomId";
 import { useRealtime } from "../hooks/useRealtime";
 import { usePresence } from "../hooks/usePresence";
 import SlideStage, { type Overlay } from "../components/SlideStage";
-import { slidesPrefixOfPresentationsFile, signedSlidesUrl } from "../utils/supaFiles";
+import { slidesPrefixOfPresentationsFile, signedSlidesUrl, normalizeSlidesKey } from "../utils/supaFiles";
 
 type RpcOverlay = { id: string; z: number; type: string; payload: any };
 type RpcSlide = {
@@ -166,40 +166,44 @@ export default function StudentPage() {
 
     // 현재 페이지의 배경 이미지 / 오버레이 계산
     useEffect(() => {
-        const run = async () => {
-            const s = manifest?.slots?.find(v => v.slot === activeSlot);
-            if (!s) { setActiveBgUrl(null); setActiveOverlays([]); return; }
-            const idx = Math.max(0, page - 1);
-            const slide = s.slides[idx] as RpcSlide | undefined;
-            if (!slide) { setActiveBgUrl(null); setActiveOverlays([]); return; }
+        useEffect(() => {
+            const run = async () => {
+                const s = manifest?.slots?.find(v => v.slot === activeSlot);
+                if (!s) { setActiveBgUrl(null); setActiveOverlays([]); return; }
+                const idx = Math.max(0, page - 1);
+                const slide = s.slides[idx] as RpcSlide | undefined;
+                if (!slide) { setActiveBgUrl(null); setActiveOverlays([]); return; }
 
-            setActiveOverlays((slide.overlays || []).map(o => ({ id: String(o.id), z: o.z, type: o.type, payload: o.payload })));
+                setActiveOverlays((slide.overlays || []).map(o => ({ id: String(o.id), z: o.z, type: o.type, payload: o.payload })));
 
-            const pageIdx0 = Number(slide.page_index ?? idx);
-            let key: string | null = slide.image_key ?? null;
+                const pageIdx0 = Number(slide.page_index ?? idx);
+                let key: string | null = slide.image_key ?? null;
 
-            if (!key && roomId && slide.material_id) {
-                key = `rooms/${roomId}/decks/${slide.material_id}/${Math.max(0, pageIdx0)}.webp`;
-            }
-            if (!key && slide.material_id) {
-                let prefix = deckPrefixCache.current.get(slide.material_id);
-                if (!prefix) {
-                    const { data } = await supabase.from("decks").select("file_key").eq("id", slide.material_id).maybeSingle();
-                    const p = slidesPrefixOfPresentationsFile(data?.file_key ?? null);
-                    if (p) { prefix = p; deckPrefixCache.current.set(slide.material_id, p); }
+                if (key) key = normalizeSlidesKey(key);
+
+                if (!key && roomId && slide.material_id) {
+                    key = `rooms/${roomId}/decks/${slide.material_id}/${Math.max(0, pageIdx0)}.webp`;
                 }
-                if (prefix) key = `${prefix}/${Math.max(0, pageIdx0)}.webp`;
-            }
+                if (!key && slide.material_id) {
+                    let prefix = deckPrefixCache.current.get(slide.material_id);
+                    if (!prefix) {
+                        const { data } = await supabase.from("decks").select("file_key").eq("id", slide.material_id).maybeSingle();
+                        const p = slidesPrefixOfPresentationsFile(data?.file_key ?? null);
+                        if (p) { prefix = p; deckPrefixCache.current.set(slide.material_id, p); }
+                    }
+                    if (prefix) key = `${prefix}/${Math.max(0, pageIdx0)}.webp`;
+                }
 
-            if (key) {
-                const url = await signedSlidesUrl(key, 1800);
-                setActiveBgUrl(url);
-            } else {
-                setActiveBgUrl(null);
-            }
-        };
-        run();
-    }, [manifest, activeSlot, page, roomId]);
+                if (key) {
+                    key = normalizeSlidesKey(key);
+                    const url = await signedSlidesUrl(key, 1800);
+                    setActiveBgUrl(url);
+                } else {
+                    setActiveBgUrl(null);
+                }
+            };
+            run();
+        }, [manifest, activeSlot, page, roomId]);
 
     const submitAnswer = async (val: any) => {
         try {
