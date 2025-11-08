@@ -3,33 +3,16 @@ import React, { useCallback, useRef, useState } from "react";
 import { supabase } from "../supabaseClient";
 import { getBasePath } from "../utils/getBasePath";
 
-
-/** ──────────────── Types ──────────────── */
-type PdfJs = typeof import("pdfjs-dist/types/src/pdf");
+/** ───────── Types (type-only) ───────── */
 type PDFDocumentProxy = import("pdfjs-dist/types/src/pdf").PDFDocumentProxy;
 type PDFPageProxy = import("pdfjs-dist/types/src/pdf").PDFPageProxy;
 
-/** ──────────────── pdf.js 안정 로더 ──────────────── */
-async function loadPdfJsStable(): Promise<PdfJs> {
-    try {
-        const pdf: any = await import("pdfjs-dist/build/pdf");
-        const ver = pdf?.version ?? "5";
-        // ★ ESM 워커(.mjs)로 고정
-        (pdf as any).GlobalWorkerOptions.workerSrc =
-            `https://cdn.jsdelivr.net/npm/pdfjs-dist@${ver}/build/pdf.worker.min.mjs`;
-        return pdf;
-    } catch { /* pass */ }
+/** ───────── Path Helpers ───────── */
+const BASE = (getBasePath()?.replace(/\/+$/, "") || "");
+const LOCAL_PDFJS_BASE = `${BASE}/pdfjs`;                         // /AUTOPPT/pdfjs
+const LOCAL_WORKER_MJS = `${LOCAL_PDFJS_BASE}/build/pdf.worker.min.mjs`;
 
-    // CDN 레거시 폴백도 modern 경로(.mjs) 사용
-    const url = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69/legacy/build/pdf.min.mjs";
-    const pdf: any = await import(/* @vite-ignore */ url);
-    (pdf as any).GlobalWorkerOptions.workerSrc =
-        "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69/build/pdf.worker.min.mjs"; // ← .mjs
-    return pdf;
-}
-
-
-/** 타임아웃 유틸 */
+/** ───────── Utils ───────── */
 function withTimeout<T>(p: Promise<T>, ms: number, tag = "timeout"): Promise<T> {
     return new Promise<T>((resolve, reject) => {
         const t = setTimeout(() => reject(new Error(tag)), ms);
@@ -38,100 +21,6 @@ function withTimeout<T>(p: Promise<T>, ms: number, tag = "timeout"): Promise<T> 
     });
 }
 
-/** v5 → v5(+CMAP/Fonts) → v4.8.69(legacy CDN) 순차 재시도 */
-// 상단 임포트에 추가
-import { getBasePath } from "../utils/getBasePath";
-
-async function openPdfWithFallback(
-    pdfjs: any,
-    data: ArrayBuffer,
-    push: (m: string) => void,
-) {
-    const tryOpen = (lib: any, label: string, extra: Record<string, any> = {}, ms = 20000) =>
-        withTimeout(
-            lib.getDocument({
-                data,
-                disableWorker: true,
-                isEvalSupported: false,
-                stopAtErrors: true,
-                enableXfa: false,
-                disableFontFace: true,
-                nativeImageDecoderSupport: "none",
-                ...extra,
-            }).promise,
-            ms,
-            label,
-        );
-
-    // 공통: workerSrc 보강
-    (pdfjs as any).GlobalWorkerOptions.workerSrc ??=
-        `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjs?.version ?? "5"}/build/pdf.worker.min.js`;
-
-    // A) v5 기본
-    push("PDF 열기(A: v5 기본) …");
-    try {
-        return await tryOpen(pdfjs, "open-A");
-    } catch (e: any) {
-        push(`A 실패: ${e?.message ?? e}`);
-    }
-
-    // B) v5 + CDN 자산
-    const v5 = pdfjs?.version ?? "5";
-    const cdnV5 = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${v5}`;
-    push("PDF 열기(B: v5 + CMAP/Fonts CDN) …");
-    try {
-        return await tryOpen(pdfjs, "open-B", {
-            cMapUrl: `${cdnV5}/cmaps/`,
-            cMapPacked: true,
-            standardFontDataUrl: `${cdnV5}/standard_fonts/`,
-        });
-    } catch (e: any) {
-        push(`B 실패: ${e?.message ?? e}`);
-    }
-
-    // B2) v5 + 로컬 자산(동일 출처)
-    const base = getBasePath()?.replace(/\/+$/, "") || "";
-    const localBase = `${base}/pdfjs`;
-    push("PDF 열기(B2: v5 + CMAP/Fonts 로컬) …");
-    try {
-        return await tryOpen(pdfjs, "open-B2", {
-            cMapUrl: `${localBase}/cmaps/`,
-            cMapPacked: true,
-            standardFontDataUrl: `${localBase}/standard_fonts/`,
-        });
-    } catch (e: any) {
-        push(`B2 실패: ${e?.message ?? e}`);
-    }
-
-    // C) legacy 4.8.69 + CDN
-    push("PDF 열기(C: legacy 4.8.69 CDN) …");
-    const legacy: any = await import(
-        /* @vite-ignore */ "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69/legacy/build/pdf.min.mjs"
-        );
-    const cdnV4 = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69";
-    (legacy as any).GlobalWorkerOptions.workerSrc = `${cdnV4}/legacy/build/pdf.worker.min.js`;
-    try {
-        return await tryOpen(legacy, "open-C", {
-            cMapUrl: `${cdnV4}/cmaps/`,
-            cMapPacked: true,
-            standardFontDataUrl: `${cdnV4}/standard_fonts/`,
-        });
-    } catch (e: any) {
-        push(`C 실패: ${e?.message ?? e}`);
-    }
-
-    // C2) legacy 4.8.69 + 로컬
-    push("PDF 열기(C2: legacy 4.8.69 로컬) …");
-    (legacy as any).GlobalWorkerOptions.workerSrc = `${localBase}/legacy/pdf.worker.min.js`; // 없어도 문자열이면 OK
-    return await tryOpen(legacy, "open-C2", {
-        cMapUrl: `${localBase}/cmaps/`,
-        cMapPacked: true,
-        standardFontDataUrl: `${localBase}/standard_fonts/`,
-    });
-}
-
-
-/** 슬러그 */
 function storageSafeSlug(basename: string) {
     const stem = basename.replace(/\.[^.]+$/, "");
     const ascii = stem.normalize("NFKD").replace(/[\u0300-\u036f]/g, "")
@@ -140,14 +29,12 @@ function storageSafeSlug(basename: string) {
     return `${ascii || "deck"}-${suffix}`.slice(0, 80);
 }
 
-/** WebP 변환 */
 function toWebpBlob(canvas: HTMLCanvasElement, quality = 0.9): Promise<Blob> {
     return new Promise((resolve, reject) =>
         canvas.toBlob(b => (b ? resolve(b) : reject(new Error("toBlob failed"))), "image/webp", quality),
     );
 }
 
-/** 버킷 쓰기 프루브 */
 async function probeWrite(bucket: string, keyPrefix: string) {
     const b = supabase.storage.from(bucket);
     const probeKey = keyPrefix.replace(/\/+$/, "") + "/_probe.txt";
@@ -156,7 +43,86 @@ async function probeWrite(bucket: string, keyPrefix: string) {
     await b.remove([probeKey]).catch(() => void 0);
 }
 
-/** ──────────────── Uploader ──────────────── */
+/** ───────── pdf.js Loader ─────────
+ * v5 ESM만 사용. workerSrc는 동일 출처(.mjs)로 고정.
+ */
+async function loadPdfJsV5(): Promise<any> {
+    const pdf: any = await import("pdfjs-dist/build/pdf"); // v5 ESM 본체
+    // fake worker가 동적 import할 모듈(.mjs) 경로를 동일 출처로 지정
+    (pdf as any).GlobalWorkerOptions.workerSrc = LOCAL_WORKER_MJS;
+    return pdf;
+}
+
+/** 문서 열기(동일 출처 자산 우선, 실패 시 CDN 폴백 → legacy 최후 폴백) */
+async function openPdfRobust(pdfjs: any, data: ArrayBuffer, push: (m: string) => void): Promise<PDFDocumentProxy> {
+    const tryOpen = (lib: any, label: string, extra: Record<string, any>, ms = 20000) =>
+        withTimeout(
+            lib.getDocument({
+                data,
+                disableWorker: true,                 // fake worker 경로만 검사
+                isEvalSupported: false,
+                stopAtErrors: true,
+                enableXfa: false,
+                disableFontFace: true,
+                nativeImageDecoderSupport: "none",
+                ...extra,
+            }).promise as Promise<PDFDocumentProxy>,
+            ms,
+            label,
+        );
+
+    // A) v5 + 동일 출처(cmaps/fonts + .mjs worker)
+    push("PDF 열기(A: v5 + same-origin assets) …");
+    try {
+        (pdfjs as any).GlobalWorkerOptions.workerSrc = LOCAL_WORKER_MJS;
+        return await tryOpen(pdfjs, "open-A", {
+            cMapUrl: `${LOCAL_PDFJS_BASE}/cmaps/`,
+            cMapPacked: true,
+            standardFontDataUrl: `${LOCAL_PDFJS_BASE}/standard_fonts/`,
+        });
+    } catch (e: any) { push(`A 실패: ${e?.message ?? e}`); }
+
+    // B) v5 + CDN 자산(.mjs worker 포함)
+    const v5 = pdfjs?.version ?? "5";
+    const CDN_V5 = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${v5}`;
+    push("PDF 열기(B: v5 + CDN assets) …");
+    try {
+        (pdfjs as any).GlobalWorkerOptions.workerSrc = `${CDN_V5}/build/pdf.worker.min.mjs`;
+        return await tryOpen(pdfjs, "open-B", {
+            cMapUrl: `${CDN_V5}/cmaps/`,
+            cMapPacked: true,
+            standardFontDataUrl: `${CDN_V5}/standard_fonts/`,
+        });
+    } catch (e: any) { push(`B 실패: ${e?.message ?? e}`); }
+
+    // C) legacy 4.8.69 + 동일 출처 자산 (라이브러리는 CDN에서 불러오되, 자산은 same-origin)
+    push("PDF 열기(C: legacy 4.8.69 + same-origin assets) …");
+    try {
+        const legacy: any = await import(
+            /* @vite-ignore */ "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69/legacy/build/pdf.min.mjs"
+            );
+        (legacy as any).GlobalWorkerOptions.workerSrc = LOCAL_WORKER_MJS; // .mjs로 통일
+        return await tryOpen(legacy, "open-C", {
+            cMapUrl: `${LOCAL_PDFJS_BASE}/cmaps/`,
+            cMapPacked: true,
+            standardFontDataUrl: `${LOCAL_PDFJS_BASE}/standard_fonts/`,
+        });
+    } catch (e: any) { push(`C 실패: ${e?.message ?? e}`); }
+
+    // D) legacy 4.8.69 + CDN 자산(최후)
+    push("PDF 열기(D: legacy 4.8.69 + CDN assets) …");
+    const legacy: any = await import(
+        /* @vite-ignore */ "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69/legacy/build/pdf.min.mjs"
+        );
+    (legacy as any).GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69/build/pdf.worker.min.mjs";
+    return await tryOpen(legacy, "open-D", {
+        cMapUrl: "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69/cmaps/",
+        cMapPacked: true,
+        standardFontDataUrl: "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69/standard_fonts/",
+    });
+}
+
+/** ───────── Uploader Component ───────── */
 export default function PdfToSlidesUploader({
                                                 onDone,
                                             }: {
@@ -199,14 +165,14 @@ export default function PdfToSlidesUploader({
 
             // 3) pdf.js 로드
             push("pdf.js 로드 시도…");
-            const pdfjs: any = await loadPdfJsStable();
+            const pdfjs: any = await loadPdfJsV5();
             push(`pdf.js 로드 완료 (v${pdfjs?.version ?? "?"})`);
             setProgress(10);
 
-            // 4) PDF 열기(타입 캐스팅 포함)
-            const buf = await file.arrayBuffer();
+            // 4) PDF 열기
             push("PDF 열기 시퀀스 시작…");
-            const doc = await openPdfWithFallback(pdfjs, buf, push) as PDFDocumentProxy;
+            const buf = await file.arrayBuffer();
+            const doc = await openPdfRobust(pdfjs, buf, push);
 
             const pages: number = doc.numPages;
             push(`변환 시작: 총 ${pages} 페이지`);
@@ -252,8 +218,6 @@ export default function PdfToSlidesUploader({
                 pages,
                 names: Array.from({ length: pages }, (_, k) => `${k}.webp`),
                 ts: Date.now(),
-                // 마지막 페이지 크기 메모(옵션)
-                // w: canvas.width, h: canvas.height,
             };
             const metaUp = await supabase.storage.from("slides").upload(
                 `${slidesPrefix}/.done.json`,
