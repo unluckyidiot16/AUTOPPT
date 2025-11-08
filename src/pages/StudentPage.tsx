@@ -47,9 +47,15 @@ function addCacheBuster(u: string | null | undefined): string | null {
         const url = new URL(u);
         url.hash = `v=${Math.floor(Date.now() / 60000)}`;
         return url.toString();
-    } catch { // 절대 URL이 아닐 때 등
+    } catch {
         return `${u}#v=${Math.floor(Date.now() / 60000)}`;
     }
+}
+
+// 버킷 상대 경로로 정규화: "presentations/…" 접두사 제거
+function stripBucketPrefix(key: string | null | undefined) {
+    if (!key) return null;
+    return key.replace(/^presentations\//i, "");
 }
 
 export default function StudentPage() {
@@ -186,6 +192,43 @@ export default function StudentPage() {
     const [activeBgUrl, setActiveBgUrl] = useState<string | null>(null);
     const [activeOverlays, setActiveOverlays] = useState<Overlay[]>([]);
 
+    /** 주어진 slide에 대해 가능한 모든 이미지 키 후보(0-base / 1-base 모두) 생성 */
+    const buildKeyCandidates = useCallback(async (slide: RpcSlide, idx0: number): Promise<string[]> => {
+        const out: string[] = [];
+        const page0 = Math.max(0, Number(slide.page_index ?? idx0));
+        const page1 = page0 + 1;
+
+        // A) image_key → 정규화 + 1-base까지 시도
+        if (slide.image_key) {
+            const direct = stripBucketPrefix(normalizeSlidesKey(slide.image_key)!);
+            out.push(direct);
+            out.push(direct.replace(/\/(\d+)(\.webp)$/i, (_m, p, ext) => `/${Number(p) + 1}${ext}`)); // 0->1 폴백
+        }
+
+        // B) rooms/<roomId>/decks/<deckId>/{0,1}.webp
+        if (roomId && slide.material_id) {
+            out.push(`rooms/${roomId}/decks/${slide.material_id}/${page0}.webp`);
+            out.push(`rooms/${roomId}/decks/${slide.material_id}/${page1}.webp`);
+        }
+
+        // C) decks/<slug>/{0,1}.webp (원본 프리픽스)
+        if (slide.material_id) {
+            let prefix = deckPrefixCache.current.get(slide.material_id);
+            if (!prefix) {
+                const { data } = await supabase.from("decks").select("file_key").eq("id", slide.material_id).maybeSingle();
+                const p = stripBucketPrefix(slidesPrefixOfPresentationsFile(data?.file_key ?? null) || "");
+                if (p) { prefix = p; deckPrefixCache.current.set(slide.material_id, p); }
+            }
+            if (prefix) {
+                out.push(`${prefix}/${page0}.webp`);
+                out.push(`${prefix}/${page1}.webp`);
+            }
+        }
+
+        // 중복 제거
+        return Array.from(new Set(out.filter(Boolean)));
+    }, [roomId]);
+
     // 현재 페이지의 배경 이미지 / 오버레이 계산
     useEffect(() => {
         let off = false;
@@ -205,50 +248,34 @@ export default function StudentPage() {
                 })));
             }
 
-            // 이미지 키 계산 (우선순위: image_key → room copy → decks prefix)
-            const pageIdx0 = Number(slide.page_index ?? idx); // 0-base
-            let key: string | null = slide.image_key ? normalizeSlidesKey(slide.image_key) : null;
+            // 후보 키들 생성
+            const candidates = await buildKeyCandidates(slide, idx);
+            DBG.info("page", page, "candidates", candidates);
 
-            // 1) rooms/<roomId>/decks/<deckId>/<page>.webp
-            if (!key && roomId && slide.material_id) {
-                key = `rooms/${roomId}/decks/${slide.material_id}/${Math.max(0, pageIdx0)}.webp`;
-            }
-
-            // 2) decks/<slug>/<page>.webp (원본 프리픽스 폴백)
-            if (!key && slide.material_id) {
-                let prefix = deckPrefixCache.current.get(slide.material_id);
-                if (!prefix) {
-                    const { data } = await supabase
-                        .from("decks").select("file_key")
-                        .eq("id", slide.material_id).maybeSingle();
-                    const p = slidesPrefixOfPresentationsFile(data?.file_key ?? null);
-                    if (p) { prefix = p; deckPrefixCache.current.set(slide.material_id, p); }
+            // 절대 URL(https) 후보는 바로 사용
+            for (const k of candidates) {
+                if (/^https?:\/\//i.test(k)) {
+                    if (!off) setActiveBgUrl(addCacheBuster(k));
+                    return;
                 }
-                if (prefix) key = `${prefix}/${Math.max(0, pageIdx0)}.webp`;
             }
 
-            if (off) return;
-
-            // 최종 URL
-            if (!key) { setActiveBgUrl(null); return; }
-
-            // 절대 URL이면 그대로 + 캐시버스터
-            if (/^https?:\/\//i.test(key)) {
-                setActiveBgUrl(addCacheBuster(key));
-                return;
+            // 서명 URL 순차 시도 (첫 성공 키 사용)
+            for (const k of candidates) {
+                try {
+                    const signed = await signedSlidesUrl(k, 1800);
+                    if (signed) { if (!off) setActiveBgUrl(addCacheBuster(signed)); return; }
+                } catch {
+                    /* 다음 후보 시도 */
+                }
             }
 
-            try {
-                const raw = await signedSlidesUrl(key, 1800);
-                setActiveBgUrl(addCacheBuster(raw));
-            } catch (e) {
-                DBG.err("signedSlidesUrl error", e);
-                setActiveBgUrl(null);
-            }
+            // 모두 실패
+            if (!off) setActiveBgUrl(null);
         })();
 
         return () => { off = true; };
-    }, [manifest, activeSlot, page, roomId]);
+    }, [manifest, activeSlot, page, buildKeyCandidates]);
 
     const submitAnswer = async (val: any) => {
         try {

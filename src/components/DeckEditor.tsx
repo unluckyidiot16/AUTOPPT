@@ -8,15 +8,14 @@ import { finalizeTempDeck } from "../utils/tempDeck";
 type MatchOptions = {
     enableSubstr?: boolean;
     minLen?: number;
-    useSynonyms?: boolean;                 // ✅ 동의어 사용 토글
+    useSynonyms?: boolean;
     synonyms?: Record<string, string[]>;
 };
 type QuizX = ManifestQuizItem & {
     matchOptions?: MatchOptions;
-    attachToSrcPage?: number;              // ✅ 배치할 페이지 (0=빈 화면)
+    attachToSrcPage?: number;
     position?: "tl" | "tr" | "bl" | "br" | "free";
-    posX?: number;                         // free일 때 0..1
-    posY?: number;
+    posX?: number; posY?: number;
 };
 
 function ensureManifestPages(totalPages: number): ManifestPageItem[] {
@@ -57,7 +56,7 @@ export default function DeckEditor({
         });
     };
 
-    // 기본 매칭값
+    // 기본 매칭값(로컬 저장)
     const LS_KEY = "autoppt:matchDefaults";
     const [defaults, setDefaults] = useState<Required<Omit<MatchOptions, "synonyms">> & { synonyms: Record<string, string[]> }>(() => {
         try {
@@ -65,7 +64,7 @@ export default function DeckEditor({
             return {
                 enableSubstr: j.enableSubstr ?? true,
                 minLen: Math.max(2, Number(j.minLen ?? 2)),
-                useSynonyms: j.useSynonyms ?? false,           // ✅ 기본 꺼짐
+                useSynonyms: j.useSynonyms ?? false,
                 synonyms: (j.synonyms && typeof j.synonyms === "object") ? j.synonyms : {},
             };
         } catch { return { enableSubstr: true, minLen: 2, useSynonyms: false, synonyms: {} }; }
@@ -109,47 +108,37 @@ export default function DeckEditor({
     const pushPage = (srcPage: number) => setItems((arr) => [...arr, { type: "page", srcPage } as ManifestPageItem]);
     const pushBlankPage = () => setItems((arr) => [...arr, { type: "page", srcPage: 0 } as ManifestPageItem]);
     const pushQuiz = () => setItems((arr) => [...arr, {
-        type: "quiz",
-        prompt: "문제를 입력하세요",
-        keywords: [],
-        threshold: 1,
-        autoAdvance: false,
+        type: "quiz", prompt: "문제를 입력하세요", keywords: [],
+        threshold: 1, autoAdvance: false,
         matchOptions: {
             enableSubstr: defaults.enableSubstr,
             minLen: defaults.minLen,
-            useSynonyms: defaults.useSynonyms,  // ✅ 토글 반영
+            useSynonyms: defaults.useSynonyms,
             synonyms: { ...defaults.synonyms },
         },
-        attachToSrcPage: 0,
-        position: "tl",
+        attachToSrcPage: 0, position: "tl",
     } as QuizX]);
 
     const [saving, setSaving] = useState(false);
     const save = async () => {
-           if (saving) return;
-           setSaving(true);
-           try {
-                 await upsertManifest(roomCode, deckId, items);
-                 // 임시 덱이면 저장 직후 정리
-                     if (tempCleanup?.roomId) {
-                       try {
-                           await finalizeTempDeck({ roomId: tempCleanup.roomId, deckId, deleteDeckRow: tempCleanup.deleteDeckRow ?? true });
-                           } catch (e) {
-                             console.warn("[finalizeTempDeck] cleanup failed", e);
-                           }
-                     }
-                 // onSaved가 있으면 그것만 호출(이중 네비 방지), 없으면 onClose
-                     if (onSaved) onSaved();
-                 else onClose();
-               } catch (e) {
-                 console.error("[DeckEditor.save] failed", e);
-                 alert("저장에 실패했습니다. 잠시 후 다시 시도하세요.");
-               } finally {
-                 setSaving(false);
-               }
-         };
-    
-    
+        if (saving) return;
+        setSaving(true);
+        try {
+            await upsertManifest(roomCode, deckId, items);
+            if (tempCleanup?.roomId) {
+                try {
+                    await finalizeTempDeck({ roomId: tempCleanup.roomId, deckId, deleteDeckRow: tempCleanup.deleteDeckRow ?? true });
+                } catch (e) { console.warn("[finalizeTempDeck] cleanup failed", e); }
+            }
+            if (onSaved) onSaved(); else onClose();
+        } catch (e) {
+            console.error("[DeckEditor.save] failed", e);
+            alert("저장에 실패했습니다. 잠시 후 다시 시도하세요.");
+        } finally {
+            setSaving(false);
+        }
+    };
+
     function SynonymsEditor({ quiz, index }: { quiz: QuizX; index: number }) {
         const enabled = !!quiz.matchOptions?.useSynonyms;
         const map = quiz.matchOptions?.synonyms ?? {};
@@ -213,6 +202,7 @@ export default function DeckEditor({
         );
     }
 
+    // 썸네일/페이지 목록 유틸
     const pageThumbs = useMemo(() => {
         const arr: { id: string; page: number; idx: number }[] = [];
         items.forEach((it, idx) => { if (it.type === "page") arr.push({ id: `pg-${idx}-${(it as any).srcPage}`, page: (it as any).srcPage, idx }); });
@@ -230,10 +220,19 @@ export default function DeckEditor({
         if (el) { el.scrollIntoView({ block: "center", behavior: "smooth" }); setHighlightIdx(i); setTimeout(() => setHighlightIdx(null), 800); }
     };
 
+    // 페이지 재정렬(썸네일 스트립에서 호출)
     const onReorderPages = (nextThumbs: { id: string; page: number; idx: number }[]) => {
         const orderedPages = nextThumbs.map(t => ({ type: "page", srcPage: t.page } as ManifestPageItem));
         let ptr = 0;
         setItems(items.map(it => (it.type === "page" ? (orderedPages[ptr++] ?? it) : it)));
+    };
+
+    // 썸네일 선택 → 해당 항목으로 스크롤 & 프리뷰 페이지 동기화
+    const onSelectThumb = (id: string) => {
+        const found = pageThumbs.find(t => t.id === id);
+        if (!found) return;
+        scrollToIndex(found.idx);
+        onSelectPage?.(found.page);
     };
 
     const onDuplicatePage = (id: string) => {
@@ -256,9 +255,7 @@ export default function DeckEditor({
                 <div style={{ fontWeight: 700 }}>자료 편집</div>
                 <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
                     <button className="btn" onClick={resetDefault} disabled={loading || !totalPages}>기본(1..N)으로</button>
-                    <button className="btn btn-primary" onClick={save} disabled={loading || saving}>
-                           {saving ? "저장 중…" : "저장"}
-                         </button>
+                    <button className="btn btn-primary" onClick={save} disabled={loading || saving}>{saving ? "저장 중…" : "저장"}</button>
                     <button className="btn" onClick={onClose}>닫기</button>
                 </div>
             </div>
@@ -367,8 +364,6 @@ export default function DeckEditor({
                                                                    qq.matchOptions = { ...(qq.matchOptions ?? {}), minLen: v }; return next; })} />
                                                     </label>
                                                 </div>
-
-                                                {/* 동의어 토글 + 에디터(토글 켤 때만 표시) */}
                                                 <SynonymsEditor quiz={q} index={i} />
                                             </div>
 
@@ -418,8 +413,8 @@ export default function DeckEditor({
             <EditorThumbnailStrip
                 fileKey={fileKey ?? null}
                 items={pageThumbs.map(t => ({ id: t.id, page: t.page }))}
-                onReorder={(next) => { /* 기존 로직 유지 */ }}
-                onSelect={(id) => { /* 기존 로직 유지 */ }}
+                onReorder={onReorderPages}
+                onSelect={onSelectThumb}
                 onAdd={onAddPage}
                 onDuplicate={onDuplicatePage}
                 onDelete={onDeletePage}

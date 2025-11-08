@@ -1,13 +1,11 @@
-// src/pages/DeckEditorPage.tsx (요약본: 핵심 변경 포함 전체 교체 권장)
+// src/pages/DeckEditorPage.tsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { supabase } from "../supabaseClient";
 import DeckEditor from "../components/DeckEditor";
+import EditorPreviewPane from "../components/EditorPreviewPane";
 import type { ManifestItem } from "../types/manifest";
 import { getManifestByRoom } from "../api/overrides";
-
-const TEMPLATE_KEY = "_templates/blank-1p.pdf";
-const TEMPLATE_PAGES = 1;
 
 type RoomRow = { id: string; current_deck_id: string | null };
 
@@ -29,13 +27,20 @@ export default function DeckEditorPage() {
     const [err, setErr] = useState<string | null>(null);
     const [roomIdState, setRoomIdState] = useState<string | null>(null);
 
+    // 🔄 1분 단위 캐시 버스터
+    const [cacheVer, setCacheVer] = useState<number>(() => Math.floor(Date.now() / 60000));
+    useEffect(() => {
+        const t = setInterval(() => setCacheVer(Math.floor(Date.now() / 60000)), 30000);
+        return () => clearInterval(t);
+    }, []);
+
     const previewOnce = useRef(false);
     const isClone = Boolean(sourceDeckId);
     const onItemsChange = (next: ManifestItem[]) => setItems(next);
 
-    async function ensureEditingDeckFromFileKey({ roomCode, fileKey, slot = 1 }: {
-        roomCode: string; fileKey: string; slot?: number;
-    }) {
+    async function ensureEditingDeckFromFileKey({
+                                                    roomCode, fileKey, slot = 1,
+                                                }: { roomCode: string; fileKey: string; slot?: number; }) {
         const { data: room, error: eRoom } = await supabase.from("rooms").select("id").eq("code", roomCode).maybeSingle();
         if (eRoom || !room?.id) throw eRoom ?? new Error("room not found");
         const roomId = room.id as string;
@@ -49,7 +54,6 @@ export default function DeckEditorPage() {
         const ts = Date.now();
         const destKey = `rooms/${roomId}/decks/${newDeckId}/slides-${ts}.pdf`;
 
-        // copy or download→upload
         try {
             const cp = await supabase.storage.from("presentations").copy(fileKey, destKey);
             if (cp.error) throw cp.error;
@@ -132,8 +136,8 @@ export default function DeckEditorPage() {
     }, [loading, items, totalPages]);
 
     const maxPage = Math.max(1, Number(totalPages || 1));
-    const dec = () => setPreviewPage(Math.max(1, Math.min(maxPage, (previewPage ?? 1) - 1)));
-    const inc = () => setPreviewPage(Math.max(1, Math.min(maxPage, (previewPage ?? 1) + 1)));
+    const dec = () => setPreviewPage(p => Math.max(1, Math.min(maxPage, (p ?? 1) - 1)));
+    const inc = () => setPreviewPage(p => Math.max(1, Math.min(maxPage, (p ?? 1) + 1)));
 
     return (
         <div style={{ padding: 12 }}>
@@ -156,18 +160,24 @@ export default function DeckEditorPage() {
             ) : !deckId || !fileKey ? (
                 <div className="panel" style={{ opacity: 0.6 }}>자료 없음</div>
             ) : (
-                <div className="panel">
-                    <DeckEditor
-                        roomCode={roomCode}
-                        deckId={deckId}
-                        totalPages={totalPages}
-                        fileKey={fileKey}
-                        onClose={() => nav(`/teacher?room=${roomCode}&mode=setup`)}
-                        onSaved={() => nav(`/teacher?room=${roomCode}&mode=setup`)}
-                        tempCleanup={isClone && roomIdState ? { roomId: roomIdState, deleteDeckRow: true } : undefined}
-                        onItemsChange={onItemsChange}
-                        onSelectPage={(p) => setPreviewPage(Math.max(0, p))}
-                    />
+                // ✅ 2-컬럼: 프리뷰(좌) + 에디터(우)
+                <div className="panel" style={{ display: "grid", gridTemplateColumns: "minmax(420px, 48%) 1fr", gap: 16 }}>
+                    <div>
+                        <EditorPreviewPane fileKey={fileKey} page={previewPage ?? 1} height="calc(100vh - 220px)" version={cacheVer} />
+                    </div>
+                    <div>
+                        <DeckEditor
+                            roomCode={roomCode}
+                            deckId={deckId}
+                            totalPages={totalPages}
+                            fileKey={fileKey}
+                            onClose={() => nav(`/teacher?room=${roomCode}&mode=setup`)}
+                            onSaved={() => nav(`/teacher?room=${roomCode}&mode=setup`)}
+                            tempCleanup={isClone && roomIdState ? { roomId: roomIdState, deleteDeckRow: true } : undefined}
+                            onItemsChange={onItemsChange}
+                            onSelectPage={(p) => setPreviewPage(Math.max(0, p))}
+                        />
+                    </div>
                 </div>
             )}
         </div>
