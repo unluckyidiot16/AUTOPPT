@@ -12,21 +12,12 @@ type RpcSlide = {
     index: number;
     kind: string;
     material_id: string | null;
-    page_index: number | null;
-    image_key: string | null; // slides 버킷 내부 경로
+    page_index: number | null;   // 0-base
+    image_key: string | null;    // slides/* 내부 키 (있으면 우선)
     overlays: RpcOverlay[];
 };
-type RpcSlot = {
-    slot: number;
-    lesson_id: string;
-    current_index: number; // 0-base
-    slides: RpcSlide[];
-};
-type RpcManifest = {
-    room_code: string;
-    slots: RpcSlot[];
-    error?: string;
-};
+type RpcSlot = { slot: number; lesson_id: string; current_index: number; slides: RpcSlide[] };
+type RpcManifest = { room_code: string; slots: RpcSlot[]; error?: string };
 
 const DEBUG = true;
 const DBG = {
@@ -46,15 +37,13 @@ function setNicknameLS(v: string) { localStorage.setItem("autoppt:nickname", v);
 
 function useQuery() {
     const s = new URLSearchParams(location.hash.split("?")[1] ?? location.search);
-    return {
-        room: s.get("room"),
-        slot: Number(s.get("slot") ?? 1),
-    };
+    return { room: s.get("room"), slot: Number(s.get("slot") ?? 1) };
 }
 
 export default function StudentPage() {
     const { slot } = useQuery();
     const roomCode = useRoomId("CLASS-XXXXXX");
+
     const [roomId, setRoomId] = useState<string | null>(null);
     useEffect(() => {
         (async () => {
@@ -63,25 +52,37 @@ export default function StudentPage() {
             setRoomId(data?.id ?? null);
         })();
     }, [roomCode]);
+
     const studentId = useMemo(() => getOrSetStudentId(), []);
     const [nickname, setNicknameState] = useState(getNickname());
     const [editNick, setEditNick] = useState(false);
     const [nickInput, setNickInput] = useState(nickname);
 
+    // 교시: URL ?slot= 우선, 없으면 1
     const [activeSlot, setActiveSlot] = useState<number>(slot > 0 ? slot : 1);
+
+    // 페이지(1-base)
     const [pageRaw, setPageRaw] = useState<number | null>(null);
     const page = Number(pageRaw ?? 1) > 0 ? Number(pageRaw ?? 1) : 1;
 
+    // Presence / RT
+    const presence = usePresence(roomCode, "student");
+    const { lastMessage } = useRealtime(roomCode, "student");
+
+    // Manifest
     const [manifest, setManifest] = useState<RpcManifest | null>(null);
-
-    const presence = usePresence(roomCode, "student", { studentId, nickname, heartbeatSec: 10 });
-
     const loadManifest = useCallback(async () => {
         if (!roomCode) { setManifest(null); return; }
-        const { data, error } = await supabase.rpc("get_student_manifest_by_code", { p_room_code: roomCode });
-        if (error) { setManifest(null); return; }
-        setManifest(data);
+        try {
+            const { data, error } = await supabase.rpc("get_student_manifest_by_code", { p_room_code: roomCode });
+            if (error) throw error;
+            setManifest(data ?? null);
+        } catch (e) {
+            DBG.err("manifest", e);
+            setManifest(null);
+        }
     }, [roomCode]);
+
     useEffect(() => { loadManifest(); }, [loadManifest]);
 
     useEffect(() => {
@@ -91,7 +92,6 @@ export default function StudentPage() {
         setPageRaw(Number(slotBundle.current_index ?? 0) + 1);
     }, [manifest, activeSlot]);
 
-    const { lastMessage } = useRealtime(roomCode, "student");
     useEffect(() => {
         if (!lastMessage) return;
         if (lastMessage.type === "goto") {
@@ -110,7 +110,7 @@ export default function StudentPage() {
         return s?.slides?.length ?? 0;
     }, [manifest, activeSlot]);
 
-    // ▼▼▼ 핵심: 배경 URL 해석 (signed URL + 3단 폴백) ▼▼▼
+    // ▼▼▼ 배경 URL 해석 (signed URL + 3단 폴백) ▼▼▼
     const deckPrefixCache = useRef(new Map<string, string>()); // deckId -> slidesPrefix(decks/<slug>)
     const [activeBgUrl, setActiveBgUrl] = useState<string | null>(null);
     const [activeOverlays, setActiveOverlays] = useState<Overlay[]>([]);
@@ -153,6 +153,7 @@ export default function StudentPage() {
 
     useEffect(() => { refreshActive(); }, [refreshActive]);
 
+    // 제출 (샘플: quiz_short)
     const submitAnswer = async (val: any) => {
         try {
             const payload = {
@@ -183,44 +184,23 @@ export default function StudentPage() {
                 <span className="badge">내 ID: {studentId}</span>
                 <span className="badge">교시: {activeSlot}</span>
                 <span className="badge">페이지: {page}{totalPages ? ` / ${totalPages}` : ""}</span>
-                {nickname ? (
-                    <span className="badge">닉네임: {nickname}</span>
-                ) : (
-                    <span className="badge">닉네임: 설정 안 됨</span>
-                )}
+                {nickname ? <span className="badge">닉네임: {nickname}</span> : <span className="badge">닉네임: 설정 안 됨</span>}
                 <button className="btn" style={{ marginLeft: 8 }}
                         onClick={() => { setEditNick(v => !v); setNickInput(nickname); }}>
                     닉네임
                 </button>
             </div>
 
-            {!manifest ? (
-                <div className="panel">수업 자료를 불러오는 중입니다…</div>
-            ) : (
-                <div className="panel" style={{ display: "grid", placeItems: "center" }}>
-                    <div style={{ width: "100%", height: "76vh", display: "grid", placeItems: "center" }}>
-                        <SlideStage
-                            bgUrl={activeBgUrl}
-                            overlays={activeOverlays}
-                            mode="student"
-                            onSubmit={submitAnswer}
-                        />
-                    </div>
+            <div className="panel" style={{ padding: 12 }}>
+                <div className="slide-stage" style={{ width: "100%", height: "72vh", display: "grid", placeItems: "center" }}>
+                    <SlideStage bgUrl={activeBgUrl} overlays={activeOverlays} mode="student" onSubmit={submitAnswer} />
                 </div>
-            )}
+            </div>
 
             {editNick && (
-                <div style={{
-                    position:"fixed", left:"50%", bottom:72, transform:"translateX(-50%)",
-                    background:"rgba(17,24,39,0.98)", border:"1px solid rgba(148,163,184,0.25)",
-                    borderRadius:12, padding:"10px", width:"min(92vw, 360px)", zIndex:55
-                }} role="dialog" aria-label="닉네임 설정">
-                    <div style={{ display:"flex", gap:8, alignItems:"center" }}>
-                        <div style={{ fontWeight:700 }}>닉네임</div>
-                        <input className="input" value={nickInput} onChange={(e)=>setNickInput(e.target.value)} style={{ flex:1 }} />
-                        <button className="btn" onClick={saveNick}>저장</button>
-                        <button className="btn" onClick={() => setEditNick(false)}>닫기</button>
-                    </div>
+                <div className="panel" style={{ marginTop: 12, display: "flex", gap: 8, alignItems: "center" }}>
+                    <input className="input" value={nickInput} onChange={e => setNickInput(e.target.value)} placeholder="닉네임" />
+                    <button className="btn" onClick={saveNick}>저장</button>
                 </div>
             )}
         </div>
