@@ -1,5 +1,5 @@
 // src/pages/TeacherPage.tsx
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { supabase } from "../supabaseClient";
 import { useRoomId } from "../hooks/useRoomId";
@@ -8,8 +8,8 @@ import { usePresence } from "../hooks/usePresence";
 import PresenceSidebar from "../components/PresenceSidebar";
 import { useArrowNav } from "../hooks/useArrowNav";
 import { getBasePath } from "../utils/getBasePath";
-import WebpSlide from "../components/WebpSlide";
 import SlideStage, { type Overlay } from "../components/SlideStage";
+import { slidesPrefixOfPresentationsFile, signedSlidesUrl } from "../utils/supaFiles";
 
 type RpcOverlay = { id: string; z: number; type: string; payload: any };
 type RpcSlide = { index: number; kind: string; material_id: string | null; page_index: number | null; image_key: string | null; overlays: RpcOverlay[]; };
@@ -35,17 +35,14 @@ export default function TeacherPage() {
     const nav = useNavigate();
     const qs = useQS();
 
-    // ---- Room ----
     const defaultCode = useMemo(() => "CLASS-" + Math.random().toString(36).slice(2, 8).toUpperCase(), []);
     const roomCode = useRoomId(defaultCode);
     const [roomId, setRoomId] = useState<string | null>(null);
 
     const viewMode: "present" | "setup" = qs.get("mode") === "setup" ? "setup" : "present";
     const presence = usePresence(roomCode, "teacher");
-
     const { connected, lastMessage, sendGoto, sendRefresh } = useRealtime(roomCode, "teacher");
 
-    // URL 정리
     useEffect(() => {
         const url = new URLSearchParams(qs.toString());
         if (!url.get("room") && roomCode) {
@@ -55,7 +52,6 @@ export default function TeacherPage() {
         }
     }, [roomCode, qs, nav]);
 
-    // roomId 보장
     const ensureRoomId = useCallback(async (): Promise<string> => {
         if (roomId) return roomId;
         const { data, error } = await supabase.from("rooms").select("id").eq("code", roomCode).maybeSingle();
@@ -65,7 +61,6 @@ export default function TeacherPage() {
 
     useEffect(() => { (async () => { try { await ensureRoomId(); } catch (e) { DBG.err(e); } })(); }, [ensureRoomId]);
 
-    // 2) 페이지 마운트 시 가드
     useEffect(() => {
         (async () => {
             try {
@@ -81,7 +76,6 @@ export default function TeacherPage() {
         })();
     }, [ensureRoomId, roomCode]);
 
-    // manifest
     const [manifest, setManifest] = useState<RpcManifest | null>(null);
     const refreshManifest = useCallback(async () => {
         if (!roomCode) return setManifest(null);
@@ -90,7 +84,6 @@ export default function TeacherPage() {
     }, [roomCode]);
     useEffect(() => { refreshManifest(); }, [refreshManifest]);
 
-    // 🔔 실시간 감시: room_decks / decks 변경 시 manifest 즉시 새로고침
     useEffect(() => {
         let chan: ReturnType<typeof supabase.channel> | null = null;
         let alive = true;
@@ -108,7 +101,6 @@ export default function TeacherPage() {
         return () => { alive = false; if (chan) supabase.removeChannel(chan); };
     }, [ensureRoomId, refreshManifest]);
 
-    // ===== 교시(슬롯) 목록 =====
     const [slots, setSlots] = useState<number[]>([]);
     const [activeSlot, setActiveSlot] = useState<number>(1);
     const refreshSlotsList = useCallback(async () => {
@@ -141,7 +133,6 @@ export default function TeacherPage() {
         } catch (e: any) { alert(e?.message ?? String(e)); }
     }, [ensureRoomId, ensureSlotRow, refreshSlotsList, slots, sendRefresh]);
 
-    // activeSlot → page
     const [page, setPage] = useState<number>(1);
     const syncPageFromSlot = useCallback(async (slot: number) => {
         try {
@@ -153,36 +144,58 @@ export default function TeacherPage() {
     }, [ensureRoomId]);
     useEffect(() => { syncPageFromSlot(activeSlot); }, [activeSlot, syncPageFromSlot]);
 
-    // total & active
     const totalPages = useMemo(() => {
         const slot = manifest?.slots?.find((s) => s.slot === activeSlot);
         return slot?.slides?.length ?? 0;
     }, [manifest, activeSlot]);
 
-    function currentSlide(): RpcSlide | null {
-        const slot = manifest?.slots?.find((s) => s.slot === activeSlot);
-        if (!slot) return null;
-        const idx = Math.max(0, page - 1);
-        return slot.slides[idx] ?? null;
-    }
-    const active = useMemo(() => {
-        const s = currentSlide(); if (!s) return null;
-        // 1) RPC 제공 image_key 우선
-        let key = s.image_key ?? null;
-        // 2) 폴백: material_id + page_index로 slides 경로 직접 계산
-                  if (!key && roomId && s.material_id != null) {
-                      const idx = Number(s.page_index ?? Math.max(0, page - 1)); // 0-base
-                      key = `rooms/${roomId}/decks/${s.material_id}/${Math.max(0, idx)}.webp`;
-                  }
-              const bgUrl = key ? supabase.storage.from("slides").getPublicUrl(key).data.publicUrl : null;
-              const overlays: Overlay[] = (s.overlays || []).map((o) => ({ id: String(o.id), z: o.z, type: o.type, payload: o.payload }));
-              return { bgUrl, overlays };
-          }, [manifest, page, activeSlot, roomId]);
+    // ▼▼▼ 핵심: 배경 URL 해석 (signed URL + 3단 폴백) ▼▼▼
+    const deckPrefixCache = useRef(new Map<string, string>()); // deckId -> slidesPrefix(decks/<slug>)
+    const [activeBgUrl, setActiveBgUrl] = useState<string | null>(null);
+    const [activeOverlays, setActiveOverlays] = useState<Overlay[]>([]);
 
-    // 신규 학생 hello → 현재 상태 안내
+    const refreshActiveSlide = useCallback(async () => {
+        const slot = manifest?.slots?.find((s) => s.slot === activeSlot);
+        if (!slot) { setActiveBgUrl(null); setActiveOverlays([]); return; }
+        const idx = Math.max(0, page - 1);
+        const slide = slot.slides[idx] as RpcSlide | undefined;
+        if (!slide) { setActiveBgUrl(null); setActiveOverlays([]); return; }
+
+        const overlays: Overlay[] = (slide.overlays || []).map((o) => ({ id: String(o.id), z: o.z, type: o.type, payload: o.payload }));
+        setActiveOverlays(overlays);
+
+        const pageIdx0 = Number(slide.page_index ?? idx); // 0-base
+        let key: string | null = slide.image_key ?? null;
+
+        // 1) rooms/<roomId>/decks/<deckId>/<page>.webp
+        if (!key && roomId && slide.material_id) {
+            key = `rooms/${roomId}/decks/${slide.material_id}/${Math.max(0, pageIdx0)}.webp`;
+        }
+
+        // 2) decks/<slug>/<page>.webp  (자료함 원본 경로 폴백)
+        if (!key && slide.material_id) {
+            let prefix = deckPrefixCache.current.get(slide.material_id);
+            if (!prefix) {
+                const { data } = await supabase.from("decks").select("file_key").eq("id", slide.material_id).maybeSingle();
+                const p = slidesPrefixOfPresentationsFile(data?.file_key ?? null); // presentations/decks/<slug>/slides-*.pdf → decks/<slug>
+                if (p) { prefix = p; deckPrefixCache.current.set(slide.material_id, p); }
+            }
+            if (prefix) key = `${prefix}/${Math.max(0, pageIdx0)}.webp`;
+        }
+
+        // 최종 URL(signed)
+        if (key) {
+            const url = await signedSlidesUrl(key, 1800);
+            setActiveBgUrl(url);
+        } else {
+            setActiveBgUrl(null);
+        }
+    }, [manifest, activeSlot, page, roomId]);
+
+    useEffect(() => { refreshActiveSlide(); }, [refreshActiveSlide]);
+
     useEffect(() => { if (!lastMessage) return; if (lastMessage.type === "hello") sendGoto(page, activeSlot); }, [lastMessage, page, activeSlot, sendGoto]);
 
-    // 페이지 이동
     const gotoPageForSlot = useCallback(async (slot: number, nextPage: number) => {
         const p = Math.max(1, nextPage);
         try {
@@ -201,13 +214,11 @@ export default function TeacherPage() {
     const prev = useCallback(async () => { if (page <= 1) return; await gotoPageForSlot(activeSlot, page - 1); }, [page, activeSlot, gotoPageForSlot]);
     useArrowNav(prev, next);
 
-    // 학생 접속 링크
     const studentUrl = useMemo(() => {
         const base = getBasePath();
         return `${location.origin}${base}/#/student?room=${roomCode}&slot=${activeSlot}`;
     }, [roomCode, activeSlot]);
 
-    // 최근 제출
     const [answers, setAnswers] = useState<any[]>([]);
     useEffect(() => {
         (async () => {
@@ -222,7 +233,6 @@ export default function TeacherPage() {
         })();
     }, [ensureRoomId, page]);
 
-    // ===================== UI =====================
     const StageBlock = (
         <div className="panel" style={{ padding: 12 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
@@ -231,7 +241,7 @@ export default function TeacherPage() {
                 <span className="badge" title="Realtime">{connected ? "RT:ON" : "RT:OFF"}</span>
             </div>
             <div className="slide-stage" style={{ width: "100%", height: "72vh", display: "grid", placeItems: "center" }}>
-                <SlideStage bgUrl={active?.bgUrl ?? null} overlays={active?.overlays ?? []} mode="teacher" />
+                <SlideStage bgUrl={activeBgUrl} overlays={activeOverlays} mode="teacher" />
             </div>
             <div style={{ display: "flex", gap: 8, justifyContent: "center", marginTop: 10 }}>
                 <button className="btn" onClick={prev} disabled={page <= 1}>◀ 이전</button>
@@ -241,10 +251,8 @@ export default function TeacherPage() {
         </div>
     );
 
-    // 우측 패널(업로더 제거 → 자료함 버튼만 상단 탑바에 유지)
     const SetupRight = (
         <div className="panel" style={{ display: "grid", gap: 16 }}>
-            {/* 교시 관리 */}
             <div>
                 <div style={{ fontWeight: 700, marginBottom: 6 }}>교시 관리</div>
                 <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
@@ -264,7 +272,6 @@ export default function TeacherPage() {
                 </div>
             </div>
 
-            {/* 최근 제출 */}
             <div>
                 <div style={{ fontWeight: 700, marginBottom: 6 }}>최근 제출(50)</div>
                 {answers.length === 0 ? (
@@ -307,7 +314,7 @@ export default function TeacherPage() {
                             {activeSlot}교시 · 페이지 {page}{totalPages ? ` / ${totalPages}` : ""}
                         </div>
                         <div className="slide-stage" style={{ width: "100%", height: 500, display: "grid", placeItems: "center" }}>
-                            <SlideStage bgUrl={active?.bgUrl ?? null} overlays={active?.overlays ?? []} mode="teacher" />
+                            <SlideStage bgUrl={activeBgUrl} overlays={activeOverlays} mode="teacher" />
                         </div>
                         <div style={{ display: "flex", gap: 8, justifyContent: "center", marginTop: 10 }}>
                             <button className="btn" onClick={prev} disabled={page <= 1}>◀ 이전</button>

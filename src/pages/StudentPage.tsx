@@ -1,15 +1,16 @@
 // src/pages/StudentPage.tsx
-import React, { useEffect, useMemo, useState, useCallback } from "react";
+import React, { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { supabase } from "../supabaseClient";
 import { useRoomId } from "../hooks/useRoomId";
 import { useRealtime } from "../hooks/useRealtime";
 import { usePresence } from "../hooks/usePresence";
 import SlideStage, { type Overlay } from "../components/SlideStage";
+import { slidesPrefixOfPresentationsFile, signedSlidesUrl } from "../utils/supaFiles";
 
 type RpcOverlay = { id: string; z: number; type: string; payload: any };
 type RpcSlide = {
     index: number;
-    kind: string; // "material" | "quiz" | ...
+    kind: string;
     material_id: string | null;
     page_index: number | null;
     image_key: string | null; // slides 버킷 내부 경로
@@ -61,40 +62,28 @@ export default function StudentPage() {
             const { data } = await supabase.from("rooms").select("id").eq("code", roomCode).maybeSingle();
             setRoomId(data?.id ?? null);
         })();
-        }, [roomCode]);
+    }, [roomCode]);
     const studentId = useMemo(() => getOrSetStudentId(), []);
     const [nickname, setNicknameState] = useState(getNickname());
     const [editNick, setEditNick] = useState(false);
     const [nickInput, setNickInput] = useState(nickname);
 
-    // 교시: URL ?slot= 우선, 없으면 1
     const [activeSlot, setActiveSlot] = useState<number>(slot > 0 ? slot : 1);
-
-    // 페이지(1-base)
     const [pageRaw, setPageRaw] = useState<number | null>(null);
     const page = Number(pageRaw ?? 1) > 0 ? Number(pageRaw ?? 1) : 1;
 
-    // 매니페스트
     const [manifest, setManifest] = useState<RpcManifest | null>(null);
 
-    // Presence
-    const presence = usePresence(roomCode, "student", {
-        studentId,
-        nickname,
-        heartbeatSec: 10,
-    });
+    const presence = usePresence(roomCode, "student", { studentId, nickname, heartbeatSec: 10 });
 
-    // 매니페스트 로더
     const loadManifest = useCallback(async () => {
         if (!roomCode) { setManifest(null); return; }
         const { data, error } = await supabase.rpc("get_student_manifest_by_code", { p_room_code: roomCode });
         if (error) { setManifest(null); return; }
         setManifest(data);
     }, [roomCode]);
-
     useEffect(() => { loadManifest(); }, [loadManifest]);
 
-    // 초기/교시 변경 시, 해당 교시 current_index로 페이지 동기화 (폴백 제거)
     useEffect(() => {
         if (!manifest) return;
         const slotBundle = manifest.slots.find(s => s.slot === activeSlot);
@@ -102,7 +91,6 @@ export default function StudentPage() {
         setPageRaw(Number(slotBundle.current_index ?? 0) + 1);
     }, [manifest, activeSlot]);
 
-    // RT 수신
     const { lastMessage } = useRealtime(roomCode, "student");
     useEffect(() => {
         if (!lastMessage) return;
@@ -117,34 +105,54 @@ export default function StudentPage() {
         }
     }, [lastMessage, loadManifest]);
 
-    // 총 페이지
     const totalPages = useMemo(() => {
         const s = manifest?.slots?.find(v => v.slot === activeSlot);
         return s?.slides?.length ?? 0;
     }, [manifest, activeSlot]);
 
-    // 활성 슬라이드 (폴백 제거)
-    const active = useMemo(() => {
+    // ▼▼▼ 핵심: 배경 URL 해석 (signed URL + 3단 폴백) ▼▼▼
+    const deckPrefixCache = useRef(new Map<string, string>()); // deckId -> slidesPrefix(decks/<slug>)
+    const [activeBgUrl, setActiveBgUrl] = useState<string | null>(null);
+    const [activeOverlays, setActiveOverlays] = useState<Overlay[]>([]);
+
+    const refreshActive = useCallback(async () => {
         const s = manifest?.slots?.find(v => v.slot === activeSlot);
-        if (!s) return null;
+        if (!s) { setActiveBgUrl(null); setActiveOverlays([]); return; }
         const idx = Math.max(0, page - 1);
         const slide = s.slides[idx] as RpcSlide | undefined;
-        if (!slide) return null;
-        // 1) RPC image_key 우선
-        let key = slide.image_key ?? null;
-        // 2) 폴백 계산
-        if (!key && roomId && slide.material_id != null) {
-            const p = Number(slide.page_index ?? idx); // 0-base
-            key = `rooms/${roomId}/decks/${slide.material_id}/${Math.max(0, p)}.webp`;
+        if (!slide) { setActiveBgUrl(null); setActiveOverlays([]); return; }
+
+        setActiveOverlays((slide.overlays || []).map(o => ({ id: String(o.id), z: o.z, type: o.type, payload: o.payload })));
+
+        const pageIdx0 = Number(slide.page_index ?? idx); // 0-base
+        let key: string | null = slide.image_key ?? null;
+
+        // 1) rooms/<roomId>/decks/<deckId>/<page>.webp
+        if (!key && roomId && slide.material_id) {
+            key = `rooms/${roomId}/decks/${slide.material_id}/${Math.max(0, pageIdx0)}.webp`;
         }
-        const bgUrl = key ? supabase.storage.from("slides").getPublicUrl(key).data.publicUrl : null;
-        const overlays: Overlay[] = (slide.overlays || []).map(o => ({
-            id: String(o.id), z: o.z, type: o.type, payload: o.payload
-        }));
-        return { bgUrl, overlays };
+
+        // 2) decks/<slug>/<page>.webp (자료함 원본 폴백)
+        if (!key && slide.material_id) {
+            let prefix = deckPrefixCache.current.get(slide.material_id);
+            if (!prefix) {
+                const { data } = await supabase.from("decks").select("file_key").eq("id", slide.material_id).maybeSingle();
+                const p = slidesPrefixOfPresentationsFile(data?.file_key ?? null);
+                if (p) { prefix = p; deckPrefixCache.current.set(slide.material_id, p); }
+            }
+            if (prefix) key = `${prefix}/${Math.max(0, pageIdx0)}.webp`;
+        }
+
+        if (key) {
+            const url = await signedSlidesUrl(key, 1800);
+            setActiveBgUrl(url);
+        } else {
+            setActiveBgUrl(null);
+        }
     }, [manifest, activeSlot, page, roomId]);
 
-    // 답안 제출
+    useEffect(() => { refreshActive(); }, [refreshActive]);
+
     const submitAnswer = async (val: any) => {
         try {
             const payload = {
@@ -160,7 +168,6 @@ export default function StudentPage() {
         }
     };
 
-    // 닉 저장
     const saveNick = () => {
         const v = nickInput.trim();
         if (!v) { alert("닉네임을 입력하세요."); return; }
@@ -193,8 +200,8 @@ export default function StudentPage() {
                 <div className="panel" style={{ display: "grid", placeItems: "center" }}>
                     <div style={{ width: "100%", height: "76vh", display: "grid", placeItems: "center" }}>
                         <SlideStage
-                            bgUrl={active?.bgUrl ?? null}
-                            overlays={active?.overlays ?? []}
+                            bgUrl={activeBgUrl}
+                            overlays={activeOverlays}
                             mode="student"
                             onSubmit={submitAnswer}
                         />
