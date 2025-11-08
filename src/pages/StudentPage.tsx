@@ -1,4 +1,3 @@
-// src/pages/StudentPage.tsx
 import React, { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { supabase } from "../supabaseClient";
 import { useRoomId } from "../hooks/useRoomId";
@@ -12,8 +11,8 @@ type RpcSlide = {
     index: number;
     kind: string;
     material_id: string | null;
-    page_index: number | null;   // 0-base
-    image_key: string | null;    // slides/* 내부 키 (있으면 우선)
+    page_index: number | null;       // 0-base
+    image_key: string | null;        // slides/* 내부 키 (있으면 우선)
     overlays: RpcOverlay[];
 };
 type RpcSlot = { slot: number; lesson_id: string | null; current_index: number; slides: RpcSlide[] };
@@ -35,9 +34,22 @@ function getOrSetStudentId() {
 function getNickname() { return localStorage.getItem("autoppt:nickname") || ""; }
 function setNicknameLS(v: string) { localStorage.setItem("autoppt:nickname", v); }
 
+// URL 파서: hash라우팅/쿼리 모두 지원
 function useQuery() {
     const s = new URLSearchParams(location.hash.split("?")[1] ?? location.search);
     return { room: s.get("room"), slot: Number(s.get("slot") ?? 1) };
+}
+
+// 캐시 버스터: 분 단위
+function addCacheBuster(u: string | null | undefined): string | null {
+    if (!u) return null;
+    try {
+        const url = new URL(u);
+        url.hash = `v=${Math.floor(Date.now() / 60000)}`;
+        return url.toString();
+    } catch { // 절대 URL이 아닐 때 등
+        return `${u}#v=${Math.floor(Date.now() / 60000)}`;
+    }
 }
 
 export default function StudentPage() {
@@ -47,11 +59,13 @@ export default function StudentPage() {
     // room_id (slides 경로 계산용)
     const [roomId, setRoomId] = useState<string | null>(null);
     useEffect(() => {
+        let off = false;
         (async () => {
-            if (!roomCode) { setRoomId(null); return; }
-            const { data } = await supabase.from("rooms").select("id").eq("code", roomCode).maybeSingle();
-            setRoomId(data?.id ?? null);
+            if (!roomCode) { if (!off) setRoomId(null); return; }
+            const { data, error } = await supabase.from("rooms").select("id").eq("code", roomCode).maybeSingle();
+            if (!off) setRoomId(error ? null : (data?.id ?? null));
         })();
+        return () => { off = true; };
     }, [roomCode]);
 
     const studentId = useMemo(() => getOrSetStudentId(), []);
@@ -68,6 +82,9 @@ export default function StudentPage() {
     // Presence / RT (roomCode 기준)
     const presence = usePresence(roomCode, "student");
     const { lastMessage } = useRealtime(roomCode, "student");
+
+    // 최초 로드 시 닉네임 presence push
+    useEffect(() => { if (nickname) presence.track?.({ nick: nickname }); }, [nickname, presence]);
 
     // Manifest
     const [manifest, setManifest] = useState<RpcManifest | null>(null);
@@ -127,14 +144,18 @@ export default function StudentPage() {
             const { data, error } = await supabase.rpc("get_student_manifest_by_code", { p_room_code: roomCode });
             if (error) throw error;
             setManifest(data ?? null);
-        } catch {
+            DBG.ok("rpc:get_student_manifest_by_code", data);
+        } catch (e) {
+            DBG.err("rpc:get_student_manifest_by_code failed → fallback", e);
             const fb = await buildManifestFallback(roomCode);
             setManifest(fb);
+            DBG.ok("fallback manifest", fb);
         }
     }, [roomCode, buildManifestFallback]);
 
     useEffect(() => { loadManifest(); }, [loadManifest]);
 
+    // manifest 적용: 현재 슬롯의 페이지 설정
     useEffect(() => {
         if (!manifest) return;
         const slotBundle = manifest.slots.find(s => s.slot === activeSlot);
@@ -142,11 +163,12 @@ export default function StudentPage() {
         setPageRaw(Number(slotBundle.current_index ?? 0) + 1);
     }, [manifest, activeSlot]);
 
+    // 실시간 메시지 수신
     useEffect(() => {
         if (!lastMessage) return;
         if (lastMessage.type === "goto") {
             if (typeof lastMessage.slot === "number") setActiveSlot(lastMessage.slot);
-            if (typeof lastMessage.page === "number") setPageRaw(Math.max(1, lastMessage.page));
+            if (typeof lastMessage.page === "number") setPageRaw(Math.max(1, Number(lastMessage.page)));
             return;
         }
         if (lastMessage.type === "refresh" && lastMessage.scope === "manifest") {
@@ -183,7 +205,7 @@ export default function StudentPage() {
                 })));
             }
 
-            // 이미지 키 계산
+            // 이미지 키 계산 (우선순위: image_key → room copy → decks prefix)
             const pageIdx0 = Number(slide.page_index ?? idx); // 0-base
             let key: string | null = slide.image_key ? normalizeSlidesKey(slide.image_key) : null;
 
@@ -209,14 +231,24 @@ export default function StudentPage() {
 
             // 최종 URL
             if (!key) { setActiveBgUrl(null); return; }
-            if (/^https?:\/\//i.test(key)) { setActiveBgUrl(key); return; } // 절대 URL은 그대로
-            const url = await signedSlidesUrl(key, 1800);
-            setActiveBgUrl(url || null);
+
+            // 절대 URL이면 그대로 + 캐시버스터
+            if (/^https?:\/\//i.test(key)) {
+                setActiveBgUrl(addCacheBuster(key));
+                return;
+            }
+
+            try {
+                const raw = await signedSlidesUrl(key, 1800);
+                setActiveBgUrl(addCacheBuster(raw));
+            } catch (e) {
+                DBG.err("signedSlidesUrl error", e);
+                setActiveBgUrl(null);
+            }
         })();
 
         return () => { off = true; };
     }, [manifest, activeSlot, page, roomId]);
-
 
     const submitAnswer = async (val: any) => {
         try {
@@ -228,7 +260,9 @@ export default function StudentPage() {
                 p_answer: typeof (val as any)?.value === "string" ? (val as any).value : JSON.stringify(val),
             };
             await supabase.rpc("submit_answer_v2", payload);
+            DBG.ok("rpc:submit_answer_v2", payload);
         } catch (e: any) {
+            DBG.err("submit_answer_v2 error", e);
             alert(e?.message ?? String(e));
         }
     };
@@ -237,7 +271,7 @@ export default function StudentPage() {
         const v = nickInput.trim();
         if (!v) { alert("닉네임을 입력하세요."); return; }
         setNicknameLS(v); setNicknameState(v); setEditNick(false);
-        presence.track({ nick: v });
+        presence.track?.({ nick: v });
     };
 
     return (
