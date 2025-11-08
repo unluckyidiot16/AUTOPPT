@@ -9,12 +9,9 @@ import { getManifestByRoom } from "../api/overrides";
 import { slidesPrefixOfPresentationsFile } from "../utils/supaFiles";
 import type { Overlay } from "../components/SlideStage";
 
-
 type RoomRow = { id: string; current_deck_id: string | null };
 
-function withSlash(p: string) {
-    return p.endsWith("/") ? p : `${p}/`;
-}
+function withSlash(p: string) { return p.endsWith("/") ? p : `${p}/`; }
 
 /** prefix 아래 .webp 개수 카운트 */
 async function countWebps(bucket: string, prefix: string) {
@@ -22,41 +19,33 @@ async function countWebps(bucket: string, prefix: string) {
     if (error) return 0;
     return (data ?? []).filter((f) => /\.webp$/i.test(f.name)).length;
 }
-
-/** prefix 아래 파일 전체 나열 (상위 한 단계) */
+/** prefix 아래 1단계 나열 */
 async function listFlat(bucket: string, prefix: string) {
     const { data, error } = await supabase.storage.from(bucket).list(withSlash(prefix), { limit: 1000 });
     if (error) return [];
     return data ?? [];
 }
-
-/** 버킷 내부 복사 (copy 실패 시 download→upload 폴백) */
+/** 버킷 내부 복사 (실패 시 download→upload 폴백) */
 async function copyObjectInBucket(bucket: string, from: string, to: string, contentType?: string) {
-    // 1) 빠른 copy
     try {
         const { error } = await supabase.storage.from(bucket).copy(from, to);
         if (!error) return;
-    } catch { /* no-op */ }
-
-    // 2) 폴백: download → upload
+    } catch {}
     const dl = await supabase.storage.from(bucket).download(from);
     if (dl.error) throw dl.error;
     const up = await supabase.storage.from(bucket).upload(to, dl.data, { upsert: true, contentType });
     if (up.error) throw up.error;
 }
-
-/** 같은 버킷 내 디렉터리 복사 (.webp만) — 목적지에 .webp가 하나라도 있으면 스킵 */
+/** 같은 버킷 디렉터리 복사 (.webp만) — 목적지에 .webp가 하나라도 있으면 스킵 */
 async function copyDirSameBucket(bucket: string, fromPrefix: string, toPrefix: string, onlyExt: RegExp) {
     const already = await countWebps(bucket, toPrefix);
-    if (already > 0) return; // ★ .webp 기준으로만 스킵
-
+    if (already > 0) return;
     const src = await listFlat(bucket, fromPrefix);
     for (const f of src) {
         if (!onlyExt.test(f.name)) continue;
         await copyObjectInBucket(bucket, `${withSlash(fromPrefix)}${f.name}`, `${withSlash(toPrefix)}${f.name}`);
     }
 }
-
 /** 크로스 버킷 복사 — 목적지에 .webp가 하나라도 있으면 스킵 */
 async function copyDirCrossBuckets(
     fromBucket: "presentations" | "slides",
@@ -66,13 +55,10 @@ async function copyDirCrossBuckets(
     onlyExt: RegExp
 ) {
     const already = await countWebps(toBucket, toPrefix);
-    if (already > 0) return; // ★ .webp 기준으로만 스킵
-
+    if (already > 0) return;
     const src = await listFlat(fromBucket, fromPrefix);
     for (const f of src) {
         if (!onlyExt.test(f.name)) continue;
-
-        // 빠른 copy가 없으므로 download → upload
         const dl = await supabase.storage.from(fromBucket).download(`${withSlash(fromPrefix)}${f.name}`);
         if (dl.error) throw dl.error;
         const up = await supabase.storage.from(toBucket).upload(`${withSlash(toPrefix)}${f.name}`, dl.data, {
@@ -83,68 +69,40 @@ async function copyDirCrossBuckets(
     }
 }
 
-/**
- * 원본 presentations/* fileKey 로부터 편집용 덱을 생성.
- * PDF는 presentations 버킷에 사본만, WEBP는 이미 만들어진 것이 있으면 폴더 복제(재변환 없음).
- * 목적지에 .webp가 없을 때만 복제한다(★ 핵심 수정).
- */
-async function ensureEditingDeckFromFileKey_noConvert({
-                                                          roomCode,
-                                                          fileKey,
-                                                      }: {
-    roomCode: string;
-    fileKey: string;
-}) {
-    // room
-    const { data: room, error: eRoom } = await supabase
-        .from("rooms")
-        .select("id")
-        .eq("code", roomCode)
-        .maybeSingle();
+/** 편집용 덱 생성: PDF 사본 + 기존 WEBP 폴더 복제(재변환 없음) */
+async function ensureEditingDeckFromFileKey_noConvert({ roomCode, fileKey }: { roomCode: string; fileKey: string; }) {
+    const { data: room, error: eRoom } = await supabase.from("rooms").select("id").eq("code", roomCode).maybeSingle();
     if (eRoom || !room?.id) throw eRoom ?? new Error("room not found");
     const roomId = room.id as string;
 
-    // 새 덱
     const ins = await supabase.from("decks").insert({ title: "Untitled (편집)" }).select("id").single();
     if (ins.error) throw ins.error;
     const deckId = ins.data.id as string;
 
-    // PDF 사본 (presentations 버킷)
     const ts = Date.now();
     const destPdfKey = `rooms/${roomId}/decks/${deckId}/slides-${ts}.pdf`;
     const srcRel = String(fileKey).replace(/^presentations\//i, "");
     await copyObjectInBucket("presentations", srcRel, destPdfKey, "application/pdf");
 
-    // WEBP 복제: 항상 slides 버킷의 rooms/<rid>/decks/<deckId>로 정규화
-    const srcPrefix =
-        slidesPrefixOfPresentationsFile(fileKey) ??
-        slidesPrefixOfPresentationsFile(srcRel) ??
-        null; // 유연 처리
+    const srcPrefix = slidesPrefixOfPresentationsFile(fileKey) ?? slidesPrefixOfPresentationsFile(srcRel) ?? null;
     const dstPrefix = `rooms/${roomId}/decks/${deckId}`;
 
-    // 1) 우선 slides 버킷 원본이 있으면 same-bucket 복사
     if (srcPrefix) {
-        const srcSlidesCount = await countWebps("slides", srcPrefix).catch(() => 0);
-        if (srcSlidesCount > 0) {
+        const srcSlides = await countWebps("slides", srcPrefix).catch(() => 0);
+        if (srcSlides > 0) {
             await copyDirSameBucket("slides", srcPrefix, dstPrefix, /\.webp$/i);
         } else {
-            // 2) (레거시) presentations 버킷에도 .webp가 있는 경우 크로스 복사
-            const legacyCount = await countWebps("presentations", srcPrefix).catch(() => 0);
-            if (legacyCount > 0) {
-                await copyDirCrossBuckets("presentations", "slides", srcPrefix, dstPrefix, /\.webp$/i);
-            }
+            const legacy = await countWebps("presentations", srcPrefix).catch(() => 0);
+            if (legacy > 0) await copyDirCrossBuckets("presentations", "slides", srcPrefix, dstPrefix, /\.webp$/i);
         }
     }
 
-    // 목적지 기준 페이지 수 확정
     const pages = await countWebps("slides", dstPrefix).catch(() => 0);
-
-    // 덱 메타 업데이트
     await supabase.from("decks").update({ file_key: destPdfKey, file_pages: pages || null }).eq("id", deckId);
-
     return { roomId, deckId, file_key: destPdfKey, totalPages: pages };
 }
 
+/* ───────────────────────────── DeckEditorPage ───────────────────────────── */
 export default function DeckEditorPage() {
     const nav = useNavigate();
     const { search } = useLocation();
@@ -158,146 +116,126 @@ export default function DeckEditorPage() {
     const [deckId, setDeckId] = useState<string | null>(null);
     const [fileKey, setFileKey] = useState<string | null>(null);
     const [totalPages, setTotalPages] = useState<number>(0);
+
     const [items, setItems] = useState<ManifestItem[]>([]);
     const [previewPage, setPreviewPage] = useState<number | null>(1);
+
     const [loading, setLoading] = useState(true);
     const [err, setErr] = useState<string | null>(null);
 
-    // 1분 단위 캐시버스터 (프리뷰 강제 갱신)
+    // 1분 캐시버스터
     const [cacheVer, setCacheVer] = useState<number>(() => Math.floor(Date.now() / 60000));
-    useEffect(() => {
-        const t = setInterval(() => setCacheVer(Math.floor(Date.now() / 60000)), 30000);
-        return () => clearInterval(t);
-    }, []);
+    useEffect(() => { const t = setInterval(() => setCacheVer(Math.floor(Date.now() / 60000)), 30000); return () => clearInterval(t); }, []);
 
     const previewOnce = useRef(false);
     const onItemsChange = (next: ManifestItem[]) => setItems(next);
 
+    /* ---------- util: 아이템 → 페이지/오버레이 ---------- */
     function pageNumberOf(item: any): number | null {
         const p = item?.srcPage ?? item?.page ?? item?.targetPage;
         return p == null ? null : Number(p);
     }
-
-    function maxPageFromItems(items: ManifestItem[]): number {
-        const pages = items
-            .filter((it: any) => (it?.type === "page"))
+    function maxPageFromItems(list: ManifestItem[]): number {
+        const pages = list.filter((it: any) => it?.type === "page")
             .map((it) => pageNumberOf(it))
-            .filter((n): n is number => Number.isFinite(n) && n! >= 1);
+            .filter((n): n is number => typeof n === "number" && Number.isFinite(n) && n >= 1);
         return pages.length ? Math.max(...pages) : 0;
     }
-
-    function overlaysForPage(items: ManifestItem[], page: number): Overlay[] {
-        return items
+    function overlaysForPage(list: ManifestItem[], page: number): Overlay[] {
+        return list
             .filter((it: any) => it?.type && it?.type !== "page")
             .filter((it: any) => Number(pageNumberOf(it)) === Number(page))
             .map((it: any, i: number) => ({
                 id: String(it.id ?? `ov-${i}`),
                 z: Number(it.z ?? 0),
-                type: String(it.type),       // "quiz" 등
-                payload: it.payload ?? it,   // SlideStage 쪽에서 해석
-            }));
+                type: String(it.type),
+                payload: it.payload ?? it,
+            }))
+            .sort((a, b) => a.z - b.z);
     }
 
+    /* ---------- 초기 로딩 ---------- */
     useEffect(() => {
         let cancel = false;
-
         (async () => {
-            setLoading(true);
-            setErr(null);
-            setFileKey(null);
-
+            setLoading(true); setErr(null); setFileKey(null);
             try {
-                if (!roomCode && !deckFromQS && !sourceDeckId) {
-                    throw new Error("room 또는 deck/src 파라미터가 필요합니다.");
-                }
+                if (!roomCode && !deckFromQS && !sourceDeckId) throw new Error("room 또는 deck/src 파라미터가 필요합니다.");
 
-                // ── 진입 분기 ─────────────────────────────────────────────
                 if (sourceDeckKey) {
-                    // 파일 키(원본)로부터 복제(재변환 없이 .webp만 복사)
                     const ensured = await ensureEditingDeckFromFileKey_noConvert({ roomCode, fileKey: sourceDeckKey });
                     if (cancel) return;
-                    setDeckId(ensured.deckId);
-                    setFileKey(ensured.file_key);
-                    setTotalPages(ensured.totalPages || 0);
+                    setDeckId(ensured.deckId); setFileKey(ensured.file_key); setTotalPages(ensured.totalPages || 0);
                     if ((ensured.totalPages || 0) > 0) setCacheVer((v) => v + 1);
                 } else if (sourceDeckId) {
-                    // 기존 덱 id → file_key 읽어서 동일 처리
-                    const { data: src, error: eSrc } = await supabase
-                        .from("decks")
-                        .select("file_key, file_pages")
-                        .eq("id", sourceDeckId)
-                        .maybeSingle();
+                    const { data: src, error: eSrc } = await supabase.from("decks").select("file_key, file_pages").eq("id", sourceDeckId).maybeSingle();
                     if (eSrc) throw eSrc;
                     if (!src?.file_key) throw new Error("원본 덱에 파일이 없습니다.");
-
                     const ensured = await ensureEditingDeckFromFileKey_noConvert({ roomCode, fileKey: src.file_key });
                     if (cancel) return;
-                    setDeckId(ensured.deckId);
-                    setFileKey(ensured.file_key);
+                    setDeckId(ensured.deckId); setFileKey(ensured.file_key);
                     setTotalPages(ensured.totalPages || Number(src.file_pages || 0));
                     if ((ensured.totalPages || 0) > 0) setCacheVer((v) => v + 1);
                 } else {
-                    // 현재 선택된 덱 그대로 편집 (복제 아님)
                     const { data: roomRow, error: eRoom } = await supabase
-                        .from("rooms")
-                        .select("id,current_deck_id")
-                        .eq("code", roomCode)
-                        .maybeSingle<RoomRow>();
+                        .from("rooms").select("id,current_deck_id").eq("code", roomCode).maybeSingle<RoomRow>();
                     if (eRoom) throw eRoom;
-
                     const pickedDeck = (deckFromQS as string | null) ?? roomRow?.current_deck_id ?? null;
                     if (!pickedDeck) throw new Error("현재 선택된 자료(교시)가 없습니다. 교사 화면에서 먼저 선택하세요.");
 
                     setDeckId(pickedDeck);
-                    const { data: d, error: eDeck } = await supabase
-                        .from("decks")
-                        .select("file_key,file_pages")
-                        .eq("id", pickedDeck)
-                        .maybeSingle();
+                    const { data: d, error: eDeck } = await supabase.from("decks").select("file_key,file_pages").eq("id", pickedDeck).maybeSingle();
                     if (eDeck) throw eDeck;
                     if (!d?.file_key) throw new Error("deck file not found");
-
-                    setFileKey(d.file_key);
-                    setTotalPages(Number(d.file_pages || 0));
+                    setFileKey(d.file_key); setTotalPages(Number(d.file_pages || 0));
                 }
 
-                // manifest(있으면) 로드 — 실패해도 편집은 진행
                 try {
                     const m = await getManifestByRoom(roomCode);
-                    const arr: ManifestItem[] = Array.isArray(m)
-                        ? m
-                        : Array.isArray((m as any)?.items)
-                            ? (m as any).items
-                            : [];
+                    const arr: ManifestItem[] = Array.isArray(m) ? m : (Array.isArray((m as any)?.items) ? (m as any).items : []);
                     if (!cancel) setItems(arr);
-                } catch {
-                    /* ignore */
-                }
+                } catch {}
             } catch (e: any) {
                 if (!cancel) setErr(e?.message || "로드 실패");
             } finally {
                 if (!cancel) setLoading(false);
             }
         })();
-
-        return () => {
-            cancel = true;
-        };
+        return () => { cancel = true; };
     }, [roomCode, deckFromQS, sourceDeckId, sourceDeckKey]);
 
-    // 프리뷰 최초 페이지 결정
+    /* ---------- 프리뷰 최초 페이지 ---------- */
     useEffect(() => {
         if (previewOnce.current || loading) return;
-        const firstPage =
-            (items.find((x) => (x as any).type === "page") as any)?.srcPage ??
-            (totalPages > 0 ? 1 : 0);
-        setPreviewPage(firstPage);
+        const first = (items.find((x) => (x as any).type === "page") as any)?.srcPage ?? (totalPages > 0 ? 1 : 0);
+        setPreviewPage(first);
         previewOnce.current = true;
     }, [loading, items, totalPages]);
 
-    const maxPage = Math.max(1, Number(totalPages || 1));
-    const dec = () => setPreviewPage((p) => Math.max(1, Math.min(maxPage, (p ?? 1) - 1)));
-    const inc = () => setPreviewPage((p) => Math.max(1, Math.min(maxPage, (p ?? 1) + 1)));
+    /* ---------- “빈 페이지 추가” 직후: 새 가상 페이지로 포커스 ---------- */
+    const lastVirtualMaxRef = useRef(0);
+    useEffect(() => {
+        const vm = maxPageFromItems(items);
+        if (vm > lastVirtualMaxRef.current) setPreviewPage(vm); // 새 페이지가 생기면 그 페이지로
+        lastVirtualMaxRef.current = vm;
+    }, [items]);
+
+    /* ---------- 프리뷰 계산(배경/오버레이) ---------- */
+    const effectiveMax = useMemo(
+        () => Math.max(totalPages || 0, maxPageFromItems(items) || 0, 1),
+        [totalPages, items]
+    );
+    const previewBgPage = useMemo(() => {
+        const p = Number(previewPage || 0);
+        return p >= 1 && p <= (totalPages || 0) ? p : 0; // 파일 밖이면 빈 캔버스
+    }, [previewPage, totalPages]);
+    const previewOverlays = useMemo<Overlay[]>(
+        () => (previewPage ? overlaysForPage(items, previewPage) : []),
+        [items, previewPage]
+    );
+
+    const dec = () => setPreviewPage((p) => Math.max(1, Math.min(effectiveMax, (p ?? 1) - 1)));
+    const inc = () => setPreviewPage((p) => Math.max(1, Math.min(effectiveMax, (p ?? 1) + 1)));
 
     return (
         <div style={{ padding: 12 }}>
@@ -324,10 +262,10 @@ export default function DeckEditorPage() {
                     <div>
                         <EditorPreviewPane
                             fileKey={fileKey}
-                            page={previewBgPage}                               // ★ 가상 페이지면 0(빈 캔버스)
+                            page={previewBgPage}              // 파일 범위 밖이면 0 = 빈 캔버스
                             height="calc(100vh - 220px)"
                             version={cacheVer}
-                            overlays={previewOverlays}                         // ★ 현재 페이지 오버레이 전달(퀴즈 등)
+                            overlays={previewOverlays}       // 현재 페이지 오버레이(퀴즈) 미리보기
                         />
                     </div>
                     <div>
