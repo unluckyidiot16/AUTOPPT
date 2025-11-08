@@ -1,47 +1,33 @@
-// src/components/WebpSlide.tsx  ★ 전체 교체
-import React, { useEffect, useMemo, useState } from "react";
-import { supabase } from "../supabaseClient";
+// src/components/WebpSlide.tsx  ← 전체 교체
+import React, { useEffect, useState } from "react";
+import { resolveWebpUrl } from "../utils/supaFiles";
 
-function slidesPrefixFromPdfKey(fileKey: string) {
-    return String(fileKey).replace(/^presentations\//i, "").replace(/\.pdf$/i, "");
-}
+type Props = {
+    fileKey: string;
+    page: number;                    // 1-base
+    height?: number | string;
+    style?: React.CSSProperties;
+    /** EditorPreviewPane이 넘기는 이름 호환용 */
+    version?: number | string;
+    versionKey?: number | string;    // (백워드 호환)
+};
 
 export default function WebpSlide({
-                                      fileKey,
-                                      page,
-                                      height = "60vh",
-                                      version = 0,
-                                      style,
-                                  }: {
-    fileKey: string;
-    page: number;
-    height?: string | number;
-    version?: number;
-    style?: React.CSSProperties;
-}) {
+                                      fileKey, page, height = "60vh", style, version, versionKey,
+                                  }: Props) {
     const [url, setUrl] = useState<string | null>(null);
-    const prefix = useMemo(() => slidesPrefixFromPdfKey(fileKey), [fileKey]);
+    const ver = String(version ?? versionKey ?? "");
 
     useEffect(() => {
-        let dead = false;
+        let off = false;
         (async () => {
-            if (!fileKey || !page || page < 1) {
-                setUrl(null);
-                return;
-            }
-            const fname = `${prefix}/${page}.webp`;
-
-            // slides 버킷 → presentations 버킷 순서로 public URL 생성
-            const s1 = supabase.storage.from("slides").getPublicUrl(fname).data.publicUrl;
-            if (s1 && !dead) { setUrl(`${s1}?v=${version}`); return; }
-
-            const s2 = supabase.storage.from("presentations").getPublicUrl(fname).data.publicUrl;
-            if (s2 && !dead) { setUrl(`${s2}?v=${version}`); return; }
-
-            setUrl(null);
+            if (!fileKey || !page || page < 1) { if (!off) setUrl(null); return; }
+            // resolveWebpUrl: slidesPrefix 계산 + 1→0 변환 + Signed URL 생성까지 처리
+            const u = await resolveWebpUrl(fileKey, page, { ttlSec: 1800, cachebuster: !!ver });
+            if (!off) setUrl(u);
         })();
-        return () => { dead = true; };
-    }, [fileKey, page, prefix, version]);
+        return () => { off = true; };
+    }, [fileKey, page, ver]);
 
     if (!fileKey || !page || page < 1) {
         return <div style={{ height, display: "grid", placeItems: "center", opacity: 0.6 }}>이미지 없음</div>;
