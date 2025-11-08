@@ -598,18 +598,40 @@ export default function PdfLibraryPage() {
         const newDeckId = ins.data.id as string;
         logAssign(`덱 생성: ${newDeckId}`);
 
-        // B) PDF 사본
+        // B) PDF 사본  ✅ 버킷 접두사 제거 필요
         const ts = Date.now();
         const destKey = `rooms/${roomId}/decks/${newDeckId}/slides-${ts}.pdf`;
+
+        // ← presentations 버킷 "상대 경로"로 맞추기
+        const srcRel = fileKey.replace(/^presentations\//i, "");
+
         let copied = false;
-        try { const { error } = await supabase.storage.from("presentations").copy(fileKey, destKey); if (!error) copied = true; } catch {}
+        try {
+            const { error } = await supabase.storage
+                .from("presentations")
+                .copy(srcRel, destKey);
+            if (!error) copied = true;
+        } catch {
+            /* no-op */
+        }
+
         if (!copied) {
-            const dl = await supabase.storage.from("presentations").download(fileKey);
+            const dl = await supabase.storage
+                .from("presentations")
+                .download(srcRel);            // ← 여기서도 반드시 srcRel 사용
             if (dl.error) throw dl.error;
-            const up = await supabase.storage.from("presentations").upload(destKey, dl.data, { contentType: "application/pdf", upsert: true });
+
+            const up = await supabase.storage
+                .from("presentations")
+                .upload(destKey, dl.data, {
+                    contentType: "application/pdf",
+                    upsert: true,
+                });
             if (up.error) throw up.error;
         }
+
         logAssign(`PDF 사본: presentations/${destKey}`);
+
 
         // C) decks.file_key 업데이트
         const upDeck = await supabase.from("decks").update({ file_key: destKey }).eq("id", newDeckId);
