@@ -1,128 +1,71 @@
 // src/utils/supaFiles.ts
 import { supabase } from "../supabaseClient";
 
-/** 버킷 API 호출 전에 'presentations/' 접두어를 제거 */
-function normPresentationsKey(key: string) {
-    return key.replace(/^presentations\//, "");
-}
-/** 버킷 API 호출 전에 'slides/' 접두어를 제거 (안전장치) */
-function normSlidesKey(key: string) {
-    return key.replace(/^slides\//, "");
-}
-
-/** 공통: 임의의 스토리지 키로 서명 URL 생성 (없으면 error) */
-export async function getSignedUrlFromKey(
-    key: string,
-    { ttlSec = 1800, cachebuster = true }: { ttlSec?: number; cachebuster?: boolean } = {}
-): Promise<string> {
-    const rel = normPresentationsKey(key);
-    const { data, error } = await supabase.storage.from("presentations").createSignedUrl(rel, ttlSec);
-    if (error || !data?.signedUrl) throw error ?? new Error("signed url failed");
-    const u = new URL(data.signedUrl);
-    if (cachebuster) u.hash = `v=${Math.floor(Date.now() / 60000)}`;
-    return u.toString();
-}
-
-/** 공통: public URL (버킷이 public일 때만 유효) */
-export function getPublicUrlFromKey(
-    key: string,
-    { cachebuster = true }: { cachebuster?: boolean } = {}
-): string {
-    const rel = normPresentationsKey(key);
-    const raw = supabase.storage.from("presentations").getPublicUrl(rel).data.publicUrl;
-    const u = new URL(raw);
-    if (cachebuster) u.searchParams.set("v", String(Math.floor(Date.now() / 60000)));
-    return u.toString();
-}
-
-/** 기존 호환: PDF용 */
-export async function getPdfUrlFromKey(
-    key: string,
-    opts?: { ttlSec?: number; cachebuster?: boolean }
-): Promise<string> {
-    try {
-        return await getSignedUrlFromKey(key, opts);
-    } catch {
-        return getPublicUrlFromKey(key, opts);
-    }
-}
-
-/** presentations/* → slides/* 프리픽스 계산 (공용) */
-export function slidesPrefixOfPresentationsFile(fileKey: string | null | undefined): string | null {
+/** presentations/* PDF → slides/* 디렉토리 프리픽스 계산 */
+export function slidesPrefixOfPresentationsFile(fileKey?: string | null): string | null {
     if (!fileKey) return null;
-    const m1 = fileKey.match(/^presentations\/decks\/([^/]+)/);
-    if (m1) return `decks/${m1[1]}`;
-    const m2 = fileKey.match(/^presentations\/rooms\/([^/]+\/decks\/[^/]+)/);
-    if (m2) return `rooms/${m2[1]}`;
+    // 1) rooms/<room>/decks/<deck>/slides-TS.pdf
+    let m = fileKey.match(/^presentations\/rooms\/([0-9a-f-]{36})\/decks\/([0-9a-f-]{36})\/slides-[^/]+\.pdf$/i);
+    if (m) return `rooms/${m[1]}/decks/${m[2]}`;
+
+    // 2) decks/<slug>/slides-TS.pdf  (업로더가 만드는 새 구조)
+    m = fileKey.match(/^presentations\/decks\/([^/]+)\/slides-[^/]+\.pdf$/i);
+    if (m) return `decks/${m[1]}`;
+
+    // 3) 혹시 과거 형태(파일명 다양) 대비
+    m = fileKey.match(/^presentations\/decks\/([^/]+)\/[^/]+\.pdf$/i);
+    if (m) return `decks/${m[1]}`;
+
+    // 4) 이미 slides 경로를 넘겨준 경우(안전장치)
+    m = fileKey.match(/^slides\/(.+)$/i);
+    if (m) return m[1];
+
     return null;
 }
 
-/** PDF file_key + page → 가능한 WebP 키 후보들을 생성 (presentations 버킷 쪽 후보) */
-export function buildWebpKeyCandidates(pdfKey: string, page: number): string[] {
-    const base = pdfKey.replace(/\.pdf$/i, "").replace(/\/+$/, "");
-    const n = String(page);
-    const n3 = n.padStart(3, "0");
-    const n4 = n.padStart(4, "0");
-    return [
-        `${base}/${n}.webp`,
-        `${base}/${n3}.webp`,
-        `${base}/${n4}.webp`,
-        `${base}-p${n}.webp`,
-        `${base}-${n}.webp`,
-        `${base}-${n3}.webp`,
-        `${base}-${n4}.webp`,
-        `${base}/page-${n}.webp`,
-        `${base}/slide-${n}.webp`,
-    ];
+/** decks.file_key(또는 presentations PDF key) + 페이지(1-base) → slides/* 내부 이미지 키(버킷 상대 경로) */
+export function resolveSlidesKey(fileKey: string, page: number): string | null {
+    // presentations/* 기준의 일반 케이스
+    const prefix = slidesPrefixOfPresentationsFile(fileKey);
+    if (prefix) return `${prefix}/${Math.max(0, page - 1)}.webp`;
+
+    // 혹시 decks.file_key가 rooms/*/decks/*/slides-*.pdf 같은 DB 저장형인데
+    // presentations/ 없이 넘어오는 경우도 커버
+    let m = fileKey.match(/^rooms\/([0-9a-f-]{36})\/decks\/([0-9a-f-]{36})\/slides-[^/]+\.pdf$/i);
+    if (m) return `rooms/${m[1]}/decks/${m[2]}/${Math.max(0, page - 1)}.webp`;
+
+    // 최후: 이미 슬라이드 경로를 받은 경우
+    m = fileKey.match(/^decks\/([^/]+)\/?$/i);
+    if (m) return `decks/${m[1]}/${Math.max(0, page - 1)}.webp`;
+
+    return null;
 }
 
-/** 존재하는 WebP를 찾으면 URL 반환 (slides 0-base 우선 → presentations 폴백) */
-export async function resolveWebpUrl(
-    pdfKey: string,
-    page: number,
-    { ttlSec = 1800, cachebuster = true }: { ttlSec?: number; cachebuster?: boolean } = {}
-): Promise<string | null> {
-    // 1) slides 버킷(0-base) 우선
-    const sp = slidesPrefixOfPresentationsFile(pdfKey);
-    const slidesCandidates = sp ? [`${sp}/${Math.max(0, page - 1)}.webp`] : [];
-    for (const k of slidesCandidates) {
-        try {
-            const rel = normSlidesKey(k);
-            const { data, error } = await supabase.storage.from("slides").createSignedUrl(rel, ttlSec);
-            if (!error && data?.signedUrl) {
-                const u = new URL(data.signedUrl);
-                if (cachebuster) u.hash = `v=${Math.floor(Date.now() / 60000)}`;
-                return u.toString();
-            }
-        } catch {}
-    }
-    if (slidesCandidates.length) {
-        try {
-            const rel = normSlidesKey(slidesCandidates[0]);
-            const raw = supabase.storage.from("slides").getPublicUrl(rel).data.publicUrl;
-            const u = new URL(raw);
-            if (cachebuster) u.searchParams.set("v", String(Math.floor(Date.now() / 60000)));
-            return u.toString();
-        } catch {}
-    }
-
-    // 2) (호환) presentations 버킷 후보들(보통 1-base 명명)
-    const candidates = buildWebpKeyCandidates(pdfKey, page);
-    for (const k of candidates) {
-        try {
-            const rel = normPresentationsKey(k);
-            const { data, error } = await supabase.storage.from("presentations").createSignedUrl(rel, ttlSec);
-            if (!error && data?.signedUrl) {
-                const u = new URL(data.signedUrl);
-                if (cachebuster) u.hash = `v=${Math.floor(Date.now() / 60000)}`;
-                return u.toString();
-            }
-        } catch {}
-    }
+/** slides/* 키 → 읽기 URL (우선 Signed, 실패 시 Public) */
+export async function signedSlidesUrl(key: string, ttlSec = 1800): Promise<string | null> {
+    const b = supabase.storage.from("slides");
+    // signed
     try {
-        const first = candidates[0];
-        return getPublicUrlFromKey(first, { cachebuster });
-    } catch {
-        return null;
-    }
+        const { data } = await b.createSignedUrl(key, ttlSec);
+        if (data?.signedUrl) return data.signedUrl;
+    } catch {}
+    // public
+    try {
+        const { data } = await b.getPublicUrl(key);
+        if (data?.publicUrl) return data.publicUrl;
+    } catch {}
+    return null;
+}
+
+/** 파일키 + 페이지(1-base) → WebP 이미지 URL */
+export async function resolveWebpUrl(
+    fileKey: string,
+    page: number,
+    opts?: { ttlSec?: number; cachebuster?: boolean },
+): Promise<string | null> {
+    const k = resolveSlidesKey(fileKey, page);
+    if (!k) return null;
+    const url = await signedSlidesUrl(k, opts?.ttlSec ?? 1800);
+    if (!url) return null;
+    return opts?.cachebuster ? `${url}&_=${Date.now()}` : url;
 }
