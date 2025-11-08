@@ -89,8 +89,7 @@ export default function PdfToSlidesUploader({
 
             // 3) pdf.js 로드
             push("pdf.js (legacy) 준비…");
-            // 정적 import라 await 불필요. 충돌 피하려고 worker는 끔.
-            (pdfjs as any).GlobalWorkerOptions.workerSrc = undefined;
+            // workerless로 열 것이므로 workerSrc는 건드리지 않습니다.
             setProgress(10);
 
             // 4) PDF 열기 (workerless 모드)
