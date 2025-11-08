@@ -312,51 +312,73 @@ export default function TeacherPage() {
 
     const totalPages = useMemo(() => {
         const slot = manifest?.slots?.find((s) => s.slot === activeSlot);
-        return slot?.slides?.length ?? 0;
-    }, [manifest, activeSlot]);
+        const mpages = slot?.slides?.length ?? 0;
+        if (mpages > 0) return mpages;
+
+        // manifest가 빈 경우 → 배정 현황(스토리지 실제 개수)로 폴백
+        const a = assigned.find((x) => x.slot === activeSlot);
+        return a?.slides_count ?? 0;
+    }, [manifest, assigned, activeSlot]);
 
     // ▼▼▼ 배경 URL 해석 (signed URL + 폴백) ▼▼▼
     const deckPrefixCache = useRef(new Map<string, string>()); // deckId -> slidesPrefix(decks/<slug>)
     const [activeBgUrl, setActiveBgUrl] = useState<string | null>(null);
     const [activeOverlays, setActiveOverlays] = useState<Overlay[]>([]);
 
+    // 상단 의존성에 assigned 포함 (중요)
     const refreshActiveSlide = useCallback(async () => {
         const slot = manifest?.slots?.find((s) => s.slot === activeSlot);
-        if (!slot) { setActiveBgUrl(null); setActiveOverlays([]); return; }
         const idx = Math.max(0, page - 1);
-        const slide = slot.slides[idx] as RpcSlide | undefined;
-        if (!slide) { setActiveBgUrl(null); setActiveOverlays([]); return; }
 
-        const overlays: Overlay[] = (slide.overlays || []).map((o) => ({ id: String(o.id), z: o.z, type: o.type, payload: o.payload }));
+        // 우선 manifest 기반
+        const slide = slot?.slides?.[idx] as RpcSlide | undefined;
+
+        // 오버레이
+        const overlays: Overlay[] = (slide?.overlays || []).map((o) => ({
+            id: String(o.id), z: o.z, type: o.type, payload: o.payload
+        }));
         setActiveOverlays(overlays);
 
-        const pageIdx0 = Number(slide.page_index ?? idx); // 0-base
-        let key: string | null = slide.image_key ?? null;
+        const pageIdx0 = Number(slide?.page_index ?? idx); // 0-base
+        let key: string | null = slide?.image_key ?? null;
 
-        // 1) rooms/<roomId>/decks/<deckId>/<page>.webp
-        if (!key && roomId && slide.material_id) {
+        // 1) rooms/<roomId>/decks/<deckId>/<page>.webp (manifest가 비어도 material_id가 있으면 시도)
+        if (!key && roomId && slide?.material_id) {
             key = `rooms/${roomId}/decks/${slide.material_id}/${Math.max(0, pageIdx0)}.webp`;
         }
 
-        // 2) decks/<slug>/<page>.webp  (자료함 원본 경로 폴백)
-        if (!key && slide.material_id) {
+        // 2) decks/<slug>/<page>.webp (원본 경로)
+        if (!key && slide?.material_id) {
             let prefix = deckPrefixCache.current.get(slide.material_id);
             if (!prefix) {
-                const { data } = await supabase.from("decks").select("file_key").eq("id", slide.material_id).maybeSingle();
-                const p = slidesPrefixOfPresentationsFile(data?.file_key ?? null); // presentations/decks/<slug>/slides-*.pdf → decks/<slug>
+                const { data } = await supabase
+                    .from("decks")
+                    .select("file_key")
+                    .eq("id", slide.material_id)
+                    .maybeSingle();
+                const p = slidesPrefixOfPresentationsFile(data?.file_key ?? null);
                 if (p) { prefix = p; deckPrefixCache.current.set(slide.material_id, p); }
             }
             if (prefix) key = `${prefix}/${Math.max(0, pageIdx0)}.webp`;
         }
 
-        // 최종 URL(signed)
+        // ★ 3) manifest 자체가 비어 slide가 undefined인 경우 → assigned 폴백
+        if (!key) {
+            const a = assigned.find((x) => x.slot === activeSlot);
+            if (a?.slides_prefix && (a.slides_count ?? 0) > pageIdx0) {
+                key = `${a.slides_prefix}/${pageIdx0}.webp`;
+                DBG.info("slide-fallback:assigned", { key, pageIdx0, activeSlot });
+            }
+        }
+
         if (key) {
             const url = await signedSlidesUrl(key, 1800);
             setActiveBgUrl(url);
         } else {
             setActiveBgUrl(null);
         }
-    }, [manifest, activeSlot, page, roomId]);
+    }, [manifest, assigned, activeSlot, page, roomId]);
+
 
     useEffect(() => { refreshActiveSlide(); }, [refreshActiveSlide]);
 
