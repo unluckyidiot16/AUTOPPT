@@ -8,19 +8,11 @@ import { usePresence } from "../hooks/usePresence";
 import PresenceSidebar from "../components/PresenceSidebar";
 import { useArrowNav } from "../hooks/useArrowNav";
 import { getBasePath } from "../utils/getBasePath";
-import { RoomQR } from "../components/RoomQR";
 import SlideStage, { type Overlay } from "../components/SlideStage";
 
 type RpcOverlay = { id: string; z: number; type: string; payload: any };
-type RpcSlide = {
-    index: number;
-    kind: string;
-    material_id: string | null;
-    page_index: number | null;
-    image_key: string | null;
-    overlays: RpcOverlay[];
-};
-type RpcSlot = { slot: number; lesson_id: string; current_index: number; slides: RpcSlide[]; };
+type RpcSlide = { index: number; kind: string; material_id: string | null; page_index: number | null; image_key: string | null; overlays: RpcOverlay[]; };
+type RpcSlot  = { slot: number; lesson_id: string; current_index: number; slides: RpcSlide[]; };
 type RpcManifest = { room_code: string; slots: RpcSlot[]; error?: string };
 
 const DEBUG = true;
@@ -36,45 +28,11 @@ async function rpc<T = any>(fn: string, args?: Record<string, any>) {
     return data as T;
 }
 
-function useQS() {
-    const { search } = useLocation();
-    return useMemo(() => new URLSearchParams(search), [search]);
-}
-
-function useToast(ms = 2000) {
-    const [open, setOpen] = useState(false);
-    const [msg, setMsg] = useState("");
-    const show = (m: string) => { setMsg(m); setOpen(true); setTimeout(() => setOpen(false), ms); };
-    const node = open ? (
-        <div style={{
-            position: "fixed", left: "50%", bottom: 24, transform: "translateX(-50%)",
-            background: "rgba(17,24,39,0.98)", color: "#fff", border: "1px solid rgba(148,163,184,0.25)",
-            borderRadius: 12, padding: "10px 14px", boxShadow: "0 10px 24px rgba(0,0,0,0.35)", zIndex: 60
-        }}>{msg}</div>
-    ) : null;
-    return { show, node };
-}
-
-function useFullscreenTarget(selector: string) {
-    const [isFS, setIsFS] = useState(false);
-    useEffect(() => {
-        const h = () => setIsFS(!!document.fullscreenElement);
-        document.addEventListener("fullscreenchange", h);
-        return () => document.removeEventListener("fullscreenchange", h);
-    }, []);
-    const toggle = useCallback(() => {
-        const el = (document.querySelector(selector) as HTMLElement) || document.documentElement;
-        const doc: any = document;
-        if (!doc.fullscreenElement) el.requestFullscreen?.();
-        else doc.exitFullscreen?.();
-    }, [selector]);
-    return { isFS, toggle };
-}
+function useQS() { const { search } = useLocation(); return useMemo(() => new URLSearchParams(search), [search]); }
 
 export default function TeacherPage() {
     const nav = useNavigate();
     const qs = useQS();
-    const toast = useToast();
 
     // ---- Room ----
     const defaultCode = useMemo(() => "CLASS-" + Math.random().toString(36).slice(2, 8).toUpperCase(), []);
@@ -83,7 +41,6 @@ export default function TeacherPage() {
 
     const viewMode: "present" | "setup" = qs.get("mode") === "setup" ? "setup" : "present";
     const presence = usePresence(roomCode, "teacher");
-    const { isFS, toggle: toggleFS } = useFullscreenTarget(".slide-stage");
 
     const { connected, lastMessage, sendGoto, sendRefresh } = useRealtime(roomCode, "teacher");
 
@@ -102,24 +59,18 @@ export default function TeacherPage() {
         if (roomId) return roomId;
         const { data, error } = await supabase.from("rooms").select("id").eq("code", roomCode).maybeSingle();
         if (error || !data?.id) throw new Error("ROOM_NOT_FOUND");
-        setRoomId(data.id);
-        return data.id;
+        setRoomId(data.id); return data.id;
     }, [roomId, roomCode]);
 
-    // 초기 roomId 로드
-    useEffect(() => {
-        (async () => { try { await ensureRoomId(); } catch (e) { DBG.err(e); } })();
-    }, [ensureRoomId]);
+    useEffect(() => { (async () => { try { await ensureRoomId(); } catch (e) { DBG.err(e); } })(); }, [ensureRoomId]);
 
-    // 2) 페이지 마운트 시 가드 + 호스트 잠금(옵션)
+    // 2) 페이지 마운트 시 가드
     useEffect(() => {
         (async () => {
             try {
                 await ensureRoomId();
                 const { error } = await supabase.rpc("claim_host", { p_room_code: roomCode });
-                if (error && error.message.includes("BUSY")) {
-                    alert("다른 교사가 발표 중입니다.");
-                }
+                if (error && error.message.includes("BUSY")) alert("다른 교사가 발표 중입니다.");
             } catch (e:any) {
                 if (e.message === "ROOM_NOT_FOUND") {
                     alert("방이 없습니다. 로비에서 방을 생성/선택하세요.");
@@ -133,80 +84,82 @@ export default function TeacherPage() {
     const [manifest, setManifest] = useState<RpcManifest | null>(null);
     const refreshManifest = useCallback(async () => {
         if (!roomCode) return setManifest(null);
-        try {
-            const data = await rpc<RpcManifest>("get_student_manifest_by_code", { p_room_code: roomCode });
-            setManifest(data);
-        } catch (e) {
-            DBG.err("manifest rpc", e);
-            setManifest(null);
-        }
+        try { setManifest(await rpc<RpcManifest>("get_student_manifest_by_code", { p_room_code: roomCode })); }
+        catch (e) { DBG.err("manifest rpc", e); setManifest(null); }
     }, [roomCode]);
     useEffect(() => { refreshManifest(); }, [refreshManifest]);
 
-    // ===== 교시(슬롯) 목록 관리 =====
+    // 🔔 실시간 감시: room_decks / decks 변경 시 manifest 즉시 새로고침
+    useEffect(() => {
+        let chan: ReturnType<typeof supabase.channel> | null = null;
+        let alive = true;
+        (async () => {
+            try {
+                const rid = await ensureRoomId();
+                if (!alive) return;
+                chan = supabase
+                    .channel(`manifest-watch:${rid}`)
+                    .on("postgres_changes", { event: "*", schema: "public", table: "room_decks", filter: `room_id=eq.${rid}` }, () => refreshManifest())
+                    .on("postgres_changes", { event: "*", schema: "public", table: "decks" }, () => refreshManifest())
+                    .subscribe();
+            } catch (e) { DBG.err("subscribe", e); }
+        })();
+        return () => { alive = false; if (chan) supabase.removeChannel(chan); };
+    }, [ensureRoomId, refreshManifest]);
+
+    // ===== 교시(슬롯) 목록 =====
     const [slots, setSlots] = useState<number[]>([]);
     const [activeSlot, setActiveSlot] = useState<number>(1);
-
     const refreshSlotsList = useCallback(async () => {
         try {
             const rid = await ensureRoomId();
-            const { data, error } = await supabase
-                .from("room_lessons").select("slot").eq("room_id", rid).order("slot", { ascending: true });
+            const { data, error } = await supabase.from("room_lessons").select("slot").eq("room_id", rid).order("slot", { ascending: true });
             if (error) throw error;
             const arr = (data || []).map((r: any) => Number(r.slot));
             setSlots(arr);
             if (arr.length && !arr.includes(activeSlot)) setActiveSlot(arr[0]);
-        } catch (e) {
-            DBG.err("refreshSlotsList", e);
-        }
+        } catch (e) { DBG.err("refreshSlotsList", e); }
     }, [ensureRoomId, activeSlot]);
     useEffect(() => { refreshSlotsList(); }, [refreshSlotsList]);
 
-    // 교시 row 보장
     const ensureSlotRow = useCallback(async (slot: number) => {
         const rid = await ensureRoomId();
-        const { error } = await supabase
-            .from("room_lessons")
-            .upsert({ room_id: rid, slot, current_index: 0 }, { onConflict: "room_id,slot" });
+        const { error } = await supabase.from("room_lessons").upsert({ room_id: rid, slot, current_index: 0 }, { onConflict: "room_id,slot" });
         if (error) throw error;
     }, [ensureRoomId]);
 
-    // 교시 생성
     const createSlot = useCallback(async () => {
         try {
             await ensureRoomId();
-            const used = new Set(slots);
-            let next = 1; while (used.has(next) && next <= 12) next++;
-            if (next > 12) { toast.show("더 이상 교시를 만들 수 없습니다."); return; }
+            const used = new Set(slots); let next = 1; while (used.has(next) && next <= 12) next++;
+            if (next > 12) { alert("더 이상 교시를 만들 수 없습니다."); return; }
             await ensureSlotRow(next);
             await refreshSlotsList();
             setActiveSlot(next);
-            toast.show(`${next}교시 생성`);
             sendRefresh("manifest");
-        } catch (e: any) { toast.show(e?.message ?? String(e)); }
-    }, [ensureRoomId, ensureSlotRow, refreshSlotsList, slots, toast, sendRefresh]);
+        } catch (e: any) { alert(e?.message ?? String(e)); }
+    }, [ensureRoomId, ensureSlotRow, refreshSlotsList, slots, sendRefresh]);
 
     // activeSlot → page
     const [page, setPage] = useState<number>(1);
     const syncPageFromSlot = useCallback(async (slot: number) => {
         try {
             const rid = await ensureRoomId();
-            const { data } = await supabase
-                .from("room_lessons").select("current_index").eq("room_id", rid).eq("slot", slot).maybeSingle();
+            const { data } = await supabase.from("room_lessons").select("current_index").eq("room_id", rid).eq("slot", slot).maybeSingle();
             const idx = Number(data?.current_index ?? 0);
             setPage(idx + 1);
         } catch (e) { DBG.err("syncPageFromSlot", e); }
     }, [ensureRoomId]);
     useEffect(() => { syncPageFromSlot(activeSlot); }, [activeSlot, syncPageFromSlot]);
 
-    // total & active (no-fallback)
+    // total & active
     const totalPages = useMemo(() => {
-        const slot = manifest?.slots?.find(s => s.slot === activeSlot);
+        const slot = manifest?.slots?.find((s) => s.slot === activeSlot);
         return slot?.slides?.length ?? 0;
     }, [manifest, activeSlot]);
 
     function currentSlide(): RpcSlide | null {
-        const slot = manifest?.slots?.find(s => s.slot === activeSlot);
+        const slot = manifest?.slots?.find((s) => s.slot === activeSlot);
         if (!slot) return null;
         const idx = Math.max(0, page - 1);
         return slot.slides[idx] ?? null;
@@ -214,24 +167,19 @@ export default function TeacherPage() {
     const active = useMemo(() => {
         const s = currentSlide(); if (!s) return null;
         const bgUrl = s.image_key ? supabase.storage.from("slides").getPublicUrl(s.image_key).data.publicUrl : null;
-        const overlays: Overlay[] = (s.overlays || []).map(o => ({ id: String(o.id), z: o.z, type: o.type, payload: o.payload }));
+        const overlays: Overlay[] = (s.overlays || []).map((o) => ({ id: String(o.id), z: o.z, type: o.type, payload: o.payload }));
         return { bgUrl, overlays };
     }, [manifest, page, activeSlot]);
 
-    // Realtime: 신규 학생 hello → 현재 상태 안내
-    useEffect(() => {
-        if (!lastMessage) return;
-        if (lastMessage.type === "hello") sendGoto(page, activeSlot);
-    }, [lastMessage, page, activeSlot, sendGoto]);
+    // 신규 학생 hello → 현재 상태 안내
+    useEffect(() => { if (!lastMessage) return; if (lastMessage.type === "hello") sendGoto(page, activeSlot); }, [lastMessage, page, activeSlot, sendGoto]);
 
     // 페이지 이동
     const gotoPageForSlot = useCallback(async (slot: number, nextPage: number) => {
         const p = Math.max(1, nextPage);
         try {
             const rid = await ensureRoomId();
-            const { error } = await supabase
-                .from("room_lessons")
-                .update({ current_index: p - 1 }).eq("room_id", rid).eq("slot", slot);
+            const { error } = await supabase.from("room_lessons").update({ current_index: p - 1 }).eq("room_id", rid).eq("slot", slot);
             if (error) throw error;
             setPage(p);
             sendGoto(p, slot);
@@ -241,17 +189,8 @@ export default function TeacherPage() {
             sendGoto(p, slot);
         }
     }, [ensureRoomId, sendGoto]);
-
-    const next = useCallback(async () => {
-        if (totalPages && page >= totalPages) return;
-        await gotoPageForSlot(activeSlot, page + 1);
-    }, [page, totalPages, activeSlot, gotoPageForSlot]);
-
-    const prev = useCallback(async () => {
-        if (page <= 1) return;
-        await gotoPageForSlot(activeSlot, page - 1);
-    }, [page, activeSlot, gotoPageForSlot]);
-
+    const next = useCallback(async () => { if (totalPages && page >= totalPages) return; await gotoPageForSlot(activeSlot, page + 1); }, [page, totalPages, activeSlot, gotoPageForSlot]);
+    const prev = useCallback(async () => { if (page <= 1) return; await gotoPageForSlot(activeSlot, page - 1); }, [page, activeSlot, gotoPageForSlot]);
     useArrowNav(prev, next);
 
     // 학생 접속 링크
@@ -279,14 +218,11 @@ export default function TeacherPage() {
     const StageBlock = (
         <div className="panel" style={{ padding: 12 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
-                <div style={{ fontSize: 12, opacity: 0.7 }}>
-                    {activeSlot}교시 · 페이지 {page}{totalPages ? ` / ${totalPages}` : ""}
-                </div>
+                <div style={{ fontSize: 12, opacity: 0.7 }}>{activeSlot}교시 · 페이지 {page}{totalPages ? ` / ${totalPages}` : ""}</div>
                 <a className="btn" href={studentUrl} target="_blank" rel="noreferrer">학생 접속 링크</a>
-                <button className="btn" onClick={toggleFS}>{isFS ? "전체화면 해제" : "전체화면"}</button>
                 <span className="badge" title="Realtime">{connected ? "RT:ON" : "RT:OFF"}</span>
             </div>
-            <div className="slide-stage" style={{ width: "100%", height: "72vh", display: "grid", placeItems: "center", background: isFS ? "#000" : "transparent" }}>
+            <div className="slide-stage" style={{ width: "100%", height: "72vh", display: "grid", placeItems: "center" }}>
                 <SlideStage bgUrl={active?.bgUrl ?? null} overlays={active?.overlays ?? []} mode="teacher" />
             </div>
             <div style={{ display: "flex", gap: 8, justifyContent: "center", marginTop: 10 }}>
@@ -297,7 +233,7 @@ export default function TeacherPage() {
         </div>
     );
 
-    // 우측 패널(업로더 제거 → 자료함 링크만)
+    // 우측 패널(업로더 제거 → 자료함 버튼만 상단 탑바에 유지)
     const SetupRight = (
         <div className="panel" style={{ display: "grid", gap: 16 }}>
             {/* 교시 관리 */}
@@ -312,13 +248,7 @@ export default function TeacherPage() {
                         <span style={{ opacity: .7 }}>아직 생성된 교시가 없습니다.</span>
                     ) : (
                         slots.map((s) => (
-                            <button
-                                key={s}
-                                className="btn"
-                                aria-pressed={activeSlot === s}
-                                onClick={() => setActiveSlot(s)}
-                                style={activeSlot === s ? { outline: "2px solid #2563eb" } : undefined}
-                            >
+                            <button key={s} className="btn" aria-pressed={activeSlot === s} onClick={() => setActiveSlot(s)} style={activeSlot === s ? { outline: "2px solid #2563eb" } : undefined}>
                                 {s}교시
                             </button>
                         ))
@@ -382,7 +312,6 @@ export default function TeacherPage() {
             )}
 
             <PresenceSidebar members={presence.members} unfocused={presence.unfocused} />
-            {toast.node}
         </div>
     );
 }
