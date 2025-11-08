@@ -11,23 +11,23 @@ type PDFPageProxy = import("pdfjs-dist/types/src/pdf").PDFPageProxy;
 
 /** ──────────────── pdf.js 안정 로더 ──────────────── */
 async function loadPdfJsStable(): Promise<PdfJs> {
-    // 1) v5 ESM (로컬 패키지)
     try {
         const pdf: any = await import("pdfjs-dist/build/pdf");
-        const ver = pdf?.version ?? "5.x";
-        // 워커는 쓰지 않지만, 혹시 내부에서 참조할 수 있으니 workerSrc만 안전 고정
+        const ver = pdf?.version ?? "5";
+        // ★ ESM 워커(.mjs)로 고정
         (pdf as any).GlobalWorkerOptions.workerSrc =
-            `https://cdn.jsdelivr.net/npm/pdfjs-dist@${ver}/build/pdf.worker.min.js`;
+            `https://cdn.jsdelivr.net/npm/pdfjs-dist@${ver}/build/pdf.worker.min.mjs`;
         return pdf;
     } catch { /* pass */ }
 
-    // 2) CDN 레거시 ESM 강제 폴백(로컬 legacy 경로 임포트 제거)
+    // CDN 레거시 폴백도 modern 경로(.mjs) 사용
     const url = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69/legacy/build/pdf.min.mjs";
     const pdf: any = await import(/* @vite-ignore */ url);
     (pdf as any).GlobalWorkerOptions.workerSrc =
-        "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69/legacy/build/pdf.worker.min.js";
+        "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69/build/pdf.worker.min.mjs"; // ← .mjs
     return pdf;
 }
+
 
 /** 타임아웃 유틸 */
 function withTimeout<T>(p: Promise<T>, ms: number, tag = "timeout"): Promise<T> {
