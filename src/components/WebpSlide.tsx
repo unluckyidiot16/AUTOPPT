@@ -4,18 +4,15 @@ import { supabase } from "../supabaseClient";
 
 type FitMode = "height" | "width";
 type Props = {
-    /** decks.file_key (ex: rooms/<room>/decks/<deck>/slides-TS.pdf) */
-    fileKey: string;
-    page: number;                // 1..N
-    fit?: FitMode;               // 기본: height
-    maxHeight?: string;          // fit=height일 때 사용
-    /** 캐시 무효화용 키 (예: cacheVer) */
-    versionKey?: string | number;
+    fileKey: string;          // e.g. rooms/<room>/decks/<deck>/slides-TS.pdf  or presentations/...
+    page: number;             // 1..N
+    fit?: FitMode;            // default: height
+    maxHeight?: string;       // when fit=height
+    versionKey?: string|number;
     style?: React.CSSProperties;
 };
 
 function buildWebpKey(fileKey: string, page: number) {
-    // bucket prefix 제거 + .pdf 제거 → rooms/.../slides-TS/1.webp
     const rel = String(fileKey).replace(/^presentations\//i, "").replace(/\.pdf$/i, "");
     return `${rel}/${page}.webp`;
 }
@@ -28,20 +25,19 @@ export default function WebpSlide({
 
     React.useEffect(() => {
         let alive = true;
-        setSrc(null);
-        setErr(null);
+        setSrc(null); setErr(null);
         (async () => {
             try {
+                if (!fileKey || page <= 0) return; // 안전 가드
                 const key = buildWebpKey(fileKey, page);
                 const { data } = supabase.storage.from("presentations").getPublicUrl(key);
                 const url = data?.publicUrl || null;
                 if (!alive) return;
                 if (!url) { setErr("이미지 URL 생성 실패"); return; }
-                // 캐시버스터(선택)
                 setSrc(versionKey != null ? `${url}?v=${encodeURIComponent(String(versionKey))}` : url);
-            } catch (e: any) {
+            } catch (e:any) {
                 if (!alive) return;
-                setErr(e?.message || "이미지 찾기 실패");
+                setErr(e?.message || "이미지 로드 실패");
             }
         })();
         return () => { alive = false; };

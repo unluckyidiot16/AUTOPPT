@@ -16,7 +16,6 @@ export default function WebpThumb({
     height?: number;
     style?: React.CSSProperties;
     title?: string;
-    /** 캐시 무효화용 키(선택) */
     version?: number | string;
 }) {
     const [src, setSrc] = React.useState<string | null>(null);
@@ -24,6 +23,7 @@ export default function WebpThumb({
     React.useEffect(() => {
         let alive = true;
         (async () => {
+            if (!fileKey || page <= 0) { setSrc(null); return; }
             const key = buildWebpKey(fileKey, page);
             const { data } = supabase.storage.from("presentations").getPublicUrl(key);
             const url = data?.publicUrl || null;

@@ -6,7 +6,7 @@ import DeckEditor from "../components/DeckEditor";
 import EditorPreviewPane from "../components/EditorPreviewPane";
 import type { ManifestItem } from "../types/manifest";
 import { getManifestByRoom } from "../api/overrides";
-import { openPdfWorkerless } from "../lib/pdfWorkerless";
+import { openPdfWorkerless, primePdfWorkerless } from "../lib/pdfWorkerless";
 
 
 type RoomRow = { id: string; current_deck_id: string | null };
@@ -83,6 +83,8 @@ export default function DeckEditorPage() {
         return () => clearInterval(t);
     }, []);
 
+    useEffect(() => { primePdfWorkerless(); }, []);
+    
     const previewOnce = useRef(false);
     const isClone = Boolean(sourceDeckId);
     const onItemsChange = (next: ManifestItem[]) => setItems(next);
@@ -142,6 +144,7 @@ export default function DeckEditorPage() {
         } catch (e) {
             // 변환 실패해도 편집은 가능 — 단, 이미지 미생성 표시 유지
             console.warn("[DeckEditor] convertPdfToSlides failed:", e);
+            console.error("convertPdfToSlides::upload error detail", e);
         }
 
         return { roomId, deckId, file_key: destKey, totalPages: pages };
@@ -271,6 +274,7 @@ export default function DeckEditorPage() {
                             tempCleanup={isClone && roomIdState ? { roomId: roomIdState, deleteDeckRow: true } : undefined}
                             onItemsChange={onItemsChange}
                             onSelectPage={(p) => setPreviewPage(Math.max(0, p))}
+                            enableRealtime={false}
                         />
                     </div>
                 </div>

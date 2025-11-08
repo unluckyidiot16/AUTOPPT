@@ -26,6 +26,7 @@ function ensureManifestPages(totalPages: number): ManifestPageItem[] {
 export default function DeckEditor({
                                        roomCode, deckId, totalPages, fileKey, onClose, onSaved,
                                        onItemsChange, onSelectPage, applyPatchRef, tempCleanup,
+                                       enableRealtime = false,
                                    }: {
     roomCode: string; deckId: string; totalPages: number | null; fileKey?: string | null;
     onClose: () => void; onSaved?: () => void;
@@ -33,6 +34,7 @@ export default function DeckEditor({
     onSelectPage?: (srcPage: number) => void;
     applyPatchRef?: React.MutableRefObject<((fn: (cur: ManifestItem[]) => ManifestItem[]) => void) | null>;
     tempCleanup?: { roomId: string; deleteDeckRow?: boolean };
+    enableRealtime?: boolean;
 }) {
     const [items, _setItems] = useState<ManifestItem[]>([]);
     const [loading, setLoading] = useState(true);
@@ -78,10 +80,11 @@ export default function DeckEditor({
         (async () => {
             setLoading(true);
             try {
-                const m = await getManifestByRoom(roomCode);
-                let next: ManifestItem[] =
-                    Array.isArray(m) ? m :
-                        (Array.isArray((m as any)?.items) ? (m as any).items : []);
+                let next: ManifestItem[] = [];
+                        if (enableRealtime && roomCode) {
+                              const m = await getManifestByRoom(roomCode);
+                              next = Array.isArray(m) ? m : (Array.isArray((m as any)?.items) ? (m as any).items : []);
+                            }
                 const hasPage = next.some(it => it.type === "page");
                 if ((!next.length || !hasPage) && (totalPages ?? 0) > 0) {
                     const pages = ensureManifestPages(totalPages!);
@@ -92,7 +95,7 @@ export default function DeckEditor({
             } finally { setLoading(false); }
         })();
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [roomCode, totalPages]);
+    }, [roomCode, totalPages, enableRealtime]);
 
     const resetDefault = () => {
         if (!totalPages) return;
