@@ -6,44 +6,11 @@ import DeckEditor from "../components/DeckEditor";
 import EditorPreviewPane from "../components/EditorPreviewPane";
 import type { ManifestItem } from "../types/manifest";
 import { getManifestByRoom } from "../api/overrides";
+import { openPdfWorkerless } from "../lib/pdfWorkerless";
+
 
 type RoomRow = { id: string; current_deck_id: string | null };
 
-// DeckEditorPage.tsx
-async function loadPdfJs(): Promise<{ pdfjs: any; mode: string }> {
-    let pdfjs: any = null;
-    let mode = "unknown";
-
-    // 1) import 경로 다단계 (환경별 번들 차이 대응)
-    try { pdfjs = await import("pdfjs-dist/build/pdf"); mode = "build"; }
-    catch {
-        try { pdfjs = await import("pdfjs-dist/legacy/build/pdf"); mode = "legacy"; }
-        catch { pdfjs = await import("pdfjs-dist"); mode = "root"; }
-    }
-
-    const ver = (pdfjs as any).version || "latest";
-
-    // 2) v5 ESM 모듈 워커 우선 시도
-    let portSet = false;
-    try {
-        const workerUrl = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${ver}/build/pdf.worker.min.mjs`;
-        const worker = new Worker(workerUrl, { type: "module" as any });
-        if (pdfjs.GlobalWorkerOptions) {
-            pdfjs.GlobalWorkerOptions.workerPort = worker as any; // v5 경로
-            portSet = true;
-        }
-    } catch {
-        // 무시하고 아래 workerSrc 폴백
-    }
-
-    // 3) 클래식 workerSrc 폴백 (v2/v3 호환 + Safari 안전)
-    if (pdfjs.GlobalWorkerOptions && !portSet) {
-        pdfjs.GlobalWorkerOptions.workerSrc =
-            `https://cdn.jsdelivr.net/npm/pdfjs-dist@${ver}/build/pdf.worker.min.js`;
-    }
-
-    return { pdfjs, mode };
-}
 
 async function convertPdfToSlides({
                                       supabase, bucket = "presentations", pdfKey,
@@ -59,10 +26,8 @@ async function convertPdfToSlides({
     if (dl.error) throw dl.error;
     const buf = await dl.data.arrayBuffer();
 
-    const { pdfjs } = await loadPdfJs();
-    if (!pdfjs) return { pages: 0 };
+    const doc = await openPdfWorkerless(buf);
 
-    const doc = await pdfjs.getDocument({ data: buf }).promise;
     const total = doc.numPages;
 
     // slides prefix: rooms/.../decks/.../slides-xxxx  (".pdf" 제거)
@@ -206,7 +171,7 @@ export default function DeckEditorPage() {
                     setDeckId(ensured.deckId);
                     setFileKey(ensured.file_key);
                     setTotalPages(ensured.totalPages || 0);
-                    setCacheVer(v => v + 1);          // 캐시 무효화 위해 버전 증가(미리보기에 반영)
+                    if ((ensured.totalPages || 0) > 0) setCacheVer(v => v + 1);
                 } else if (sourceDeckId) {
                     const { data: src, error: eSrc } = await supabase
                         .from("decks").select("file_key, file_pages").eq("id", sourceDeckId).maybeSingle();
@@ -218,6 +183,7 @@ export default function DeckEditorPage() {
                     setDeckId(ensured.deckId);
                     setFileKey(ensured.file_key);
                     setTotalPages(ensured.totalPages || Number(src.file_pages || 0));
+                    if ((ensured.totalPages || 0) > 0) setCacheVer(v => v + 1);
                 } else {
                     const pickedDeck = (deckFromQS as string | null) ?? roomRow?.current_deck_id ?? null;
                     if (!pickedDeck) throw new Error("현재 선택된 자료(교시)가 없습니다. 교사 화면에서 먼저 선택하세요.");
