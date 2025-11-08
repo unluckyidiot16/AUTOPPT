@@ -330,19 +330,46 @@ function useReadableUrl(key: string | null | undefined, ttlSec = 3600 * 24) {
 function Thumb({ keyStr, badge }: { keyStr: string; badge: React.ReactNode }) {
     const dark = usePrefersDark();
     const [useSlidesImg, setUseSlidesImg] = React.useState(true);
-    const folder = folderPrefixOfFileKey(keyStr);
-    const slidesKey = slidesPrefix ? `${folder}/0.webp` : null;
-    const slidesUrl = slidesKey ? supabase.storage.from("slides").getPublicUrl(slidesKey).data.publicUrl : null;
+
+    // presentations/* → slides/* 로 정확히 변환
+    const slidesPrefix = slidesPrefixOfPresentationsFile(keyStr);
+    const slidesKey = slidesPrefix ? `${slidesPrefix}/0.webp` : null;
+
+    const slidesUrl = slidesKey
+        ? supabase.storage.from("slides").getPublicUrl(slidesKey).data.publicUrl
+        : null;
+
     const pdfUrl = useReadableUrl(keyStr);
+
     return (
-        <div style={{ position: "relative", borderRadius: 12, overflow: "hidden", border: `1px solid ${dark ? "rgba(148,163,184,.22)" : "rgba(148,163,184,.35)"}`, height: 120, display: "grid", placeItems: "center", background: dark ? "rgba(2,6,23,.65)" : "#fff" }}>
+        <div
+            style={{
+                position: "relative",
+                borderRadius: 12,
+                overflow: "hidden",
+                border: `1px solid ${
+                    dark ? "rgba(148,163,184,.22)" : "rgba(148,163,184,.35)"
+                }`,
+                height: 120,
+                display: "grid",
+                placeItems: "center",
+                background: dark ? "rgba(2,6,23,.65)" : "#fff",
+            }}
+        >
             {useSlidesImg && slidesUrl ? (
-                <img src={slidesUrl} style={{ maxHeight: 120, width: "100%", objectFit: "contain" }} alt="slide thumb" onError={() => setUseSlidesImg(false)} />
+                <img
+                    src={slidesUrl}
+                    style={{ maxHeight: 120, width: "100%", objectFit: "contain" }}
+                    alt="slide thumb"
+                    onError={() => setUseSlidesImg(false)}
+                />
             ) : pdfUrl ? (
                 <PdfViewer fileUrl={pdfUrl} page={1} maxHeight="120px" />
             ) : (
                 <div style={{ width: "100%", display: "grid", placeItems: "center", maxHeight: 120 }}>
-                    <div style={{ fontSize: 12, opacity: 0.7, padding: 8, color: dark ? "#cbd5e1" : "#475569" }}>파일을 불러올 수 없습니다.</div>
+                    <div style={{ fontSize: 12, opacity: 0.7, padding: 8, color: dark ? "#cbd5e1" : "#475569" }}>
+                        파일을 불러올 수 없습니다.
+                    </div>
                 </div>
             )}
             <div style={{ position: "absolute", top: 6, left: 6 }}>{badge}</div>
