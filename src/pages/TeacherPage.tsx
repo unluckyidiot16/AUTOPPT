@@ -8,6 +8,7 @@ import { usePresence } from "../hooks/usePresence";
 import PresenceSidebar from "../components/PresenceSidebar";
 import { useArrowNav } from "../hooks/useArrowNav";
 import { getBasePath } from "../utils/getBasePath";
+import WebpSlide from "../components/WebpSlide";
 import SlideStage, { type Overlay } from "../components/SlideStage";
 
 type RpcOverlay = { id: string; z: number; type: string; payload: any };

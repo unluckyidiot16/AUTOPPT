@@ -2,9 +2,9 @@
 import React from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { supabase } from "../supabaseClient";
-import PdfViewer from "../components/PdfViewer";
 import PdfToSlidesUploader from "../components/PdfToSlidesUploader";
 import { useRealtime } from "../hooks/useRealtime"; // ⬅︎ 추가
+import { slidesPrefixOfPresentationsFile } from "../utils/supaFiles";
 
 // ───────────────────────────────────────────────────────────────────────────────
 // Types
@@ -51,20 +51,6 @@ function usePrefersDark() {
         };
     }, []);
     return dark;
-}
-
-// presentations/* → slides/* 프리픽스 계산
-function slidesPrefixOfPresentationsFile(fileKey: string | null | undefined): string | null {
-    if (!fileKey) return null;
-    // 원본: presentations/decks/<slug>/slides-*.pdf → slides: decks/<slug>
-    const m1 = fileKey.match(/^presentations\/decks\/([^/]+)/);
-    if (m1) return `decks/${m1[1]}`;
-
-    // 복제본: presentations/rooms/<room>/decks/<deckId>/slides-*.pdf → slides: rooms/<room>/decks/<deckId>
-    const m2 = fileKey.match(/^presentations\/rooms\/([^/]+\/decks\/[^/]+)/);
-    if (m2) return `rooms/${m2[1]}`;
-
-    return null;
 }
 
 async function countSlides(prefix: string) {
@@ -329,17 +315,16 @@ function useReadableUrl(key: string | null | undefined, ttlSec = 3600 * 24) {
 // 카드 썸네일: slides/0.webp 우선 → PDF 폴백
 function Thumb({ keyStr, badge }: { keyStr: string; badge: React.ReactNode }) {
     const dark = usePrefersDark();
-    const [useSlidesImg, setUseSlidesImg] = React.useState(true);
 
-    // presentations/* → slides/* 로 정확히 변환
+    // presentations/* → slides/* 프리픽스 계산 그대로 사용
     const slidesPrefix = slidesPrefixOfPresentationsFile(keyStr);
     const slidesKey = slidesPrefix ? `${slidesPrefix}/0.webp` : null;
-
     const slidesUrl = slidesKey
         ? supabase.storage.from("slides").getPublicUrl(slidesKey).data.publicUrl
         : null;
 
-    const pdfUrl = useReadableUrl(keyStr);
+    const [ok, setOk] = React.useState<boolean>(true);
+    React.useEffect(() => { setOk(true); }, [slidesUrl]);
 
     return (
         <div
@@ -347,29 +332,24 @@ function Thumb({ keyStr, badge }: { keyStr: string; badge: React.ReactNode }) {
                 position: "relative",
                 borderRadius: 12,
                 overflow: "hidden",
-                border: `1px solid ${
-                    dark ? "rgba(148,163,184,.22)" : "rgba(148,163,184,.35)"
-                }`,
+                border: `1px solid ${dark ? "rgba(148,163,184,.22)" : "rgba(148,163,184,.35)"}`,
                 height: 120,
                 display: "grid",
                 placeItems: "center",
                 background: dark ? "rgba(2,6,23,.65)" : "#fff",
             }}
         >
-            {useSlidesImg && slidesUrl ? (
+            {slidesUrl && ok ? (
                 <img
                     src={slidesUrl}
-                    style={{ maxHeight: 120, width: "100%", objectFit: "contain" }}
                     alt="slide thumb"
-                    onError={() => setUseSlidesImg(false)}
+                    style={{ maxHeight: 120, width: "100%", objectFit: "contain" }}
+                    onError={() => setOk(false)}
+                    loading="eager"
                 />
-            ) : pdfUrl ? (
-                <PdfViewer fileUrl={pdfUrl} page={1} maxHeight="120px" />
             ) : (
-                <div style={{ width: "100%", display: "grid", placeItems: "center", maxHeight: 120 }}>
-                    <div style={{ fontSize: 12, opacity: 0.7, padding: 8, color: dark ? "#cbd5e1" : "#475569" }}>
-                        파일을 불러올 수 없습니다.
-                    </div>
+                <div style={{ fontSize: 12, opacity: 0.7, padding: 8, color: dark ? "#cbd5e1" : "#475569" }}>
+                    슬라이드 썸네일이 아직 없어요. (변환/복사 대기)
                 </div>
             )}
             <div style={{ position: "absolute", top: 6, left: 6 }}>{badge}</div>
@@ -744,8 +724,9 @@ export default function PdfLibraryPage() {
     const deleteDeck = React.useCallback(async (d: DeckRow) => {
         setDecks((prev) => prev.filter((x) => x.id !== d.id)); // 낙관적
         try {
-            const bucket = "presentations";
-            const prefix = d.file_key ? slidesPrefixOfPresentationsFile(d.file_key) : null;
+            const presBucket = "presentations";
+            const presPrefix = d.file_key ? folderPrefixOfFileKey(d.file_key) : null; // presentations/* 폴더
+            const slidesPrefix = d.file_key ? slidesPrefixOfPresentationsFile(d.file_key) : null; // slides/* 폴더
             if (d.origin === "db") {
                 try {
                     const { error } = await supabase.rpc("delete_deck_deep", { p_deck_id: d.id });
@@ -755,14 +736,15 @@ export default function PdfLibraryPage() {
                     const del = await supabase.from("decks").delete().eq("id", d.id);
                     if (del.error) throw del.error;
                 }
-                if (prefix) await removeTree(bucket, prefix);
+                if (slidesPrefix) await removeTree("slides", slidesPrefix);
+                if (presPrefix)   await removeTree(presBucket, presPrefix);
             } else {
-                if (!prefix) throw new Error("file_key 없음");
-                await removeTree(bucket, prefix);
+                if (!presPrefix) throw new Error("file_key 없음");
+                await removeTree(presBucket, presPrefix);
             }
-            if (prefix) {
-                const ls = await supabase.storage.from(bucket).list(prefix);
-                if (!ls.error && (ls.data?.length || 0) > 0) await removeTree(bucket, prefix);
+            if (slidesPrefix) {
+                const ls = await supabase.storage.from("slides").list(slidesPrefix);
+                if (!ls.error && (ls.data?.length || 0) > 0) await removeTree("slides", slidesPrefix);
             }
         } catch (e: any) {
             await load();

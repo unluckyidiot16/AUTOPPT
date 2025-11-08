@@ -1,19 +1,15 @@
 // src/components/EditorPreviewPane.tsx
 import React from "react";
-import StaticPdfPage from "../components/StaticPdfPage";
+import WebpSlide from "./WebpSlide";
 
 type Props = {
-    fileUrl: string | null;
+    fileKey: string | null; // PDF key (images는 key의 prefix로 추적)
     page: number;
     style?: React.CSSProperties;
-    // 에디터에서 추가로 넘기는 prop을 허용(타입 오류 예방)
     height?: number | string;
-    quizzes?: any[];
-    editable?: boolean;
-    onDragMove?: (idx: number, pos: { x: number; y: number }) => void;
 };
 
-export default function EditorPreviewPane({ fileUrl, page, style, height }: Props) {
+export default function EditorPreviewPane({ fileKey, page, style, height }: Props) {
     return (
         <div
             style={{
@@ -23,29 +19,14 @@ export default function EditorPreviewPane({ fileUrl, page, style, height }: Prop
                 minHeight: 380,
                 borderRadius: 14,
                 border: "1px solid rgba(148,163,184,.18)",
-                background: "rgba(2,6,23,.35)",
-                padding: 16,
-                overflow: "auto",
-                ...style,
+                background: "rgba(2,6,23,.6)",
+                ...style
             }}
         >
-            {!fileUrl ? (
-                <div
-                    style={{
-                        position: "absolute",
-                        inset: 0,
-                        display: "grid",
-                        placeItems: "center",
-                        color: "#ef4444",
-                    }}
-                >
-                    deck file not found
-                </div>
+            {fileKey ? (
+                <WebpSlide fileKey={fileKey} page={page} fit="height" maxHeight="calc(100vh - 180px)" />
             ) : (
-                <div style={{ width: "100%", maxWidth: 980, margin: "0 auto" }}>
-                    {/* 페이지/URL 변경 시 완전 재마운트 → 꼬임 방지 */}
-                    <StaticPdfPage key={`${fileUrl}|p-${page}`} fileUrl={fileUrl} page={page} fit="width" />
-                </div>
+                <div style={{ display: "grid", placeItems: "center", height: "100%", opacity: 0.6 }}>자료 없음</div>
             )}
         </div>
     );
