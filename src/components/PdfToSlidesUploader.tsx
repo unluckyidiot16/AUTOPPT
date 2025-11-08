@@ -1,6 +1,8 @@
 // src/components/PdfToSlidesUploader.tsx
 import React, { useCallback, useRef, useState } from "react";
 import { supabase } from "../supabaseClient";
+import { getBasePath } from "../utils/getBasePath";
+
 
 /** ──────────────── Types ──────────────── */
 type PdfJs = typeof import("pdfjs-dist/types/src/pdf");
@@ -37,12 +39,15 @@ function withTimeout<T>(p: Promise<T>, ms: number, tag = "timeout"): Promise<T> 
 }
 
 /** v5 → v5(+CMAP/Fonts) → v4.8.69(legacy CDN) 순차 재시도 */
+// 상단 임포트에 추가
+import { getBasePath } from "../utils/getBasePath";
+
 async function openPdfWithFallback(
     pdfjs: any,
     data: ArrayBuffer,
     push: (m: string) => void,
-): Promise<PDFDocumentProxy> {
-    const tryOpen = (lib: any, label: string, extra: Record<string, any> = {}, ms = 15000) =>
+) {
+    const tryOpen = (lib: any, label: string, extra: Record<string, any> = {}, ms = 20000) =>
         withTimeout(
             lib.getDocument({
                 data,
@@ -56,45 +61,75 @@ async function openPdfWithFallback(
             }).promise,
             ms,
             label,
-        ) as Promise<PDFDocumentProxy>;
+        );
 
+    // 공통: workerSrc 보강
     (pdfjs as any).GlobalWorkerOptions.workerSrc ??=
         `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjs?.version ?? "5"}/build/pdf.worker.min.js`;
-    
+
     // A) v5 기본
     push("PDF 열기(A: v5 기본) …");
-    try { return await tryOpen(pdfjs, "open-A"); } catch (e: any) { push(`A 실패: ${e?.message ?? e}`); }
+    try {
+        return await tryOpen(pdfjs, "open-A");
+    } catch (e: any) {
+        push(`A 실패: ${e?.message ?? e}`);
+    }
 
-    // B) v5 + CMAP/Fonts 고정 경로
-    const ver = pdfjs?.version ?? "5";
-    const baseV5 = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${ver}`;
-    push("PDF 열기(B: v5 + CMAP/Fonts) …");
+    // B) v5 + CDN 자산
+    const v5 = pdfjs?.version ?? "5";
+    const cdnV5 = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${v5}`;
+    push("PDF 열기(B: v5 + CMAP/Fonts CDN) …");
     try {
         return await tryOpen(pdfjs, "open-B", {
-            cMapUrl: `${baseV5}/cmaps/`,
+            cMapUrl: `${cdnV5}/cmaps/`,
             cMapPacked: true,
-            standardFontDataUrl: `${baseV5}/standard_fonts/`,
-        }, 20000);
-    } catch (e: any) { push(`B 실패: ${e?.message ?? e}`); }
+            standardFontDataUrl: `${cdnV5}/standard_fonts/`,
+        });
+    } catch (e: any) {
+        push(`B 실패: ${e?.message ?? e}`);
+    }
 
-    // C) legacy 4.8.69 (CDN) – 로컬 경로 임포트 없이 안전
-        push("PDF 열기(C: legacy 4.8.69) …");
-        const legacy: any = await import(
-            /* @vite-ignore */ "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69/legacy/build/pdf.min.mjs"
-            );
-        const baseV4 = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69";
-    
-    // ★ 여기 한 줄 추가 (workerSrc를 반드시 유효한 문자열로 지정)
-    //   (legacy 빌드를 썼으니 경로도 legacy/build 계열로 맞춰줌)
-        (legacy as any).GlobalWorkerOptions.workerSrc = `${baseV4}/legacy/build/pdf.worker.min.js`;
-    
+    // B2) v5 + 로컬 자산(동일 출처)
+    const base = getBasePath()?.replace(/\/+$/, "") || "";
+    const localBase = `${base}/pdfjs`;
+    push("PDF 열기(B2: v5 + CMAP/Fonts 로컬) …");
+    try {
+        return await tryOpen(pdfjs, "open-B2", {
+            cMapUrl: `${localBase}/cmaps/`,
+            cMapPacked: true,
+            standardFontDataUrl: `${localBase}/standard_fonts/`,
+        });
+    } catch (e: any) {
+        push(`B2 실패: ${e?.message ?? e}`);
+    }
+
+    // C) legacy 4.8.69 + CDN
+    push("PDF 열기(C: legacy 4.8.69 CDN) …");
+    const legacy: any = await import(
+        /* @vite-ignore */ "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69/legacy/build/pdf.min.mjs"
+        );
+    const cdnV4 = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69";
+    (legacy as any).GlobalWorkerOptions.workerSrc = `${cdnV4}/legacy/build/pdf.worker.min.js`;
+    try {
         return await tryOpen(legacy, "open-C", {
-            cMapUrl: `${baseV4}/cmaps/`,
+            cMapUrl: `${cdnV4}/cmaps/`,
             cMapPacked: true,
-            standardFontDataUrl: `${baseV4}/standard_fonts/`,
-        }, 20000);
+            standardFontDataUrl: `${cdnV4}/standard_fonts/`,
+        });
+    } catch (e: any) {
+        push(`C 실패: ${e?.message ?? e}`);
+    }
 
+    // C2) legacy 4.8.69 + 로컬
+    push("PDF 열기(C2: legacy 4.8.69 로컬) …");
+    (legacy as any).GlobalWorkerOptions.workerSrc = `${localBase}/legacy/pdf.worker.min.js`; // 없어도 문자열이면 OK
+    return await tryOpen(legacy, "open-C2", {
+        cMapUrl: `${localBase}/cmaps/`,
+        cMapPacked: true,
+        standardFontDataUrl: `${localBase}/standard_fonts/`,
+    });
 }
+
 
 /** 슬러그 */
 function storageSafeSlug(basename: string) {

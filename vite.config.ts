@@ -1,9 +1,18 @@
 // vite.config.ts
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
-// vite.config.ts
+import { viteStaticCopy } from "vite-plugin-static-copy";
+
 export default defineConfig({
-    plugins: [react()],
+    plugins: [
+        react(),
+        viteStaticCopy({
+            targets: [
+                { src: "node_modules/pdfjs-dist/cmaps", dest: "pdfjs" },
+                { src: "node_modules/pdfjs-dist/standard_fonts", dest: "pdfjs" },
+            ],
+        }),
+    ],
     base: "/AUTOPPT/",
     server: { host: true, port: 5173 },
     resolve: {
