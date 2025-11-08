@@ -166,44 +166,57 @@ export default function StudentPage() {
 
     // 현재 페이지의 배경 이미지 / 오버레이 계산
     useEffect(() => {
-        useEffect(() => {
-            const run = async () => {
-                const s = manifest?.slots?.find(v => v.slot === activeSlot);
-                if (!s) { setActiveBgUrl(null); setActiveOverlays([]); return; }
-                const idx = Math.max(0, page - 1);
-                const slide = s.slides[idx] as RpcSlide | undefined;
-                if (!slide) { setActiveBgUrl(null); setActiveOverlays([]); return; }
+        let off = false;
 
-                setActiveOverlays((slide.overlays || []).map(o => ({ id: String(o.id), z: o.z, type: o.type, payload: o.payload })));
+        (async () => {
+            const s = manifest?.slots?.find(v => v.slot === activeSlot);
+            if (!s) { if (!off) { setActiveBgUrl(null); setActiveOverlays([]); } return; }
 
-                const pageIdx0 = Number(slide.page_index ?? idx);
-                let key: string | null = slide.image_key ?? null;
+            const idx = Math.max(0, page - 1);
+            const slide = s.slides[idx] as RpcSlide | undefined;
+            if (!slide) { if (!off) { setActiveBgUrl(null); setActiveOverlays([]); } return; }
 
-                if (key) key = normalizeSlidesKey(key);
+            // overlays
+            if (!off) {
+                setActiveOverlays((slide.overlays || []).map(o => ({
+                    id: String(o.id), z: o.z, type: o.type, payload: o.payload
+                })));
+            }
 
-                if (!key && roomId && slide.material_id) {
-                    key = `rooms/${roomId}/decks/${slide.material_id}/${Math.max(0, pageIdx0)}.webp`;
+            // 이미지 키 계산
+            const pageIdx0 = Number(slide.page_index ?? idx); // 0-base
+            let key: string | null = slide.image_key ? normalizeSlidesKey(slide.image_key) : null;
+
+            // 1) rooms/<roomId>/decks/<deckId>/<page>.webp
+            if (!key && roomId && slide.material_id) {
+                key = `rooms/${roomId}/decks/${slide.material_id}/${Math.max(0, pageIdx0)}.webp`;
+            }
+
+            // 2) decks/<slug>/<page>.webp (원본 프리픽스 폴백)
+            if (!key && slide.material_id) {
+                let prefix = deckPrefixCache.current.get(slide.material_id);
+                if (!prefix) {
+                    const { data } = await supabase
+                        .from("decks").select("file_key")
+                        .eq("id", slide.material_id).maybeSingle();
+                    const p = slidesPrefixOfPresentationsFile(data?.file_key ?? null);
+                    if (p) { prefix = p; deckPrefixCache.current.set(slide.material_id, p); }
                 }
-                if (!key && slide.material_id) {
-                    let prefix = deckPrefixCache.current.get(slide.material_id);
-                    if (!prefix) {
-                        const { data } = await supabase.from("decks").select("file_key").eq("id", slide.material_id).maybeSingle();
-                        const p = slidesPrefixOfPresentationsFile(data?.file_key ?? null);
-                        if (p) { prefix = p; deckPrefixCache.current.set(slide.material_id, p); }
-                    }
-                    if (prefix) key = `${prefix}/${Math.max(0, pageIdx0)}.webp`;
-                }
+                if (prefix) key = `${prefix}/${Math.max(0, pageIdx0)}.webp`;
+            }
 
-                if (key) {
-                    key = normalizeSlidesKey(key);
-                    const url = await signedSlidesUrl(key, 1800);
-                    setActiveBgUrl(url);
-                } else {
-                    setActiveBgUrl(null);
-                }
-            };
-            run();
-        }, [manifest, activeSlot, page, roomId]);
+            if (off) return;
+
+            // 최종 URL
+            if (!key) { setActiveBgUrl(null); return; }
+            if (/^https?:\/\//i.test(key)) { setActiveBgUrl(key); return; } // 절대 URL은 그대로
+            const url = await signedSlidesUrl(key, 1800);
+            setActiveBgUrl(url || null);
+        })();
+
+        return () => { off = true; };
+    }, [manifest, activeSlot, page, roomId]);
+
 
     const submitAnswer = async (val: any) => {
         try {

@@ -4,7 +4,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { supabase } from "../supabaseClient";
 import PdfToSlidesUploader from "../components/PdfToSlidesUploader";
 import { useRealtime } from "../hooks/useRealtime"; // ⬅︎ 추가
-import { slidesPrefixOfPresentationsFile, signedSlidesUrl } from "../utils/supaFiles";
+import { slidesPrefixOfPresentationsFile, signedSlidesUrl, getPdfUrlFromKey } from "../utils/supaFiles";
 
 
 // ───────────────────────────────────────────────────────────────────────────────
@@ -283,20 +283,19 @@ function OpenSignedLink({ fileKey, children }: { fileKey: string; children: Reac
     const [href, setHref] = React.useState("#");
     const dark = usePrefersDark();
     const style = useBtnStyles(dark, { variant: "outline", small: true });
+
     React.useEffect(() => {
         let off = false;
         (async () => {
-            const { data } = await supabase.storage.from("presentations").createSignedUrl(fileKey, 3600 * 24 * 7);
-            if (!off && data?.signedUrl) { setHref(data.signedUrl); return; }
-            const { data: pub } = supabase.storage.from("presentations").getPublicUrl(fileKey);
-            if (!off) setHref(pub.publicUrl || "#");
+            const url = await getPdfUrlFromKey(fileKey, { ttlSec: 3600 * 24 * 7 });
+            if (!off && url) setHref(url);
         })();
         return () => { off = true; };
     }, [fileKey]);
-    return (
-        <a style={style} href={href} target="_blank" rel="noreferrer">{children}</a>
-    );
+
+    return <a style={style} href={href} target="_blank" rel="noreferrer">{children}</a>;
 }
+
 function useReadableUrl(key: string | null | undefined, ttlSec = 3600 * 24) {
     const [url, setUrl] = React.useState<string>("");
     React.useEffect(() => {

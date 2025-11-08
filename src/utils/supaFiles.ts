@@ -64,11 +64,16 @@ export function resolveSlidesKey(fileKey: string, page: number): string | null {
 export async function signedSlidesUrl(slidesKey: string, ttlSec = 1800): Promise<string> {
     const key = normalizeSlidesKey(slidesKey);
     if (!key) return "";
+    // 절대 URL이면 그대로 반환 (스토리지 서명 시도 금지)
+    if (/^https?:\/\//i.test(key)) return key;
+
     const { data } = await supabase.storage.from("slides").createSignedUrl(key, ttlSec);
     if (data?.signedUrl) return data.signedUrl;
+
     const { data: pub } = supabase.storage.from("slides").getPublicUrl(key);
     return pub.publicUrl || "";
 }
+
 
 /** 파일키 + 페이지(1-base) → WebP 이미지 URL */
 export async function resolveWebpUrl(
