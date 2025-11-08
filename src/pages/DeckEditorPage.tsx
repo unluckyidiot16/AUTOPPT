@@ -6,54 +6,33 @@ import DeckEditor from "../components/DeckEditor";
 import EditorPreviewPane from "../components/EditorPreviewPane";
 import type { ManifestItem } from "../types/manifest";
 import { getManifestByRoom } from "../api/overrides";
-import { openPdfWorkerless, primePdfWorkerless } from "../lib/pdfWorkerless";
 
 
 type RoomRow = { id: string; current_deck_id: string | null };
 
 
-async function convertPdfToSlides({
-                                      supabase, bucket = "presentations", pdfKey,
-                                      quality = 0.9, scale = 2, onProgress,
-                                  }: {
-    supabase: typeof import("../supabaseClient").supabase,
-    bucket?: string, pdfKey: string,
-    quality?: number, scale?: number,
-    onProgress?: (cur: number, total: number) => void,
-}) {
-    // 1) PDF 다운로드
-    const dl = await supabase.storage.from(bucket).download(pdfKey);
-    if (dl.error) throw dl.error;
-    const buf = await dl.data.arrayBuffer();
+function slidesPrefixFromPdfKey(pdfKey: string): string | null {
+    const rel = String(pdfKey).replace(/^presentations\//i, "");
+    const m = rel.match(/^(rooms\/[^/]+\/decks\/[^/]+\/slides-\d+)\.pdf$/i);
+    return m ? `${m[1]}/` : null;
+}
 
-    const doc = await openPdfWorkerless(buf);
+async function countSlides(prefix: string) {
+    const { data, error } = await supabase.storage.from("slides").list(prefix, { limit: 1000 });
+    if (error) return 0;
+    return (data ?? []).filter(f => /\.(webp)$/i.test(f.name)).length;
+}
 
-    const total = doc.numPages;
+async function copySlidesDir(fromPrefix: string, toPrefix: string) {
+    // 이미 목적지에 있으면 스킵
+    const dst = await supabase.storage.from("slides").list(toPrefix, { limit: 2 });
+    if ((dst.data ?? []).length > 0) return;
 
-    // slides prefix: rooms/.../decks/.../slides-xxxx  (".pdf" 제거)
-    const slidesPrefix = String(pdfKey).replace(/\.pdf$/i, "");
-    const toWebp = (canvas: HTMLCanvasElement, q: number) =>
-        new Promise<Blob>((res, rej) => canvas.toBlob(b => b ? res(b) : rej(new Error("toBlob failed")), "image/webp", q));
-
-    // 2) 순차 렌더 & 업로드 (메모리 절약)
-    for (let p = 1; p <= total; p++) {
-        const page = await doc.getPage(p);
-        const vp = page.getViewport({ scale });
-        const canvas = document.createElement("canvas");
-        const ctx = canvas.getContext("2d")!;
-        canvas.width = vp.width; canvas.height = vp.height;
-        await page.render({ canvasContext: ctx as any, viewport: vp }).promise;
-
-        const blob = await toWebp(canvas, quality);
-        const key = `${slidesPrefix}/${p}.webp`;
-        const up = await supabase.storage.from(bucket).upload(key, blob, { upsert: true, contentType: "image/webp" });
-        if (up.error) throw up.error;
-
-        onProgress?.(p, total);
-        // 해제
-        canvas.width = canvas.height = 0;
+    const src = await supabase.storage.from("slides").list(fromPrefix, { limit: 1000 });
+    for (const f of src.data ?? []) {
+        if (!/\.(webp)$/i.test(f.name)) continue;
+        await supabase.storage.from("slides").copy(`${fromPrefix}${f.name}`, `${toPrefix}${f.name}`);
     }
-    return { pages: total, slidesPrefix };
 }
 
 
@@ -83,7 +62,6 @@ export default function DeckEditorPage() {
         return () => clearInterval(t);
     }, []);
 
-    useEffect(() => { primePdfWorkerless(); }, []);
     
     const previewOnce = useRef(false);
     const isClone = Boolean(sourceDeckId);
@@ -91,10 +69,9 @@ export default function DeckEditorPage() {
 
     // DeckEditorPage.tsx
     // DeckEditorPage.tsx
-    // 기존 ensureEditingDeckFromFileKey(...) 교체
     async function ensureEditingDeckFromFileKey({
-                                                    roomCode, fileKey,
-                                                }: { roomCode: string; fileKey: string; }) {
+                                                   roomCode, fileKey,
+                                               }: { roomCode: string; fileKey: string; }) {
         // room 조회
         const { data: room, error: eRoom } = await supabase
             .from("rooms").select("id").eq("code", roomCode).maybeSingle();
@@ -109,47 +86,45 @@ export default function DeckEditorPage() {
         if (ins.error) throw ins.error;
         const deckId = ins.data.id as string;
 
-        // 2) PDF 사본 (presentations 버킷 내부 이동/복사)
+        // 2) PDF 사본 (보관용) — 단, 편집은 webp만 사용
         const ts = Date.now();
-        const destKey = `rooms/${roomId}/decks/${deckId}/slides-${ts}.pdf`;
+        const destPdfKey = `rooms/${roomId}/decks/${deckId}/slides-${ts}.pdf`;
         const srcRel = String(fileKey).replace(/^presentations\//i, "");
-
         try {
-            const cp = await supabase.storage.from("presentations").copy(srcRel, destKey);
+            const cp = await supabase.storage.from("presentations").copy(srcRel, destPdfKey);
             if (cp.error) throw cp.error;
         } catch {
             const dl = await supabase.storage.from("presentations").download(srcRel);
             if (dl.error) throw dl.error;
-            const up = await supabase.storage.from("presentations").upload(destKey, dl.data, {
+            const up = await supabase.storage.from("presentations").upload(destPdfKey, dl.data, {
                 contentType: "application/pdf",
                 upsert: true,
             });
             if (up.error) throw up.error;
         }
 
-        // 3) decks.file_key 저장
-        await supabase.from("decks").update({ file_key: destKey }).eq("id", deckId);
-
-        // 4) 🔥 사본 PDF 즉시 WebP 변환 + file_pages 업데이트
-        let pages = 0;
-        try {
-            const res = await convertPdfToSlides({
-                supabase, pdfKey: destKey, onProgress: (cur, total) => {
-                    // (선택) 화면에 진행률 표시하려면 state로 연결
-                    // setProgress(`${cur}/${total}`);
-                }
-            });
-            pages = res.pages;
-            await supabase.from("decks").update({ file_pages: pages }).eq("id", deckId);
-        } catch (e) {
-            // 변환 실패해도 편집은 가능 — 단, 이미지 미생성 표시 유지
-            console.warn("[DeckEditor] convertPdfToSlides failed:", e);
-            console.error("convertPdfToSlides::upload error detail", e);
+        // 3) slides 복제 (있으면 복제, 없으면 빈 상태 유지 — 재변환 금지)
+        const srcSlides = slidesPrefixFromPdfKey(srcRel);
+        const dstSlides = slidesPrefixFromPdfKey(destPdfKey);
+        if (srcSlides && dstSlides) {
+            const has = await countSlides(srcSlides);
+            if (has > 0) {
+                await copySlidesDir(srcSlides, dstSlides);
+            }
         }
 
-        return { roomId, deckId, file_key: destKey, totalPages: pages };
-    }
+        // 4) decks.file_key & file_pages 저장
+        const pages =
+            (srcSlides ? await countSlides(srcSlides) : 0) // 원본 webp 개수
+            || (dstSlides ? await countSlides(dstSlides) : 0);
 
+        await supabase.from("decks").update({
+            file_key: destPdfKey,
+            file_pages: pages,
+        }).eq("id", deckId);
+
+        return { roomId, deckId, file_key: destPdfKey, totalPages: pages };
+    }
 
 
     useEffect(() => {

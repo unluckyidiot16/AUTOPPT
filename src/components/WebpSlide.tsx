@@ -1,57 +1,55 @@
 // src/components/WebpSlide.tsx
 import React from "react";
-import { supabase } from "../supabaseClient";
+import { resolveWebpUrl } from "../utils/supaFiles";
 
 type FitMode = "height" | "width";
 type Props = {
-    fileKey: string;          // e.g. rooms/<room>/decks/<deck>/slides-TS.pdf  or presentations/...
-    page: number;             // 1..N
-    fit?: FitMode;            // default: height
-    maxHeight?: string;       // when fit=height
-    versionKey?: string|number;
+    /** decks.file_key (ex: rooms/<room>/decks/<deck>/slides-TS.pdf) */
+    fileKey: string;
+    page: number;                // 1..N
+    fit?: FitMode;               // 기본: height
+    maxHeight?: string;          // fit=height일 때 사용 (ex "80vh")
+    versionKey?: string;         // 캐시버스터용
     style?: React.CSSProperties;
 };
 
-function buildWebpKey(fileKey: string, page: number) {
-    const rel = String(fileKey).replace(/^presentations\//i, "").replace(/\.pdf$/i, "");
-    return `${rel}/${page}.webp`;
-}
-
 export default function WebpSlide({
-                                      fileKey, page, fit = "height", maxHeight = "82vh", versionKey, style,
+                                      fileKey, page, fit = "height", maxHeight = "80vh", versionKey, style,
                                   }: Props) {
     const [src, setSrc] = React.useState<string | null>(null);
-    const [err, setErr] = React.useState<string | null>(null);
+    const [loading, setLoading] = React.useState<boolean>(false);
 
     React.useEffect(() => {
         let alive = true;
-        setSrc(null); setErr(null);
+
+        // page<1 이거나 fileKey 없음 → 네트워크 호출 금지
+        if (!fileKey || !page || page < 1) {
+            setSrc(null);
+            return;
+        }
+
         (async () => {
-            try {
-                if (!fileKey || page <= 0) return; // 안전 가드
-                const key = buildWebpKey(fileKey, page);
-                const { data } = supabase.storage.from("presentations").getPublicUrl(key);
-                const url = data?.publicUrl || null;
-                if (!alive) return;
-                if (!url) { setErr("이미지 URL 생성 실패"); return; }
-                setSrc(versionKey != null ? `${url}?v=${encodeURIComponent(String(versionKey))}` : url);
-            } catch (e:any) {
-                if (!alive) return;
-                setErr(e?.message || "이미지 로드 실패");
-            }
+            setLoading(true);
+            const url = await resolveWebpUrl(fileKey, page);
+            if (!alive) return;
+            setSrc(url);
+            setLoading(false);
         })();
+
         return () => { alive = false; };
     }, [fileKey, page, versionKey]);
 
-    const content =
-        err ? (
-            <div style={{ color: "#f87171", padding: 12, textAlign: "center" }}>{err}</div>
-        ) : !src ? (
-            <div style={{ opacity: 0.6, padding: 12, textAlign: "center" }}>불러오는 중…</div>
-        ) : (
+    let content: React.ReactNode = (
+        <div style={{ opacity: 0.6, padding: 12 }}>이미지 없음</div>
+    );
+
+    if (loading) {
+        content = <div style={{ opacity: .6, padding: 12 }}>로딩 중…</div>;
+    } else if (src) {
+        content = (
             <img
                 src={src}
-                alt={`page ${page}`}
+                alt={`p${page}`}
                 loading="eager"
                 style={{
                     display: "block",
@@ -63,11 +61,16 @@ export default function WebpSlide({
                 }}
             />
         );
+    }
 
     return (
         <div
             className="pdf-stage"
-            style={{ display: "grid", placeItems: "center", width: "100%", height: fit === "width" ? "100%" : "auto", ...style }}
+            style={{
+                display: "grid", placeItems: "center",
+                width: "100%", height: fit === "width" ? "100%" : "auto",
+                ...style
+            }}
         >
             {content}
         </div>

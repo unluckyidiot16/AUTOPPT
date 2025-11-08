@@ -1,54 +1,101 @@
 // src/utils/tempDeck.ts
 import { supabase } from "../supabaseClient";
-import { getPdfUrlFromKey } from "./supaFiles";
 
-/** presentations 버킷에서 prefix 경로 밑 전체 삭제 */
-async function removeFolder(prefix: string) {
-    let page = 0;
-    for (;;) {
-        const { data, error } = await supabase.storage
-            .from("presentations")
-            .list(prefix, { limit: 1000, offset: page * 1000 });
-        if (error) throw error;
-        if (!data?.length) break;
-        const paths = data.map((d) => `${prefix}/${d.name}`);
-        const rm = await supabase.storage.from("presentations").remove(paths);
-        if (rm.error) throw rm.error;
-        if (data.length < 1000) break;
-        page++;
-    }
+/* ---------------------------- internal helpers ---------------------------- */
+
+function withSlash(prefix: string) {
+    return prefix.endsWith("/") ? prefix : `${prefix}/`;
 }
 
-/** object copy (copy 미지원 환경 대비 download→upload 폴백) */
-async function copyObjectInBucket(bucket: string, from: string, to: string) {
+async function listAll(bucket: string, prefix: string) {
+    const out: { name: string }[] = [];
+    let offset = 0;
+    const step = 1000;
+    // Supabase storage.list supports offset pagination
+    for (;;) {
+        const { data, error } = await supabase.storage
+            .from(bucket)
+            .list(withSlash(prefix), { limit: step, offset });
+        if (error) throw error;
+        const batch = data ?? [];
+        out.push(...batch);
+        if (batch.length < step) break;
+        offset += step;
+    }
+    return out;
+}
+
+async function removeFolderInBucket(bucket: string, prefix: string) {
+    const entries = await listAll(bucket, prefix);
+    if (!entries.length) return;
+    const paths = entries.map((e) => `${withSlash(prefix)}${e.name}`);
+    const { error } = await supabase.storage.from(bucket).remove(paths);
+    if (error) throw error;
+}
+
+/** copy single object in same bucket (copy→fallback download/upload) */
+async function copyObjectInBucket(bucket: string, from: string, to: string, contentType?: string) {
     let copied = false;
     try {
         const { error } = await supabase.storage.from(bucket).copy(from, to);
         if (!error) copied = true;
-    } catch {}
+    } catch { /* noop */ }
     if (!copied) {
         const dl = await supabase.storage.from(bucket).download(from);
         if (dl.error) throw dl.error;
         const up = await supabase.storage.from(bucket).upload(to, dl.data, {
-            contentType: "application/pdf",
+            contentType: contentType ?? undefined,
             upsert: true,
         });
         if (up.error) throw up.error;
     }
 }
 
+/** copy all files under prefix in same bucket filtered by ext */
+async function copyDirInBucket(bucket: string, fromPrefix: string, toPrefix: string, ext: RegExp) {
+    const files = await listAll(bucket, fromPrefix);
+    if (!files.length) return;
+    // 목적지에 뭔가 있으면 복제 스킵 (중복 방지)
+    const dstProbe = await listAll(bucket, toPrefix);
+    if (dstProbe.length > 0) return;
+    for (const f of files) {
+        if (!ext.test(f.name)) continue;
+        const from = `${withSlash(fromPrefix)}${f.name}`;
+        const to   = `${withSlash(toPrefix)}${f.name}`;
+        await copyObjectInBucket(bucket, from, to);
+    }
+}
+
+async function countFiles(bucket: string, prefix: string, ext: RegExp) {
+    const files = await listAll(bucket, prefix);
+    return (files ?? []).filter((f) => ext.test(f.name)).length;
+}
+
+/** presentations/rooms/.../decks/.../slides-TS.pdf → rooms/.../decks/.../slides-TS/ */
+function slidesPrefixFromPdfKey(pdfKey: string): string | null {
+    const rel = String(pdfKey).replace(/^presentations\//i, "");
+    const m = rel.match(/^(rooms\/[^/]+\/decks\/[^/]+\/slides-\d+)\.pdf$/i);
+    return m ? `${m[1]}/` : null;
+}
+
+/* ------------------------------- main flows ------------------------------- */
+
 /**
- * 라이브러리에서 고른 원본 덱(sourceDeckId)을 '복제 편집'용 임시 덱으로 만들어
- * 현재 room에 배정하고, 복사한 PDF의 서명 URL을 반환한다.
+ * 라이브러리의 원본 덱(sourceDeckId)을 '복제 편집'용 임시 덱으로 생성.
+ * - PDF는 presentations 버킷에 경로만 복제(보관용)
+ * - WebP는 slides 버킷에서 **있으면 그대로 복제**, 없으면 건드리지 않음(재변환 금지)
+ * - 기본적으로 교시 배정 ❌ (assignToRoom=true로 바꾸면 배정)
  */
 export async function ensureEditingDeckFromSource({
                                                       roomCode,
                                                       sourceDeckId,
                                                       slot = 1,
+                                                      assignToRoom = false,
                                                   }: {
     roomCode: string;
     sourceDeckId: string;
     slot?: number;
+    assignToRoom?: boolean;
 }) {
     // room
     const { data: room, error: eRoom } = await supabase
@@ -68,38 +115,95 @@ export async function ensureEditingDeckFromSource({
     if (eSrc) throw eSrc;
     if (!src?.file_key) throw new Error("원본 덱에 파일이 없습니다.");
 
-    // temp deck 생성
+    // 새 덱 생성 (is_temp 같은 스키마 의존 ❌)
     const ins = await supabase
         .from("decks")
-        .insert({ title: (src.title ? `${src.title} (편집)` : "Untitled (temp)"), is_temp: true })
+        .insert({ title: (src.title ? `${src.title} (편집)` : "Untitled (edit)") })
         .select("id")
         .single();
     if (ins.error) throw ins.error;
     const newDeckId = ins.data.id as string;
 
-    // room 배정
-    await supabase.from("room_decks").upsert({ room_id: roomId, deck_id: newDeckId, slot });
+    // (옵션) room 배정 — 기본값 false
+    if (assignToRoom) {
+        await supabase.from("room_decks").upsert({ room_id: roomId, deck_id: newDeckId, slot });
+    }
 
-    // 파일 복사
+    // PDF 복사 (presentations)
     const ts = Date.now();
-    const destKey = `rooms/${roomId}/decks/${newDeckId}/slides-${ts}.pdf`;
-    await copyObjectInBucket("presentations", src.file_key as string, destKey);
+    const destPdfKey = `rooms/${roomId}/decks/${newDeckId}/slides-${ts}.pdf`;
+    await copyObjectInBucket(
+        "presentations",
+        String(src.file_key).replace(/^presentations\//i, ""),
+        destPdfKey,
+        "application/pdf",
+    );
+
+    // WebP 복제 (slides) — 있으면 그대로 복제, 없으면 건드리지 않음
+    const srcSlides = slidesPrefixFromPdfKey(String(src.file_key));
+    const dstSlides = slidesPrefixFromPdfKey(destPdfKey);
+    if (srcSlides && dstSlides) {
+        const hasWebp = await countFiles("slides", srcSlides, /\.webp$/i);
+        if (hasWebp > 0) {
+            await copyDirInBucket("slides", srcSlides, dstSlides, /\.webp$/i);
+        }
+    }
+
+    // 페이지 수 계산 (우선순위: 새 경로 → 원본 경로)
+    const pages =
+        (dstSlides ? await countFiles("slides", dstSlides, /\.webp$/i) : 0) ||
+        (srcSlides ? await countFiles("slides", srcSlides, /\.webp$/i) : 0) ||
+        0;
 
     // 덱 갱신
     await supabase
         .from("decks")
-        .update({ file_key: destKey, file_pages: src.file_pages ?? null })
+        .update({ file_key: destPdfKey, file_pages: pages || null })
         .eq("id", newDeckId);
 
-    // 서명 URL
-    const signedUrl = await getPdfUrlFromKey(destKey, { ttlSec: 1800 });
-    return { roomId, deckId: newDeckId, fileKey: destKey, filePages: Number(src.file_pages || 0), signedUrl };
+    // PDF URL (public + signed 둘 다 리턴해둠)
+    const { data: pub } = supabase.storage
+        .from("presentations")
+        .getPublicUrl(destPdfKey);
+    const signed = await supabase.storage
+        .from("presentations")
+        .createSignedUrl(destPdfKey, 1800);
+
+    return {
+        roomId,
+        deckId: newDeckId,
+        fileKey: destPdfKey,
+        filePages: pages,
+        pdfPublicUrl: pub?.publicUrl ?? null,
+        pdfSignedUrl: signed.data?.signedUrl ?? null,
+    };
 }
 
-/** (옵션) 저장 후 임시 덱 정리 */
-export async function finalizeTempDeck({ roomId, deckId, deleteDeckRow = true }: { roomId: string; deckId: string; deleteDeckRow?: boolean }) {
-    await supabase.from("room_decks").delete().eq("room_id", roomId).eq("deck_id", deckId);
-    await removeFolder(`rooms/${roomId}/decks/${deckId}`);
-    if (deleteDeckRow) await supabase.from("decks").delete().eq("id", deckId);
-    else await supabase.from("decks").update({ file_key: null, file_pages: null, is_temp: true }).eq("id", deckId);
+/** 저장 후 임시 덱 정리 (스토리지/연결 모두 제거). DB 스키마 컬럼 의존 ❌ */
+export async function finalizeTempDeck({
+                                           roomId,
+                                           deckId,
+                                           deleteDeckRow = true,
+                                       }: {
+    roomId: string;
+    deckId: string;
+    deleteDeckRow?: boolean;
+}) {
+    // 교시 연결 해제
+    await supabase.from("room_decks").delete().match({ room_id: roomId, deck_id: deckId });
+
+    const basePrefix = `rooms/${roomId}/decks/${deckId}/`;
+
+    // 스토리지 정리: presentations + slides
+    await removeFolderInBucket("presentations", basePrefix);
+    await removeFolderInBucket("slides", basePrefix);
+
+    if (deleteDeckRow) {
+        await supabase.from("decks").delete().eq("id", deckId);
+    } else {
+        await supabase.from("decks").update({
+            file_key: null,
+            file_pages: null,
+        }).eq("id", deckId);
+    }
 }
