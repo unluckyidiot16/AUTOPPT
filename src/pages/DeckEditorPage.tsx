@@ -17,6 +17,7 @@ export default function DeckEditorPage() {
     const roomCode = qs.get("room") || "";
     const deckFromQS = qs.get("deck");
     const sourceDeckId = qs.get("src");
+    const sourceDeckKey = qs.get("srcKey");
 
     const [deckId, setDeckId] = useState<string | null>(null);
     const [fileKey, setFileKey] = useState<string | null>(null);
@@ -38,37 +39,52 @@ export default function DeckEditorPage() {
     const isClone = Boolean(sourceDeckId);
     const onItemsChange = (next: ManifestItem[]) => setItems(next);
 
+    // DeckEditorPage.tsx
     async function ensureEditingDeckFromFileKey({
                                                     roomCode, fileKey, slot = 1,
                                                 }: { roomCode: string; fileKey: string; slot?: number; }) {
-        const { data: room, error: eRoom } = await supabase.from("rooms").select("id").eq("code", roomCode).maybeSingle();
+        // 0) room 조회
+        const { data: room, error: eRoom } = await supabase
+            .from("rooms").select("id").eq("code", roomCode).maybeSingle();
         if (eRoom || !room?.id) throw eRoom ?? new Error("room not found");
         const roomId = room.id as string;
 
-        const ins = await supabase.from("decks").insert({ title: "Untitled (편집)", is_temp: true }).select("id").single();
+        // 1) 임시 덱 생성  ✅ is_temp 제거
+        const ins = await supabase
+            .from("decks")
+            .insert({ title: "Untitled (편집)" })
+            .select("id")
+            .single();
         if (ins.error) throw ins.error;
         const newDeckId = ins.data.id as string;
 
+        // 2) 교시 매핑 보장
         await supabase.from("room_decks").upsert({ room_id: roomId, deck_id: newDeckId, slot });
 
+        // 3) PDF 사본 (버킷 prefix 방어)
         const ts = Date.now();
         const destKey = `rooms/${roomId}/decks/${newDeckId}/slides-${ts}.pdf`;
+        const srcRel = String(fileKey).replace(/^presentations\//i, "");
 
         try {
-            const cp = await supabase.storage.from("presentations").copy(fileKey, destKey);
+            const cp = await supabase.storage.from("presentations").copy(srcRel, destKey);
             if (cp.error) throw cp.error;
         } catch {
-            const dl = await supabase.storage.from("presentations").download(fileKey);
+            const dl = await supabase.storage.from("presentations").download(srcRel);
             if (dl.error) throw dl.error;
             const up = await supabase.storage.from("presentations").upload(destKey, dl.data, {
-                contentType: "application/pdf", upsert: true,
+                contentType: "application/pdf",
+                upsert: true,
             });
             if (up.error) throw up.error;
         }
 
+        // 4) decks.file_key 갱신 (상대키로 저장)
         await supabase.from("decks").update({ file_key: destKey }).eq("id", newDeckId);
+
         return { roomId, deckId: newDeckId, file_key: destKey, totalPages: 0 };
     }
+
 
     useEffect(() => {
         let cancel = false;
@@ -86,7 +102,13 @@ export default function DeckEditorPage() {
                 const roomId = roomRow?.id || null;
                 setRoomIdState(roomId);
 
-                if (sourceDeckId) {
+                if (sourceDeckKey) {
+                    const ensured = await ensureEditingDeckFromFileKey({ roomCode, fileKey: sourceDeckKey, slot: 1 });
+                    if (cancel) return;
+                    setDeckId(ensured.deckId);
+                    setFileKey(ensured.file_key);
+                    setTotalPages(ensured.totalPages || 0);
+                } else if (sourceDeckId) {
                     const { data: src, error: eSrc } = await supabase
                         .from("decks").select("file_key, file_pages").eq("id", sourceDeckId).maybeSingle();
                     if (eSrc) throw eSrc;
