@@ -88,8 +88,8 @@ export default function PdfToSlidesUploader({
             setProgress(8);
 
             // 3) pdf.js 로드
-            push("pdf.js (legacy) 준비…");
-            // workerless로 열 것이므로 workerSrc는 건드리지 않습니다.
+            const ver = (pdfjs as any).version || "4.8.69";
+            (pdfjs as any).GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${ver}/build/pdf.worker.min.js`;
             setProgress(10);
 
             // 4) PDF 열기 (workerless 모드)
