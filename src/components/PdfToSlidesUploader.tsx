@@ -2,39 +2,32 @@
 import React, { useCallback, useRef, useState } from "react";
 import { supabase } from "../supabaseClient";
 
-/** ───────────────────────────── pdf.js 안정 로더 ───────────────────────────── */
+/** ──────────────── Types ──────────────── */
 type PdfJs = typeof import("pdfjs-dist/types/src/pdf");
+type PDFDocumentProxy = import("pdfjs-dist/types/src/pdf").PDFDocumentProxy;
+type PDFPageProxy = import("pdfjs-dist/types/src/pdf").PDFPageProxy;
 
+/** ──────────────── pdf.js 안정 로더 ──────────────── */
 async function loadPdfJsStable(): Promise<PdfJs> {
-    // 1) v5 ESM 우선
+    // 1) v5 ESM (로컬 패키지)
     try {
         const pdf: any = await import("pdfjs-dist/build/pdf");
         const ver = pdf?.version ?? "5.x";
-        // 워커는 절대 사용 안 함(환경별 격리 문제 회피)
-        pdf.GlobalWorkerOptions.workerSrc =
+        // 워커는 쓰지 않지만, 혹시 내부에서 참조할 수 있으니 workerSrc만 안전 고정
+        (pdf as any).GlobalWorkerOptions.workerSrc =
             `https://cdn.jsdelivr.net/npm/pdfjs-dist@${ver}/build/pdf.worker.min.js`;
         return pdf;
     } catch { /* pass */ }
 
-    // 2) legacy UMD
-    try {
-        const pdf: any = await import("pdfjs-dist/legacy/build/pdf");
-        const ver = pdf?.version ?? "4.x(legacy)";
-        pdf.GlobalWorkerOptions.workerSrc =
-            `https://cdn.jsdelivr.net/npm/pdfjs-dist@${ver}/legacy/build/pdf.worker.min.js`;
-        return pdf;
-    } catch { /* pass */ }
-
-    // 3) CDN ESM 고정 버전 폴백
-    const cdn = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69/build/pdf.min.mjs";
-    const pdf: any = await import(/* @vite-ignore */ cdn);
-    // 4.8.69는 build 경로 기준
-    pdf.GlobalWorkerOptions.workerSrc =
-        "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69/build/pdf.worker.min.js";
+    // 2) CDN 레거시 ESM 강제 폴백(로컬 legacy 경로 임포트 제거)
+    const url = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69/legacy/build/pdf.min.mjs";
+    const pdf: any = await import(/* @vite-ignore */ url);
+    (pdf as any).GlobalWorkerOptions.workerSrc =
+        "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69/legacy/build/pdf.worker.min.js";
     return pdf;
 }
 
-/** 타임아웃 레이스(해당 ms 내 resolve 안 되면 에러) */
+/** 타임아웃 유틸 */
 function withTimeout<T>(p: Promise<T>, ms: number, tag = "timeout"): Promise<T> {
     return new Promise<T>((resolve, reject) => {
         const t = setTimeout(() => reject(new Error(tag)), ms);
@@ -43,7 +36,58 @@ function withTimeout<T>(p: Promise<T>, ms: number, tag = "timeout"): Promise<T> 
     });
 }
 
-/** 스토리지 키용 안전 슬러그 */
+/** v5 → v5(+CMAP/Fonts) → v4.8.69(legacy CDN) 순차 재시도 */
+async function openPdfWithFallback(
+    pdfjs: any,
+    data: ArrayBuffer,
+    push: (m: string) => void,
+): Promise<PDFDocumentProxy> {
+    const tryOpen = (lib: any, label: string, extra: Record<string, any> = {}, ms = 15000) =>
+        withTimeout(
+            lib.getDocument({
+                data,
+                disableWorker: true,
+                isEvalSupported: false,
+                stopAtErrors: true,
+                enableXfa: false,
+                disableFontFace: true,
+                nativeImageDecoderSupport: "none",
+                ...extra,
+            }).promise,
+            ms,
+            label,
+        ) as Promise<PDFDocumentProxy>;
+
+    // A) v5 기본
+    push("PDF 열기(A: v5 기본) …");
+    try { return await tryOpen(pdfjs, "open-A"); } catch (e: any) { push(`A 실패: ${e?.message ?? e}`); }
+
+    // B) v5 + CMAP/Fonts 고정 경로
+    const ver = pdfjs?.version ?? "5";
+    const baseV5 = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${ver}`;
+    push("PDF 열기(B: v5 + CMAP/Fonts) …");
+    try {
+        return await tryOpen(pdfjs, "open-B", {
+            cMapUrl: `${baseV5}/cmaps/`,
+            cMapPacked: true,
+            standardFontDataUrl: `${baseV5}/standard_fonts/`,
+        }, 20000);
+    } catch (e: any) { push(`B 실패: ${e?.message ?? e}`); }
+
+    // C) legacy 4.8.69 (CDN) – 로컬 경로 임포트 없이 안전
+    push("PDF 열기(C: legacy 4.8.69) …");
+    const legacy: any = await import(
+        /* @vite-ignore */ "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69/legacy/build/pdf.min.mjs"
+        );
+    const baseV4 = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69";
+    return await tryOpen(legacy, "open-C", {
+        cMapUrl: `${baseV4}/cmaps/`,
+        cMapPacked: true,
+        standardFontDataUrl: `${baseV4}/standard_fonts/`,
+    }, 20000);
+}
+
+/** 슬러그 */
 function storageSafeSlug(basename: string) {
     const stem = basename.replace(/\.[^.]+$/, "");
     const ascii = stem.normalize("NFKD").replace(/[\u0300-\u036f]/g, "")
@@ -55,8 +99,7 @@ function storageSafeSlug(basename: string) {
 /** WebP 변환 */
 function toWebpBlob(canvas: HTMLCanvasElement, quality = 0.9): Promise<Blob> {
     return new Promise((resolve, reject) =>
-        canvas.toBlob(b => (b ? resolve(b) : reject(new Error("toBlob failed"))),
-            "image/webp", quality),
+        canvas.toBlob(b => (b ? resolve(b) : reject(new Error("toBlob failed"))), "image/webp", quality),
     );
 }
 
@@ -69,7 +112,7 @@ async function probeWrite(bucket: string, keyPrefix: string) {
     await b.remove([probeKey]).catch(() => void 0);
 }
 
-/** ───────────────────────────── Uploader 컴포넌트 ───────────────────────────── */
+/** ──────────────── Uploader ──────────────── */
 export default function PdfToSlidesUploader({
                                                 onDone,
                                             }: {
@@ -87,14 +130,14 @@ export default function PdfToSlidesUploader({
     const handleFile = useCallback(async (file: File) => {
         setBusy(true); setLog([]); setProgress(0);
         try {
-            // 0) 세션 경고(정책에 따라 업로드 막힐 수 있음)
+            // 0) 세션 안내
             const { data: ses } = await supabase.auth.getSession();
             if (!ses?.session) push("경고: 로그인 세션이 없습니다. (RLS/정책에 따라 업로드가 거부될 수 있어요)");
 
             // 1) 원본 PDF 업로드
             const base = storageSafeSlug(file.name);
-            const relPdfKey = `decks/${base}/slides-${Date.now()}.pdf`; // (presentations) 상대키
-            const absPdfKey = `presentations/${relPdfKey}`;             // 절대 경로 로그용
+            const relPdfKey = `decks/${base}/slides-${Date.now()}.pdf`;
+            const absPdfKey = `presentations/${relPdfKey}`;
 
             push(`원본 PDF 업로드: ${absPdfKey}`);
             const upPdf = await supabase.storage.from("presentations").upload(relPdfKey, file, {
@@ -103,8 +146,8 @@ export default function PdfToSlidesUploader({
             if (upPdf.error) throw upPdf.error;
             setProgress(5);
 
-            // 2) slides 버킷 쓰기 프루브
-            const slidesPrefix = `decks/${base}`; // slides/decks/<base>/*
+            // 2) slides 프루브
+            const slidesPrefix = `decks/${base}`;
             push(`slides 쓰기 확인: slides/${slidesPrefix}/_probe.txt`);
             await probeWrite("slides", slidesPrefix);
             push(`slides 프루브 OK`);
@@ -116,33 +159,21 @@ export default function PdfToSlidesUploader({
             push(`pdf.js 로드 완료 (v${pdfjs?.version ?? "?"})`);
             setProgress(10);
 
-            // 4) PDF 열기 (완전 workerless + 타임아웃)
+            // 4) PDF 열기(타입 캐스팅 포함)
             const buf = await file.arrayBuffer();
-            push("PDF 열기…");
-            const doc = await withTimeout(
-                pdfjs.getDocument({ data: buf, disableWorker: true, isEvalSupported: false }).promise,
-                15000,
-                "pdf-open-timeout",
-            ).catch(async (e) => {
-                push(`PDF 열기 지연/실패 감지(${e?.message}). 폴백 로더 재시도…`);
-                const alt: any = await loadPdfJsStable();
-                return withTimeout(
-                    alt.getDocument({ data: buf, disableWorker: true, isEvalSupported: false }).promise,
-                    15000,
-                    "pdf-open-timeout-2",
-                );
-            });
+            push("PDF 열기 시퀀스 시작…");
+            const doc = await openPdfWithFallback(pdfjs, buf, push) as PDFDocumentProxy;
 
             const pages: number = doc.numPages;
             push(`변환 시작: 총 ${pages} 페이지`);
 
-            // 5) 페이지 → WebP 업로드 (1개씩 직렬 처리: 메모리 안정)
-            const viewportScale = 1.5; // 필요시 조정
+            // 5) 페이지 → WebP 업로드
+            const viewportScale = 1.5;
             const canvas = document.createElement("canvas");
             const ctx = canvas.getContext("2d")!;
 
             for (let i = 1; i <= pages; i++) {
-                const page = await doc.getPage(i);
+                const page: PDFPageProxy = await doc.getPage(i);
                 const vp = page.getViewport({ scale: viewportScale });
 
                 canvas.width = Math.max(1, Math.floor(vp.width));
@@ -152,17 +183,15 @@ export default function PdfToSlidesUploader({
 
                 await page.render({ canvasContext: ctx as any, viewport: vp }).promise;
 
-                // WebP(폴백 JPEG)
                 let blob: Blob;
-                try {
-                    blob = await toWebpBlob(canvas, 0.9);
-                } catch {
+                try { blob = await toWebpBlob(canvas, 0.9); }
+                catch {
                     blob = await new Promise<Blob>((resolve, reject) =>
                         canvas.toBlob(b => b ? resolve(b) : reject(new Error("jpeg toBlob failed")), "image/jpeg", 0.92),
                     );
                 }
 
-                const name = `${i - 1}.webp`; // 0-base 저장
+                const name = `${i - 1}.webp`;
                 const full = `${slidesPrefix}/${name}`;
                 const up = await supabase.storage.from("slides").upload(full, blob, {
                     contentType: "image/webp", upsert: true,
@@ -174,13 +203,13 @@ export default function PdfToSlidesUploader({
                 push(`업로드 완료: slides/${full}`);
             }
 
-            // 6) .done.json 저장(메타)
+            // 6) .done.json 저장
             const doneMeta = {
                 pages,
                 names: Array.from({ length: pages }, (_, k) => `${k}.webp`),
                 ts: Date.now(),
-                w: canvas.width,
-                h: canvas.height,
+                // 마지막 페이지 크기 메모(옵션)
+                // w: canvas.width, h: canvas.height,
             };
             const metaUp = await supabase.storage.from("slides").upload(
                 `${slidesPrefix}/.done.json`,
@@ -227,7 +256,8 @@ export default function PdfToSlidesUploader({
                 <pre
                     style={{
                         whiteSpace: "pre-wrap", fontSize: 12, lineHeight: 1.4,
-                        color: "#cbd5e1", background: "#0b1220", padding: 8, borderRadius: 8, maxHeight: 240, overflow: "auto",
+                        color: "#cbd5e1", background: "#0b1220",
+                        padding: 8, borderRadius: 8, maxHeight: 240, overflow: "auto",
                     }}
                 >
 {log.join("\n")}
