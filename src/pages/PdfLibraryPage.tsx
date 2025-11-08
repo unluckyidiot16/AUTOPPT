@@ -4,10 +4,10 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { supabase } from "../supabaseClient";
 import PdfViewer from "../components/PdfViewer";
 import PdfToSlidesUploader from "../components/PdfToSlidesUploader";
+import { useRealtime } from "../hooks/useRealtime"; // ⬅︎ 추가
 
-/** ─────────────────────────────────────────────────────────────────────────────
- *  Types
- *  ───────────────────────────────────────────────────────────────────────────*/
+// ───────────────────────────────────────────────────────────────────────────────
+// Types
 type DeckRow = {
     id: string;                // DB 덱이면 uuid, 스토리지 항목이면 "s:<file_key>"
     title: string | null;
@@ -16,375 +16,800 @@ type DeckRow = {
     origin: "db" | "storage";  // DB(decks) vs storage-only(폴더 스캔)
 };
 
-type AssignState = {
-    open: boolean;
-    progress: number;
-    text: string;
-    lines: string[];
-    deckId?: string | null;
-};
-
-/** ─────────────────────────────────────────────────────────────────────────────
- *  Small utils
- *  ───────────────────────────────────────────────────────────────────────────*/
-function pushLog(setter: React.Dispatch<React.SetStateAction<AssignState>>, msg: string) {
-    setter(s => ({ ...s, lines: [...s.lines, msg] }));
+// ───────────────────────────────────────────────────────────────────────────────
+// Theme helpers
+function usePrefersDark() {
+    const [dark, setDark] = React.useState<boolean>(
+        typeof window !== "undefined" &&
+        (window as any).matchMedia &&
+        (window as any).matchMedia("(prefers-color-scheme: dark)").matches,
+    );
+    React.useEffect(() => {
+        if (typeof window === "undefined" || !(window as any).matchMedia) return;
+        const mq: MediaQueryList = (window as any).matchMedia("(prefers-color-scheme: dark)");
+        const on = (e: MediaQueryListEvent) => setDark(e.matches);
+        (mq as any).addEventListener ? (mq as any).addEventListener("change", on) : (mq as any).addListener(on);
+        return () => {
+            (mq as any).removeEventListener ? (mq as any).removeEventListener("change", on) : (mq as any).removeListener(on);
+        };
+    }, []);
+    return dark;
 }
 
-function sleep(ms: number) {
-    return new Promise(res => setTimeout(res, ms));
-}
-
-/** presentations/* 파일키 → slides 버킷의 폴더 prefix 로 변환
- *  presentations/decks/<slug>/slides-*.pdf   → decks/<slug>
- *  presentations/rooms/<room>/decks/<id>/…   → rooms/<room>/decks/<id>
- */
+// presentations/* → slides/* 프리픽스 계산
 function slidesPrefixOfPresentationsFile(fileKey: string | null | undefined): string | null {
     if (!fileKey) return null;
-    const m1 = fileKey.match(/^decks\/([^/]+)/); // 이미 presentations/ 제거된 상태를 기대하지 않음
-    // 실제 저장소는 presentations 버킷이므로 앞에 presentations/가 붙어온다.
-    const key = fileKey.replace(/^\/+|^presentations\//, "");
-    if (key.startsWith("decks/")) {
-        const slug = key.split("/")[1];
-        return `decks/${slug}`;
-    }
-    // rooms/<room>/decks/<uuid>/slides-*.pdf
-    const m = key.match(/^rooms\/([^/]+)\/decks\/([0-9a-f-]{36})\//);
-    if (m) return `rooms/${m[1]}/decks/${m[2]}`;
+    // 원본: presentations/decks/<slug>/slides-*.pdf → slides: decks/<slug>
+    const m1 = fileKey.match(/^presentations\/decks\/([^/]+)/);
+    if (m1) return `decks/${m1[1]}`;
+
+    // 복제본: presentations/rooms/<room>/decks/<deckId>/slides-*.pdf → slides: rooms/<room>/decks/<deckId>
+    const m2 = fileKey.match(/^presentations\/rooms\/([^/]+\/decks\/[^/]+)/);
+    if (m2) return `rooms/${m2[1]}`;
+
     return null;
 }
 
-/** presentations/rooms/<room>/decks/<uuid>/… 에서 deckId 추출 */
-function parseDeckIdFromRoomsKey(fileKey: string | null | undefined): string | null {
-    if (!fileKey) return null;
-    const key = fileKey.replace(/^\/+|^presentations\//, "");
-    const m = key.match(/^rooms\/([^/]+)\/decks\/([0-9a-f-]{36})\//);
-    return m ? m[2] : null;
+async function ensureSlotRow(roomId: string, slot: number) {
+    const { error } = await supabase
+        .from("room_lessons")
+        .upsert({ room_id: roomId, slot, current_index: 0 }, { onConflict: "room_id,slot" });
+    if (error) throw error;
 }
 
-/** rooms/* 키가 현재 room 에 속하는지 검사 */
-function isRoomsKeyForRoom(fileKey: string | null | undefined, roomId: string): boolean {
-    if (!fileKey) return false;
-    const key = fileKey.replace(/^\/+|^presentations\//, "");
-    return key.startsWith(`rooms/${roomId}/decks/`);
-}
-
-/** 파일키에서 폴더 prefix만 추출 (presentations/* 기준) */
-function folderPrefixOfFileKey(fileKey: string | null | undefined): string | null {
-    if (!fileKey) return null;
-    const key = fileKey.replace(/^\/+/, "");
-    const parts = key.split("/");
-    if (parts.length < 2) return null;
-    return parts.slice(0, 2).join("/"); // e.g., decks/<slug> or rooms/<room>
-}
-
-/** slides/<prefix> 에서 페이지수 읽기 (.done.json 우선) */
-async function readPagesFromSlidesPrefix(prefix: string): Promise<number> {
-    const slides = supabase.storage.from("slides");
-    // 1) done marker
-    const done = await slides.download(`${prefix}/.done.json`);
-    if (!done.error && done.data) {
+async function readPagesFromDoneOrList(prefix: string): Promise<number> {
+    // prefix 예: rooms/<room>/decks/<deckId>
+    // 1) .done.json 우선
+    const done = await supabase.storage.from("slides").download(`${prefix}/.done.json`);
+    if (!done.error) {
         try {
-            const txt = await done.data.text();
-            const obj = JSON.parse(txt);
-            const n = Number(obj?.pages ?? obj?.total ?? 0);
-            if (Number.isFinite(n) && n > 0) return n;
-        } catch { /* noop */ }
+            const meta = JSON.parse(await done.data.text());
+            const pages = Number(meta?.pages);
+            if (Number.isFinite(pages) && pages > 0) return pages;
+        } catch {}
     }
-    // 2) count *.webp
-    const ls = await slides.list(prefix);
-    if (ls.error) return 0;
-    const pages = (ls.data ?? []).filter(x => /\.webp$/i.test(x.name)).length;
-    return pages;
+    // 2) 폴백: .webp 개수 카운트
+    const { data, error } = await supabase.storage.from("slides").list(prefix);
+    if (!error && data?.length) {
+        return data.filter((f) => /\.webp$/i.test(f.name)).length;
+    }
+    return 0;
 }
 
-/** slides 폴더 전체 복사 (하위 폴더 없이 평면 구조 가정) */
 async function copySlidesDir(
     srcPrefix: string,
     destPrefix: string,
-    onStep?: (copied: number, total: number) => void
+    onStep?: (copied: number, total: number) => void,
 ) {
     const slides = supabase.storage.from("slides");
-    const list = await slides.list(srcPrefix);
-    if (list.error) throw list.error;
-    const items = (list.data ?? []).map(x => `${srcPrefix}/${x.name}`);
-    const total = items.length;
+
+    async function listAll(prefix: string): Promise<string[]> {
+        const out: string[] = [];
+        const stack = [prefix.replace(/\/+$/, "")];
+        while (stack.length) {
+            const cur = stack.pop()!;
+            const ls = await slides.list(cur);
+            if (ls.error) throw ls.error;
+            for (const ent of ls.data || []) {
+                const child = `${cur}/${ent.name}`;
+                const probe = await slides.list(child);
+                if (!probe.error && (probe.data?.length || 0) > 0) stack.push(child);
+                else out.push(child);
+            }
+        }
+        return out;
+    }
+
+    const files = await listAll(srcPrefix);
+    const total = files.length || 0;
+    if (!total) return 0;
+
     let copied = 0;
-    for (const path of items) {
-        const name = path.split("/").pop()!;
-        const dl = await slides.download(path);
-        if (dl.error) throw dl.error;
-        const up = await slides.upload(`${destPrefix}/${name}`, dl.data, { upsert: true, contentType: name.endsWith(".json") ? "application/json" : "image/webp" });
-        if (up.error) throw up.error;
+    for (const srcPath of files) {
+        const rel = srcPath.slice(srcPrefix.length).replace(/^\/+/, "");
+        const dstPath = `${destPrefix}/${rel}`;
+        const { error: cErr } = await slides.copy(srcPath, dstPath);
+        if (cErr) {
+            const dl = await slides.download(srcPath);
+            if (dl.error) throw dl.error;
+            const up = await slides.upload(dstPath, dl.data, { upsert: true });
+            if (up.error) throw up.error;
+        }
         copied++;
         onStep?.(copied, total);
-        if (total > 20) await sleep(5); // UI 반영용 작은 딜레이
     }
+    return copied;
 }
 
-/** ─────────────────────────────────────────────────────────────────────────────
- *  Page
- *  ───────────────────────────────────────────────────────────────────────────*/
+// 빠른 복사(.done.json 기반)
+async function copySlidesFastByDone(
+    slidesPrefixSrc: string,
+    slidesPrefixDst: string,
+    onStep?: (copied: number, total: number) => void,
+) {
+    const slides = supabase.storage.from("slides");
+    const doneKey = `${slidesPrefixSrc}/.done.json`;
+    const done = await slides.download(doneKey);
+    if (done.error) throw done.error;
+    const meta = JSON.parse(await done.data.text()) as { pages: number };
+    const total = Math.max(0, Number(meta.pages) || 0);
+    if (!total) return 0;
+
+    const targets = Array.from({ length: total }, (_, i) => `${slidesPrefixSrc}/${i}.webp`);
+    targets.push(doneKey);
+
+    let copied = 0;
+    for (const src of targets) {
+        const dst = src.replace(slidesPrefixSrc, slidesPrefixDst);
+        const { error: cErr } = await slides.copy(src, dst);
+        if (cErr) {
+            const dl = await slides.download(src);
+            if (dl.error) throw dl.error;
+            const up = await slides.upload(dst, dl.data, { upsert: true });
+            if (up.error) throw up.error;
+        }
+        copied++;
+        onStep?.(copied, targets.length);
+    }
+    return copied;
+}
+
+function useQS() {
+    const { search, hash } = useLocation();
+    const part = hash.includes("?") ? hash.split("?")[1] : search.replace(/^\?/, "");
+    return React.useMemo(() => new URLSearchParams(part), [part]);
+}
+
+// ───────────────────────────────────────────────────────────────────────────────
+// Small UI
+type BtnProps = React.ButtonHTMLAttributes<HTMLButtonElement> & {
+    variant?: "primary" | "neutral" | "outline" | "danger" | "ghost";
+    small?: boolean;
+    pressed?: boolean;
+};
+const chipPal = {
+    blue:  { bgD: "rgba(59,130,246,.18)",  bgL: "rgba(59,130,246,.12)",  bdD: "rgba(59,130,246,.45)",  fgD: "#bfdbfe", fgL: "#1e40af" },
+    green: { bgD: "rgba(16,185,129,.18)",  bgL: "rgba(16,185,129,.12)",  bdD: "rgba(16,185,129,.45)",  fgD: "#bbf7d0", fgL: "#065f46" },
+    slate: { bgD: "rgba(148,163,184,.18)", bgL: "rgba(148,163,184,.12)", bdD: "rgba(148,163,184,.35)", fgD: "#e2e8f0", fgL: "#334155" },
+    red:   { bgD: "rgba(239,68,68,.22)",  bgL: "rgba(239,68,68,.12)",  bdD: "rgba(239,68,68,.45)",  fgD: "#fecaca", fgL: "#7f1d1d" },
+} as const;
+function useBtnStyles(dark: boolean, { variant = "neutral", small, pressed }: BtnProps) {
+    const base: React.CSSProperties = {
+        borderRadius: 10, padding: small ? "6px 10px" : "8px 12px",
+        fontSize: small ? 12 : 14, lineHeight: 1.1, transition: "all .15s ease", cursor: "pointer",
+    };
+    const ring = dark ? "rgba(148,163,184,.28)" : "rgba(148,163,184,.35)";
+    const set = {
+        primary: { background: pressed ? (dark ? "#4f46e5" : "#4338ca") : (dark ? "#6366f1" : "#4f46e5"), color: "#fff", border: "1px solid transparent" },
+        neutral: { background: dark ? "rgba(30,41,59,.6)" : "#fff", color: dark ? "#e5e7eb" : "#111827", border: `1px solid ${ring}` },
+        outline: { background: "transparent", color: dark ? "#e5e7eb" : "#111827", border: `1px solid ${ring}` },
+        danger:  { background: dark ? "rgba(239,68,68,.25)" : "rgba(239,68,68,.10)", color: dark ? "#fecaca" : "#7f1d1d", border: `1px solid rgba(239,68,68,.45)` },
+        ghost:   { background: pressed ? (dark ? "rgba(99,102,241,.18)" : "rgba(99,102,241,.12)") : "transparent", color: dark ? "#e5e7eb" : "#111827", border: `1px solid ${pressed ? "rgba(99,102,241,.35)" : "transparent"}` },
+    } as const;
+    return { ...base, ...set[variant] };
+}
+function Chip({ color, children }: { color: "blue" | "green" | "slate" | "red"; children: React.ReactNode }) {
+    const dark = usePrefersDark(); const pal = chipPal[color];
+    return (
+        <span style={{ fontSize: 11, padding: "2px 6px", borderRadius: 999, background: dark ? pal.bgD : pal.bgL, color: dark ? pal.fgD : pal.fgL, border: `1px solid ${dark ? pal.bdD : pal.bdD}` }}>
+      {children}
+    </span>
+    );
+}
+
+// ───────────────────────────────────────────────────────────────────────────────
+// Signed URL helpers (링크/썸네일)
+function OpenSignedLink({ fileKey, children }: { fileKey: string; children: React.ReactNode }) {
+    const [href, setHref] = React.useState("#");
+    const dark = usePrefersDark();
+    const style = useBtnStyles(dark, { variant: "outline", small: true });
+    React.useEffect(() => {
+        let off = false;
+        (async () => {
+            const { data } = await supabase.storage.from("presentations").createSignedUrl(fileKey, 3600 * 24 * 7);
+            if (!off && data?.signedUrl) { setHref(data.signedUrl); return; }
+            const { data: pub } = supabase.storage.from("presentations").getPublicUrl(fileKey);
+            if (!off) setHref(pub.publicUrl || "#");
+        })();
+        return () => { off = true; };
+    }, [fileKey]);
+    return (
+        <a style={style} href={href} target="_blank" rel="noreferrer">{children}</a>
+    );
+}
+function useReadableUrl(key: string | null | undefined, ttlSec = 3600 * 24) {
+    const [url, setUrl] = React.useState<string>("");
+    React.useEffect(() => {
+        let off = false;
+        (async () => {
+            if (!key) { setUrl(""); return; }
+            const { data } = await supabase.storage.from("presentations").createSignedUrl(key, ttlSec);
+            if (!off && data?.signedUrl) { setUrl(`${data.signedUrl}`); return; }
+            const { data: pub } = supabase.storage.from("presentations").getPublicUrl(key);
+            if (!off) setUrl(pub.publicUrl || "");
+        })();
+        return () => { off = true; };
+    }, [key, ttlSec]);
+    return url;
+}
+
+// 카드 썸네일: slides/0.webp 우선 → PDF 폴백
+function Thumb({ keyStr, badge }: { keyStr: string; badge: React.ReactNode }) {
+    const dark = usePrefersDark();
+    const [useSlidesImg, setUseSlidesImg] = React.useState(true);
+    const folder = folderPrefixOfFileKey(keyStr);
+    const slidesKey = folder ? `${folder}/0.webp` : null;
+    const slidesUrl = slidesKey ? supabase.storage.from("slides").getPublicUrl(slidesKey).data.publicUrl : null;
+    const pdfUrl = useReadableUrl(keyStr);
+    return (
+        <div style={{ position: "relative", borderRadius: 12, overflow: "hidden", border: `1px solid ${dark ? "rgba(148,163,184,.22)" : "rgba(148,163,184,.35)"}`, height: 120, display: "grid", placeItems: "center", background: dark ? "rgba(2,6,23,.65)" : "#fff" }}>
+            {useSlidesImg && slidesUrl ? (
+                <img src={slidesUrl} style={{ maxHeight: 120, width: "100%", objectFit: "contain" }} alt="slide thumb" onError={() => setUseSlidesImg(false)} />
+            ) : pdfUrl ? (
+                <PdfViewer fileUrl={pdfUrl} page={1} maxHeight="120px" />
+            ) : (
+                <div style={{ width: "100%", display: "grid", placeItems: "center", maxHeight: 120 }}>
+                    <div style={{ fontSize: 12, opacity: 0.7, padding: 8, color: dark ? "#cbd5e1" : "#475569" }}>파일을 불러올 수 없습니다.</div>
+                </div>
+            )}
+            <div style={{ position: "absolute", top: 6, left: 6 }}>{badge}</div>
+        </div>
+    );
+}
+
+// ───────────────────────────────────────────────────────────────────────────────
+// Storage helpers
+async function listDir(bucket: string, prefix: string) {
+    return await supabase.storage.from(bucket).list(prefix, { limit: 1000, sortBy: { column: "updated_at", order: "desc" } });
+}
+function folderPrefixOfFileKey(fileKey: string | null | undefined) {
+    if (!fileKey) return null;
+    return fileKey.endsWith("/") ? fileKey.replace(/\/+$/, "") : fileKey.split("/").slice(0, -1).join("/");
+}
+async function removeTree(bucket: string, prefix: string) {
+    const b = supabase.storage.from(bucket);
+    const root = prefix.replace(/\/+$/, "");
+    const stack = [root];
+    const files: string[] = [];
+    while (stack.length) {
+        const cur = stack.pop()!;
+        const ls = await listDir(bucket, cur);
+        if (ls.error) throw ls.error;
+        for (const ent of ls.data || []) {
+            const child = `${cur}/${ent.name}`;
+            const probe = await listDir(bucket, child);
+            if (!probe.error && (probe.data?.length || 0) > 0) stack.push(child);
+            else files.push(child);
+        }
+    }
+    if (files.length) {
+        const rm = await b.remove(files);
+        if (rm.error) throw rm.error;
+    }
+    try { await b.remove([root]); } catch {}
+}
+
+// 유실 감지/정리
+const ORPHAN_TTL_MS = 24 * 60 * 60 * 1000;
+function shouldAutoCleanOncePerDay() { const last = Number(localStorage.getItem("orphanCleanLast") || 0); return Date.now() - last > ORPHAN_TTL_MS; }
+function markAutoCleanRun() { localStorage.setItem("orphanCleanLast", String(Date.now())); }
+function useOrphanStates() {
+    const [missing, setMissing] = React.useState<DeckRow[]>([]);
+    const [autoClean, setAutoClean] = React.useState<boolean>(() => localStorage.getItem("autoCleanOrphan") === "1");
+    React.useEffect(() => { localStorage.setItem("autoCleanOrphan", autoClean ? "1" : "0"); }, [autoClean]);
+    return { missing, setMissing, autoClean, setAutoClean };
+}
+async function findMissingByFolder(rows: DeckRow[]) {
+    const byPrefix = new Map<string, { names: Set<string>; rows: DeckRow[] }>();
+    for (const r of rows) {
+        if (!r.file_key) continue;
+        const prefix = folderPrefixOfFileKey(r.file_key);
+        if (!prefix) continue;
+        const bucket = byPrefix.get(prefix) ?? { names: new Set(), rows: [] };
+        bucket.rows.push(r);
+        byPrefix.set(prefix, bucket);
+    }
+    await Promise.all(
+        Array.from(byPrefix.keys()).map(async (prefix) => {
+            const { data } = await supabase.storage.from("presentations").list(prefix);
+            const names = new Set((data || []).map((e) => e.name));
+            byPrefix.get(prefix)!.names = names;
+        }),
+    );
+    const missing: DeckRow[] = [];
+    for (const [, bucket] of byPrefix) {
+        for (const r of bucket.rows) {
+            const name = r.file_key!.split("/").pop()!;
+            if (!bucket.names.has(name)) missing.push(r);
+        }
+    }
+    return missing;
+}
+async function detachMissingFileKeys(rows: DeckRow[]) {
+    const targets = rows.filter((r) => r.origin !== "storage" && r.file_key).map((r) => r.id);
+    if (!targets.length) return;
+    await supabase.from("decks").update({ file_key: null, file_pages: null }).in("id", targets);
+}
+
+// ───────────────────────────────────────────────────────────────────────────────
+// Main
 export default function PdfLibraryPage() {
     const nav = useNavigate();
-    const qs = new URLSearchParams(useLocation().search);
-    const roomCode = qs.get("room") ?? "";
+    const qs = useQS();
+    const roomCode = qs.get("room") || "";
+    const dark = usePrefersDark();
+
+    // ✅ RT: 학생 페이지에게 manifest 새로고침 전달용
+    const { sendRefresh } = useRealtime(roomCode || ""); // role은 내부에서 구분 없이 사용 가능하도록 구현되어 있음 가정
+
+    // 진행 모달(로그)
+    const [assign, setAssign] = React.useState<{ open: boolean; progress: number; text: string; deckId: string | null; logs: string[]; }>(
+        { open: false, progress: 0, text: "", deckId: null, logs: [] },
+    );
+    const logAssign = React.useCallback((m: string) => setAssign((a) => ({ ...a, logs: [...a.logs, m].slice(-300) })), []);
+
+    // UI state
+    const [loading, setLoading] = React.useState(false);
+    const [error, setError] = React.useState<string | null>(null);
+    const [decks, setDecks] = React.useState<DeckRow[]>([]);
+    const [keyword, setKeyword] = React.useState("");
+    const [view, setView] = React.useState<"all" | "pdf" | "copies">("all");
+    const [slotSelGlobal, setSlotSelGlobal] = React.useState<number>(1);
+    const [slotSel, setSlotSel] = React.useState<Record<string, number>>({});
+    const { missing, setMissing, autoClean, setAutoClean } = useOrphanStates();
+
+    // room & slots
     const [roomId, setRoomId] = React.useState<string | null>(null);
+    const [slots, setSlots] = React.useState<number[]>([]);
 
-    // UI 상태
-    const [rows, setRows] = React.useState<DeckRow[]>([]);
-    const [slotSel, setSlotSel] = React.useState<number>(1);
-    const [assign, setAssign] = React.useState<AssignState>({ open: false, progress: 0, text: "", lines: [] });
+    // room/slot helpers
+    const getRoomIdByCode = React.useCallback(async (code: string): Promise<string> => {
+        const { data, error } = await supabase.from("rooms").select("id").eq("code", code).maybeSingle();
+        if (error || !data?.id) throw error ?? new Error("room not found");
+        return data.id as string;
+    }, []);
+    const ensureRoomId = React.useCallback(async () => {
+        if (roomId) return roomId;
+        const id = await getRoomIdByCode(roomCode); setRoomId(id); return id;
+    }, [roomId, roomCode, getRoomIdByCode]);
 
-    React.useEffect(() => {
-        (async () => {
-            if (!roomCode) return;
-            // room id 확보
-            const { data, error } = await supabase.rpc("claim_room_auth", { p_room_code: roomCode });
-            if (error) { console.error(error); return; }
-            setRoomId(data?.id ?? null);
-            await refreshList();
-        })();
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [roomCode]);
+    const refreshSlotsList = React.useCallback(async () => {
+        try {
+            const rid = await ensureRoomId();
+            const { data, error } = await supabase.from("room_lessons").select("slot").eq("room_id", rid).order("slot", { ascending: true });
+            if (error) throw error;
+            const arr = (data || []).map((r: any) => Number(r.slot));
+            setSlots(arr);
+            if (arr.length && !arr.includes(slotSelGlobal)) setSlotSelGlobal(arr[0]);
+        } catch (e) { console.error("refreshSlotsList", e); }
+    }, [ensureRoomId, slotSelGlobal]);
+    const createSlot = React.useCallback(async () => {
+        try {
+            const rid = await ensureRoomId();
+            const used = new Set(slots); let next = 1; while (used.has(next) && next <= 12) next++;
+            if (next > 12) { alert("더 이상 교시를 만들 수 없습니다."); return; }
+            const { error } = await supabase.from("room_lessons").upsert({ room_id: rid, slot: next, current_index: 0 }, { onConflict: "room_id,slot" });
+            if (error) throw error;
+            await refreshSlotsList(); setSlotSelGlobal(next);
+        } catch (e: any) { alert(e?.message ?? String(e)); }
+    }, [ensureRoomId, slots, refreshSlotsList]);
+    React.useEffect(() => { if (roomCode) ensureRoomId().then(refreshSlotsList); }, [roomCode]); // eslint-disable-line
 
-    /** 목록 새로고침 (DB decks + storage 스캔 병합) */
-    const refreshList = React.useCallback(async () => {
-        const out: DeckRow[] = [];
+    // 목록: Storage 스캔
+    const fetchFromStorage = React.useCallback(async (limitFolders = 120): Promise<DeckRow[]> => {
+        type SFile = { name: string };
+        const bucket = supabase.storage.from("presentations");
+        const top = await bucket.list("decks", { limit: 1000, sortBy: { column: "updated_at", order: "desc" } });
+        if (top.error) throw top.error;
+        const folders = (top.data || []).map((f: any) => f.name).filter(Boolean).slice(0, limitFolders);
 
-        // 1) DB decks
-        const q = await supabase.from("decks").select("id,title,file_key,file_pages").order("updated_at", { ascending: false }).limit(100);
-        if (!q.error) {
-            for (const d of q.data ?? []) {
-                out.push({
-                    id: d.id,
-                    title: d.title,
-                    file_key: d.file_key,
-                    file_pages: d.file_pages,
-                    origin: "db",
-                });
-            }
+        const rows: DeckRow[] = [];
+        for (const folder of folders) {
+            const path = `decks/${folder}`;
+            const ls = await bucket.list(path, { limit: 50, sortBy: { column: "updated_at", order: "desc" } });
+            if (ls.error) continue;
+            const files = (ls.data as SFile[]) || [];
+            const pick = files.find((f) => /slides-.*\.pdf$/i.test(f.name)) || files.find((f) => /\.pdf$/i.test(f.name));
+            if (!pick) continue;
+            const file_key = `${path}/${pick.name}`;
+            rows.push({ id: `s:${file_key}`, title: folder, file_key, file_pages: null, origin: "storage" });
+            if (rows.length >= 200) break;
         }
-
-        // 2) storage 원본 스캔 (presentations/decks/*/slides-*.pdf)
-        const pres = supabase.storage.from("presentations");
-        const ls = await pres.list("decks");
-        if (!ls.error) {
-            for (const dir of ls.data ?? []) {
-                if (!dir.name) continue;
-                const slug = dir.name;
-                const files = await pres.list(`decks/${slug}`);
-                const pdf = (files.data ?? []).find(f => /^slides-.*\.pdf$/i.test(f.name));
-                if (pdf) {
-                    out.push({
-                        id: `s:decks/${slug}/${pdf.name}`,
-                        title: slug,
-                        file_key: `decks/${slug}/${pdf.name}`,
-                        file_pages: null,
-                        origin: "storage",
-                    });
-                }
-            }
-        }
-
-        setRows(out);
+        return rows;
     }, []);
 
-    /** 배지 라벨 */
-    function badgeOf(r: DeckRow): "원본" | "원본 PDF" | "복제본" | "DB" {
-        if (r.origin === "storage") return "원본 PDF";
-        if (r.file_key?.startsWith("presentations/rooms") || r.file_key?.startsWith("rooms/")) return "복제본";
-        return "DB";
-    }
-
-    /** 현재 room 의 slot 에 deck 배정 (원본이면 사본 생성, 복제본이면 그대로 배정) */
-    const assignDeckToSlot = React.useCallback(async (r: DeckRow, slot: number) => {
-        if (!roomId) { alert("room 이 없습니다."); return; }
-
-        setAssign({ open: true, progress: 2, text: "시작합니다…", lines: [] });
-
+    // 목록: DB + Storage 병합 → 유실 감지/필터/정리
+    const load = React.useCallback(async () => {
+        setLoading(true); setError(null);
         try {
-            // 0) 복제본이면 그대로 배정 (copy-of-copy 방지)
-            if (r.origin === "db" && r.file_key && isRoomsKeyForRoom(r.file_key, roomId)) {
-                const deckId = parseDeckIdFromRoomsKey(r.file_key)!;
-                pushLog(setAssign, `복제본 감지 → 사본 생성 생략 (deck: ${deckId})`);
-                setAssign(s => ({ ...s, progress: 10, text: "기존 덱 배정 중…" }));
+            let merged: DeckRow[] = [];
 
-                // file_pages 보정
-                const srcSlides = slidesPrefixOfPresentationsFile(r.file_key);
-                if (srcSlides) {
-                    const pages = await readPagesFromSlidesPrefix(srcSlides);
-                    if (pages > 0) {
-                        await supabase.from("decks").update({ file_pages: pages }).eq("id", deckId);
-                        pushLog(setAssign, `페이지 수 동기화: ${pages}`);
-                    }
-                }
+            // DB
+            try {
+                const { data, error } = await supabase.rpc("list_library_decks", { p_limit: 200 });
+                if (error) throw error;
+                merged = (data || []).map((d: any) => ({ id: d.id, title: d.title ?? null, file_key: d.file_key ?? null, file_pages: d.file_pages ?? null, origin: "db" as const }));
+            } catch {
+                const { data, error } = await supabase.from("decks").select("id,title,file_key,file_pages").limit(200);
+                if (!error) merged = (data || []).map((d: any) => ({ id: d.id, title: d.title ?? null, file_key: d.file_key ?? null, file_pages: d.file_pages ?? null, origin: "db" as const }));
+            }
 
-                const up = await supabase.from("room_decks")
-                    .upsert({ room_id: roomId, slot, deck_id: deckId }, { onConflict: "room_id,slot" });
-                if (up.error) throw up.error;
+            // Storage 병합
+            try {
+                const sRows = await fetchFromStorage(120);
+                const byKey = new Map<string, DeckRow>();
+                for (const r of merged) if (r.file_key) byKey.set(r.file_key, r);
+                for (const r of sRows) if (r.file_key && !byKey.has(r.file_key)) byKey.set(r.file_key, r);
+                merged = Array.from(byKey.values());
+            } catch {}
 
-                setAssign(s => ({ ...s, progress: 100, text: "배정 완료" }));
-                await sleep(250);
-                setAssign(s => ({ ...s, open: false }));
+            // 유실 파일 감지
+            const missingRows = await findMissingByFolder(merged);
+            setMissing(missingRows);
+
+            // 화면엔 존재하는 것만
+            const missingIds = new Set(missingRows.map((m) => m.id));
+            const visible = merged.filter((r) => !r.file_key || !missingIds.has(r.id));
+            setDecks(visible);
+
+            if (autoClean && missingRows.length && shouldAutoCleanOncePerDay()) {
+                await detachMissingFileKeys(missingRows);
+                markAutoCleanRun();
+                await load();
                 return;
             }
 
-            // 1) 원본 → 덱 생성 + 프레젠테이션 사본 + 슬라이드 복사
-            if (!r.file_key) throw new Error("file_key 없음");
-            const fileKey = r.file_key.startsWith("presentations/") ? r.file_key.replace(/^presentations\//, "") : r.file_key;
+            if (merged.length === 0) setError("표시할 자료가 없습니다. (DB/RPC 또는 스토리지에 자료 없음)");
+        } catch (e: any) {
+            setError(e?.message || "목록을 불러오지 못했어요.");
+        } finally {
+            setLoading(false);
+        }
+    }, [fetchFromStorage, autoClean, setMissing]);
+    React.useEffect(() => { load(); }, [load]);
 
-            // (A) decks 생성
-            setAssign(s => ({ ...s, text: "덱 생성 중…", progress: 5 }));
-            const ins = await supabase.from("decks").insert({ title: r.title ?? "Imported" }).select("id").single();
-            if (ins.error) throw ins.error;
-            const newDeckId = ins.data.id as string;
-            pushLog(setAssign, `decks 생성: ${newDeckId}`);
+    // 업로드 완료 → 새로고침
+    const onUploaded = React.useCallback(() => { load(); }, [load]);
 
-            // (B) PDF 사본 저장 (presentations/rooms/<room>/decks/<id>/slides-*.pdf)
-            const ts = Date.now();
-            const destPdfKey = `rooms/${roomId}/decks/${newDeckId}/slides-${ts}.pdf`;
-            setAssign(s => ({ ...s, text: "PDF 사본 복사 중…", progress: 8 }));
-            const pres = supabase.storage.from("presentations");
-            // 서버내 copy API 우선
-            const cp = await pres.copy(fileKey, destPdfKey);
-            if (cp.error) {
-                const dl = await pres.download(fileKey);
-                if (dl.error) throw dl.error;
-                const up = await pres.upload(destPdfKey, dl.data, { upsert: true, contentType: "application/pdf" });
-                if (up.error) throw up.error;
+    // 경로 분류(복제본/원본)
+    function classifyPath(key: string | null | undefined) {
+        const p = (key || "").replace(/^presentations\//, "");
+        const isCopy = p.startsWith("rooms/");
+        const isOriginal = p.startsWith("decks/");
+        return { isCopy, isOriginal };
+    }
+
+    // ── A) 원본을 사본으로 복제 + 배정 ────────────────────────────────────────────
+    async function createDeckFromFileKeyAndAssign(fileKey: string, roomId: string, slot: number, title?: string | null) {
+        await ensureSlotRow(roomId, slot);
+
+        // A) decks 생성
+        const ins = await supabase.from("decks").insert({ title: title ?? "Imported" }).select("id").single();
+        if (ins.error) throw ins.error;
+        const newDeckId = ins.data.id as string;
+        logAssign(`덱 생성: ${newDeckId}`);
+
+        // B) PDF 사본
+        const ts = Date.now();
+        const destKey = `rooms/${roomId}/decks/${newDeckId}/slides-${ts}.pdf`;
+        let copied = false;
+        try { const { error } = await supabase.storage.from("presentations").copy(fileKey, destKey); if (!error) copied = true; } catch {}
+        if (!copied) {
+            const dl = await supabase.storage.from("presentations").download(fileKey);
+            if (dl.error) throw dl.error;
+            const up = await supabase.storage.from("presentations").upload(destKey, dl.data, { contentType: "application/pdf", upsert: true });
+            if (up.error) throw up.error;
+        }
+        logAssign(`PDF 사본: presentations/${destKey}`);
+
+        // C) decks.file_key 업데이트
+        const upDeck = await supabase.from("decks").update({ file_key: destKey }).eq("id", newDeckId);
+        if (upDeck.error) throw upDeck.error;
+
+        // D) slides 복사 (FAST → Fallback)
+        const srcSlidesPrefix = slidesPrefixOfPresentationsFile(fileKey);
+        const dstSlidesPrefix = `rooms/${roomId}/decks/${newDeckId}`;
+        logAssign(`slides: src=${srcSlidesPrefix ?? "(none)"} → dst=${dstSlidesPrefix}`);
+        if (srcSlidesPrefix) {
+            try {
+                logAssign(`슬라이드 복사 준비(.done.json 확인)…`);
+                await copySlidesFastByDone(srcSlidesPrefix, dstSlidesPrefix, (copied, total) => {
+                    const pct = Math.max(12, Math.min(98, Math.floor(12 + (copied / Math.max(1, total)) * 85)));
+                    setAssign((a) => ({ ...a, progress: pct, text: `슬라이드 복사 중… ${copied}/${total}` }));
+                });
+                logAssign(`슬라이드 복사 완료(FAST): slides/${dstSlidesPrefix}`);
+            } catch {
+                logAssign(`FAST 복사 실패 → 재귀 복사 진행`);
+                await copySlidesDir(srcSlidesPrefix, dstSlidesPrefix, (copied, total) => {
+                    const pct = Math.max(12, Math.min(98, Math.floor(12 + (copied / Math.max(1, total)) * 85)));
+                    setAssign((a) => ({ ...a, progress: pct, text: `슬라이드 복사 중… ${copied}/${total}` }));
+                });
+                logAssign(`슬라이드 복사 완료(FALLBACK): slides/${dstSlidesPrefix}`);
             }
-            await supabase.from("decks").update({ file_key: destPdfKey }).eq("id", newDeckId);
+        } else {
+            logAssign(`슬라이드 원본 없음 → 복사 생략`);
+        }
 
-            // (C) slides 복사
-            const srcSlides = slidesPrefixOfPresentationsFile(fileKey)!;     // e.g., decks/<slug>
-            const dstSlides = `rooms/${roomId}/decks/${newDeckId}`;
-            setAssign(s => ({ ...s, text: "슬라이드 이미지 복사 준비…", progress: 12 }));
-            let last = 12;
-            await copySlidesDir(srcSlides, dstSlides, (copied, total) => {
-                const pct = Math.max(12, Math.min(96, Math.floor(12 + (copied / Math.max(1, total)) * 80)));
-                if (pct > last) {
-                    last = pct;
-                    setAssign(s => ({ ...s, progress: pct, text: `슬라이드 복사 중… ${pct}%` }));
-                }
-            });
-            pushLog(setAssign, `슬라이드 복사 완료: ${srcSlides} → ${dstSlides}`);
-
-            // (D) 페이지수 기록
-            const pages = await readPagesFromSlidesPrefix(dstSlides);
+        // E) 페이지 수 기록
+        try {
+            const pages = await readPagesFromDoneOrList(dstSlidesPrefix);
             if (pages > 0) {
-                await supabase.from("decks").update({ file_pages: pages }).eq("id", newDeckId);
-                pushLog(setAssign, `페이지 수: ${pages}`);
+                await supabase.from("decks").update({ file_pages: pages }).eq("id", newDeckId).throwOnError();
+                logAssign(`decks.file_pages = ${pages} 갱신`);
+            } else {
+                logAssign(`경고: 페이지 수를 확인하지 못했습니다`);
+            }
+        } catch (e: any) {
+            logAssign(`페이지 수 갱신 실패: ${e?.message || e}`);
+        }
+
+        // F) room_decks 배정 + 검증
+        const upMap = await supabase
+            .from("room_decks")
+            .upsert({ room_id: roomId, slot, deck_id: newDeckId }, { onConflict: "room_id,slot" })
+            .select("deck_id,slot")
+            .single();
+        if (upMap.error) throw upMap.error;
+        logAssign(`배정 완료: slot=${slot}, deck=${newDeckId}`);
+
+        const check = await supabase.from("room_decks").select("deck_id").eq("room_id", roomId).eq("slot", slot).maybeSingle();
+        if (!check.data?.deck_id) throw new Error("배정 검증 실패(조회 결과 없음)");
+        logAssign(`배정 검증 통과`);
+
+        return { newDeckId };
+    }
+
+    // ── B) 이미 ‘복제본(DB 덱)’이면 새로 만들지 말고 그대로 배정 ────────────────
+    async function assignExistingDbCopyToSlot(deckId: string, roomId: string, slot: number) {
+        await ensureSlotRow(roomId, slot);
+        logAssign(`기존 덱 배정: deck=${deckId} → slot=${slot}`);
+        const up = await supabase
+            .from("room_decks")
+            .upsert({ room_id: roomId, slot, deck_id: deckId }, { onConflict: "room_id,slot" })
+            .select("deck_id")
+            .single();
+        if (up.error) throw up.error;
+        logAssign(`배정 완료(중복 생성 없음)`);
+    }
+
+    // 분기 진입 함수(버튼 핸들러)
+    async function handleAssign(d: DeckRow, slot: number) {
+        if (!roomCode) { alert("room 파라미터가 필요합니다."); return; }
+        if (!d.file_key) { alert("파일이 없습니다."); return; }
+
+        const rid = await ensureRoomId();
+        const { isCopy, isOriginal } = classifyPath(d.file_key);
+
+        try {
+            // 진행 모달 open
+            setAssign({ open: true, progress: 8, text: isCopy ? "기존 덱 배정 중…" : "사본 생성 중…", deckId: null, logs: [] });
+            logAssign(`시작: room=${rid}, slot=${slot}, file=${d.file_key}`);
+
+            if (isCopy && d.origin === "db") {
+                // 복제본(rooms/*) + DB 덱 ⇒ 그대로 배정
+                await assignExistingDbCopyToSlot(d.id, rid, slot);
+                setAssign((a) => ({ ...a, progress: 100, text: "배정 완료!" }));
+            } else if (isOriginal) {
+                // 원본(decks/*) ⇒ 새 덱 복제 후 배정
+                const { newDeckId } = await createDeckFromFileKeyAndAssign(d.file_key, rid, slot, d.title);
+                setAssign((a) => ({ ...a, deckId: newDeckId, progress: 100, text: "복제 및 배정 완료!" }));
+            } else {
+                // 그 외(storage-only 원본 등)도 원본 취급하여 복제
+                const { newDeckId } = await createDeckFromFileKeyAndAssign(d.file_key, rid, slot, d.title);
+                setAssign((a) => ({ ...a, deckId: newDeckId, progress: 100, text: "복제 및 배정 완료!" }));
             }
 
-            // (E) room_decks 배정
-            setAssign(s => ({ ...s, text: "교시 배정 중…", progress: 97 }));
-            const map = await supabase.from("room_decks")
-                .upsert({ room_id: roomId, slot, deck_id: newDeckId }, { onConflict: "room_id,slot" });
-            if (map.error) throw map.error;
+            // 교사/학생 반영
+            await load();                 // 자료함 카드 갱신
+            sendRefresh?.("manifest");    // 🟣 학생 페이지에 매니페스트 새로고침 신호
 
-            setAssign(s => ({ ...s, text: "완료", progress: 100, deckId: newDeckId }));
-            await sleep(250);
-            setAssign(s => ({ ...s, open: false }));
         } catch (e: any) {
             console.error(e);
-            setAssign(s => ({ ...s, text: e?.message ?? "오류", progress: 0 }));
-            pushLog(setAssign, `오류: ${e?.message ?? e}`);
-            alert(`배정 실패: ${e?.message ?? e}`);
+            logAssign(`에러: ${e?.message || e}`);
+            setAssign((a) => ({ ...a, text: `에러: ${e?.message || e}` }));
+            alert(`불러오기 실패: ${e?.message || e}`);
+        } finally {
+            setTimeout(() => setAssign({ open: false, progress: 0, text: "", deckId: null, logs: [] }), 650);
         }
-    }, [roomId]);
+    }
 
-    /** UI 렌더링 */
+    // 삭제
+    const deleteDeck = React.useCallback(async (d: DeckRow) => {
+        setDecks((prev) => prev.filter((x) => x.id !== d.id)); // 낙관적
+        try {
+            const bucket = "presentations";
+            const prefix = d.file_key ? folderPrefixOfFileKey(d.file_key) : null;
+            if (d.origin === "db") {
+                try {
+                    const { error } = await supabase.rpc("delete_deck_deep", { p_deck_id: d.id });
+                    if (error) throw error;
+                } catch {
+                    await supabase.from("room_decks").delete().eq("deck_id", d.id);
+                    const del = await supabase.from("decks").delete().eq("id", d.id);
+                    if (del.error) throw del.error;
+                }
+                if (prefix) await removeTree(bucket, prefix);
+            } else {
+                if (!prefix) throw new Error("file_key 없음");
+                await removeTree(bucket, prefix);
+            }
+            if (prefix) {
+                const ls = await supabase.storage.from(bucket).list(prefix);
+                if (!ls.error && (ls.data?.length || 0) > 0) await removeTree(bucket, prefix);
+            }
+        } catch (e: any) {
+            await load();
+            alert(e?.message ?? String(e));
+            return;
+        }
+        await load();
+    }, [load]);
+
+    const filtered = React.useMemo(() => {
+        let arr = decks;
+        if (view !== "all") {
+            arr = arr.filter((d) => {
+                const { isCopy, isOriginal } = classifyPath(d.file_key);
+                return view === "pdf" ? isOriginal : isCopy;
+            });
+        }
+        if (!keyword.trim()) return arr;
+        const k = keyword.trim().toLowerCase();
+        return arr.filter((d) => (d.title || "").toLowerCase().includes(k) || (d.file_key || "").toLowerCase().includes(k));
+    }, [decks, view, keyword]);
+
+    const tagAndColor = (d: DeckRow) => {
+        const { isCopy, isOriginal } = classifyPath(d.file_key);
+        if (isCopy) return { label: "복제본", color: "green" as const };
+        if (isOriginal) return { label: "원본 PDF", color: "blue" as const };
+        return { label: d.origin.toUpperCase(), color: "slate" as const };
+    };
+
+    const cardBase: React.CSSProperties = {
+        borderRadius: 14, background: dark ? "rgba(15,23,42,.92)" : "#fff",
+        border: `1px solid ${dark ? "rgba(148,163,184,.18)" : "rgba(148,163,184,.35)"}`,
+        padding: 12, display: "flex", flexDirection: "column",
+        boxShadow: dark ? "0 6px 18px rgba(2,6,23,.55)" : "0 4px 14px rgba(15,23,42,.08)",
+    };
+    const Btn = (p: BtnProps) => <button {...p} style={{ ...useBtnStyles(dark, p), ...(p.style || {}) }}>{p.children}</button>;
+
     return (
-        <div style={{ padding: 16, color: "#e2e8f0" }}>
-            <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 12 }}>
-                <button onClick={() => nav(`/teacher?room=${encodeURIComponent(roomCode)}`)} className="btn">뒤로</button>
-                <div style={{ fontSize: 24, fontWeight: 800 }}>자료함</div>
-                <div style={{ marginLeft: "auto" }} />
-                <div>room: <b>{roomCode}</b></div>
+        <div className="px-4 py-4 max-w-7xl mx-auto">
+            {/* 헤더 */}
+            <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2">
+                    <Btn variant="outline" onClick={() => nav(`/teacher?room=${encodeURIComponent(roomCode)}&mode=setup`)} small>← 뒤로</Btn>
+                    <h1 className="text-xl font-semibold">자료함</h1>
+                </div>
+                <div className="text-sm opacity-70">room: <code>{roomCode || "(미지정)"}</code></div>
             </div>
 
-            <PdfToSlidesUploader
-                roomCode={roomCode}
-                onFinished={() => refreshList()}
-            />
-
-            {/* 교시 선택 */}
-            <div style={{ margin: "10px 0", display: "flex", gap: 6, alignItems: "center" }}>
-                <span style={{ opacity: .8 }}>교시</span>
-                {[1,2,3,4,5,6].map(n => (
-                    <button
-                        key={n}
-                        onClick={() => setSlotSel(n)}
-                        style={{
-                            borderRadius: 10, padding: "6px 10px",
-                            background: n === slotSel ? "rgba(59,130,246,.25)" : "rgba(148,163,184,.15)",
-                            border: "1px solid rgba(148,163,184,.35)", color: "#e2e8f0"
-                        }}
-                    >{n}교시</button>
-                ))}
+            {/* 업로더 */}
+            <div className="panel mb-4" style={{ padding: 12 }}>
+                <div style={{ fontWeight: 700, marginBottom: 6 }}>자료함으로 업로드</div>
+                <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 8 }}>PDF를 업로드하면 변환되어 자료함에 추가됩니다. (변환 완료 후 자동 갱신)</div>
+                <PdfToSlidesUploader onFinished={onUploaded} />
             </div>
 
-            {/* 카드 목록 */}
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(360px, 1fr))", gap: 16 }}>
-                {rows.map(r => (
-                    <div key={r.id} style={{ background: "rgba(15,23,42,.6)", border: "1px solid rgba(148,163,184,.25)", borderRadius: 12, padding: 12 }}>
-                        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                            <span style={{ fontSize: 16, fontWeight: 700, flex: 1 }}>{r.title ?? "제목을 입력해주세요_"}</span>
-                            <span style={{ fontSize: 12, padding: "2px 6px", borderRadius: 8, background: "rgba(16,185,129,.18)", border: "1px solid rgba(16,185,129,.45)", color: "#bbf7d0" }}>
-                {badgeOf(r)}
-              </span>
-                        </div>
+            {/* 교시 + 필터 */}
+            <div className="panel mb-2" style={{ padding: 12, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <div style={{ fontWeight: 700 }}>교시</div>
+                <select className="px-2 py-1 border rounded-md text-sm" value={slotSelGlobal} onChange={(e) => setSlotSelGlobal(Number(e.target.value))}>
+                    {slots.length ? slots.map((s) => <option key={s} value={s}>{s}교시</option>) : <option value={1}>1교시</option>}
+                </select>
+                <Btn onClick={createSlot} small variant="neutral">＋ 새 교시</Btn>
+                <div style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
+                    <Btn small variant="ghost" pressed={view === "all"} onClick={() => setView("all")}>전체</Btn>
+                    <Btn small variant="ghost" pressed={view === "pdf"} onClick={() => setView("pdf")}>원본 PDF</Btn>
+                    <Btn small variant="ghost" pressed={view === "copies"} onClick={() => setView("copies")}>복제본</Btn>
+                </div>
+            </div>
 
-                        {/* 썸네일 영역(간단 프리뷰) */}
-                        <div style={{ marginTop: 8, height: 160, background: "rgba(2,6,23,.7)", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                            <span style={{ opacity: .6 }}>썸네일</span>
-                        </div>
-
-                        <div style={{ display: "flex", gap: 8, marginTop: 10, alignItems: "center" }}>
-                            <button
-                                onClick={() => assignDeckToSlot(r, slotSel)}
-                                style={{ borderRadius: 10, padding: "8px 12px", background: "rgba(59,130,246,.25)", border: "1px solid rgba(59,130,246,.45)", color: "#bfdbfe" }}
-                            >
-                                지금 불러오기
-                            </button>
-                            <button
-                                onClick={() => {
-                                    if (!roomCode) return;
-                                    if (!r.file_key) { alert("파일이 없습니다."); return; }
-                                    if (r.origin === "db") nav(`/editor?room=${encodeURIComponent(roomCode)}&src=${encodeURIComponent(r.id)}`);
-                                    else nav(`/editor?room=${encodeURIComponent(roomCode)}&srcKey=${encodeURIComponent(r.file_key)}`);
-                                }}
-                                style={{ borderRadius: 10, padding: "8px 12px", background: "rgba(148,163,184,.18)", border: "1px solid rgba(148,163,184,.35)", color: "#e2e8f0" }}
-                            >
-                                편집
-                            </button>
-                            <div style={{ marginLeft: "auto", fontSize: 12, opacity: .7 }}>
-                                페이지: {r.file_pages ?? "-"}
-                            </div>
-                        </div>
+            {/* 자동 정리 & 액션 */}
+            <div className="mb-4" style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 13, opacity: 0.9 }}>
+                    <input type="checkbox" checked={autoClean} onChange={(e) => setAutoClean(e.target.checked)} /> 하루 1회 자동 정리
+                </label>
+                {missing.length > 0 && (
+                    <div style={{ display: "inline-flex", alignItems: "center", gap: 10 }}>
+                        <span style={{ fontSize: 13, opacity: 0.85 }}>유실 파일 {missing.length}건 감지됨</span>
+                        <Btn variant="outline" small onClick={async () => { await detachMissingFileKeys(missing); await load(); }}>DB 정리</Btn>
                     </div>
-                ))}
+                )}
+                <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+                    <Btn small variant="outline" onClick={() => setKeyword("")}>검색 초기화</Btn>
+                    <Btn small variant="neutral" onClick={load} disabled={loading}>{loading ? "갱신 중…" : "목록 새로고침"}</Btn>
+                </div>
             </div>
 
-            {/* 배정 진행 모달 */}
-            {assign.open && (
-                <div style={{
-                    position: "fixed", inset: 0, background: "rgba(0,0,0,.5)",
-                    display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50
-                }}>
-                    <div style={{ width: 520, background: "#0b1220", color: "#cbd5e1", border: "1px solid #1f2937", borderRadius: 12, padding: 16 }}>
-                        <div style={{ fontWeight: 800, fontSize: 16, marginBottom: 6 }}>교시 배정</div>
-                        <div style={{ fontSize: 13, marginBottom: 8 }}>{assign.text}</div>
-                        <div style={{ height: 8, borderRadius: 6, background: "rgba(148,163,184,.25)", overflow: "hidden", marginBottom: 8 }}>
-                            <div style={{ width: `${assign.progress}%`, height: 8, background: "#60a5fa" }} />
+            {/* 검색 */}
+            <div className="flex items-center gap-2 mb-4">
+                <input className="px-3 py-2 rounded-md border border-slate-300 w-full" placeholder="제목/경로 검색…" value={keyword} onChange={(e) => setKeyword(e.target.value)} />
+            </div>
+
+            {error && <div className="text-red-600 mb-2">{error}</div>}
+
+            {/* Grid */}
+            <div style={{ display: "grid", gap: 16, gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", alignItems: "start" }}>
+                {filtered.map((d) => {
+                    const slot = slotSel[d.id] ?? slotSelGlobal;
+                    const tag = tagAndColor(d);
+                    const { isCopy, isOriginal } = classifyPath(d.file_key);
+                    const actionLabel = isCopy && d.origin === "db" ? "배정하기" : "복제하기";
+
+                    return (
+                        <div key={d.id} style={cardBase}>
+                            <div className="text-sm font-medium line-clamp-2" style={{ color: dark ? "#e5e7eb" : "#111827" }}>
+                                {d.title || "Untitled"}
+                            </div>
+                            <div className="text-[11px] opacity-60 mb-2">{d.origin === "db" ? "DB" : "Storage"}</div>
+
+                            {d.file_key ? (
+                                <Thumb keyStr={d.file_key} badge={<Chip color={tag.color as any}>{tag.label}</Chip>} />
+                            ) : (
+                                <div style={{ height: 120, borderRadius: 12, background: dark ? "rgba(2,6,23,.65)" : "#f1f5f9" }} />
+                            )}
+
+                            <div className="mt-3 flex items-center gap-8">
+                                {d.file_key && <OpenSignedLink fileKey={d.file_key}>링크 열기</OpenSignedLink>}
+                                <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+                                    <button className="btn" style={useBtnStyles(dark, { variant: "neutral", small: true })} onClick={() => openEdit(nav, roomCode, d)}>편집</button>
+                                    <button className="btn" style={useBtnStyles(dark, { variant: "danger", small: true })} onClick={() => deleteDeck(d)}>삭제</button>
+                                </div>
+                            </div>
+
+                            {/* 불러오기 (원본은 '복제하기', 복제본(DB) 은 '배정하기') */}
+                            <div className="mt-2 flex items-center gap-6">
+                                <select className="px-2 py-1 border rounded-md text-sm" value={slot} onChange={(e) => setSlotSel((s) => ({ ...s, [d.id]: Number(e.target.value) }))}>
+                                    {(slots.length ? slots : [1,2,3,4,5,6]).map((n) => <option key={n} value={n}>{n}교시</option>)}
+                                </select>
+                                <button
+                                    className="btn"
+                                    style={useBtnStyles(dark, { variant: "primary", small: true })}
+                                    onClick={() => handleAssign(d, slot)}
+                                >
+                                    {actionLabel}
+                                </button>
+                            </div>
+
+                            {/* 필요 시 두 버튼 모두 노출하려면 아래 주석 해제
+                            {isCopy && d.origin === "db" && (
+                                <div className="mt-1">
+                                    <button className="btn" style={useBtnStyles(dark, { variant: "outline", small: true })}
+                                            onClick={() => d.file_key && handleAssign({ ...d, file_key: d.file_key }, slot)}>
+                                        새 복제본 만들기
+                                    </button>
+                                </div>
+                            )}
+                            */}
                         </div>
-                        <div style={{ maxHeight: 180, overflow: "auto", fontSize: 12, fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" }}>
-                            {assign.lines.map((l, i) => <div key={i}>• {l}</div>)}
+                    );
+                })}
+            </div>
+
+            {/* 진행 모달 */}
+            {assign.open && (
+                <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.45)", display: "grid", placeItems: "center", zIndex: 1000 }}>
+                    <div style={{ width: 420, borderRadius: 12, background: "#111827", color: "#fff", border: "1px solid rgba(148,163,184,.25)", padding: 16, boxShadow: "0 14px 40px rgba(0,0,0,.6)" }}>
+                        <div style={{ fontWeight: 700, marginBottom: 8 }}>자료 불러오는 중</div>
+                        <div style={{ fontSize: 13, opacity: 0.85, marginBottom: 12 }}>{assign.text}</div>
+                        <div style={{ height: 8, background: "rgba(148,163,184,.22)", borderRadius: 999, overflow: "hidden", marginBottom: 10 }}>
+                            <div style={{ width: `${assign.progress}%`, height: "100%", background: "#4f46e5", transition: "width .3s ease" }} />
+                        </div>
+                        <div style={{ maxHeight: 200, overflow: "auto", background: "rgba(2,6,23,.55)", border: "1px solid rgba(148,163,184,.25)", borderRadius: 8, padding: 8, fontSize: 12, fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" }}>
+                            {assign.logs.map((l, i) => (<div key={i}>• {l}</div>))}
                         </div>
                     </div>
                 </div>
             )}
         </div>
     );
+}
+
+// helpers bound to UI items
+function openEdit(nav: ReturnType<typeof useNavigate>, roomCode: string, d: DeckRow) {
+    if (!roomCode) { alert("room 파라미터가 필요합니다."); return; }
+    if (!d.file_key) { alert("파일이 없습니다."); return; }
+    if (d.origin === "db") nav(`/editor?room=${encodeURIComponent(roomCode)}&src=${encodeURIComponent(d.id)}`);
+    else nav(`/editor?room=${encodeURIComponent(roomCode)}&srcKey=${encodeURIComponent(d.file_key)}`);
 }
