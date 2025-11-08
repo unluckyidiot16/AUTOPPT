@@ -16,6 +16,23 @@ type DeckRow = {
     origin: "db" | "storage";  // DB(decks) vs storage-only(폴더 스캔)
 };
 
+function extractRoomIdFromFileKey(fileKey?: string | null) {
+    if (!fileKey) return null;
+    const m = fileKey.match(/rooms\/([0-9a-f-]{8}-[0-9a-f-]{4}-[0-9a-f-]{4}-[0-9a-f-]{4}-[0-9a-f-]{12})\//i);
+    return m?.[1] ?? null;
+}
+function deckSlidesPrefix(deckId: string, roomId: string) {
+    return `rooms/${roomId}/decks/${deckId}/`;
+}
+function isImage(name: string) { return /\.webp$|\.png$|\.jpg$/i.test(name); }
+
+// 현재 roomCode → room_id 조회
+async function getRoomIdByCode(roomCode: string) {
+    const { data, error } = await supabase.from("rooms").select("id").eq("code", roomCode).maybeSingle();
+    if (error || !data?.id) throw new Error("ROOM_NOT_FOUND");
+    return data.id as string;
+}
+
 // ───────────────────────────────────────────────────────────────────────────────
 // Theme helpers
 function usePrefersDark() {
@@ -50,12 +67,88 @@ function slidesPrefixOfPresentationsFile(fileKey: string | null | undefined): st
     return null;
 }
 
+async function countSlides(prefix: string) {
+    const { data, error } = await supabase.storage.from("slides").list(prefix, { limit: 1000 });
+    if (error) return 0;
+    return (data ?? []).filter(f => isImage(f.name)).length;
+}
+
+
+// presentations 의 PDF 파일도 같은 ROOM 경로로 복사
+async function copyPdfIfNeeded(deck: DeckRow, toRoomId: string) {
+    if (!deck.file_key) return deck.file_key;
+    // file_key 예: presentations/rooms/<roomId>/decks/<deckId>/slides-xxxxxxxxxxxx.pdf
+    const pdfFrom = deck.file_key;
+    const curRoomInKey = extractRoomIdFromFileKey(pdfFrom);
+    if (curRoomInKey === toRoomId) return pdfFrom;
+
+    const toKey = pdfFrom.replace(/rooms\/[0-9a-f- -]+\/decks\//i, `rooms/${toRoomId}/decks/`);
+    // 목적지에 없으면 복사
+    const head = await supabase.storage.from("presentations").list(toKey.replace(/[^/]+$/, ""), { limit: 1000 });
+    const exists = (head.data ?? []).some(f => f.name === toKey.split("/").pop());
+    if (!exists) {
+        await supabase.storage.from("presentations").copy(pdfFrom, toKey);
+    }
+    return toKey;
+}
+
+// DB 복제본을 "현재 ROOM 전용"으로 보정(파일 복사 + decks 업데이트 + 페이지수 보정)
+async function ensureDeckIsLocalToRoom(deck: DeckRow, roomCode: string) {
+    const roomId = await getRoomIdByCode(roomCode);
+    const srcRoomId = extractRoomIdFromFileKey(deck.file_key) || null;
+    const toPrefix = deckSlidesPrefix(deck.id, roomId);
+
+    // slides 복사(필요 시)
+    if (srcRoomId && srcRoomId !== roomId) {
+        const fromPrefix = deckSlidesPrefix(deck.id, srcRoomId);
+        await copySlidesIfMissing(fromPrefix, toPrefix);
+    } else {
+        // 같은 ROOM이라도 슬라이드가 비어 있으면 보강
+        const cnt = await countSlides(toPrefix);
+        if (cnt === 0 && srcRoomId) {
+            const fromPrefix = deckSlidesPrefix(deck.id, srcRoomId);
+            await copySlidesIfMissing(fromPrefix, toPrefix);
+        }
+    }
+
+    // PDF 경로 보정
+    const nextFileKey = await copyPdfIfNeeded(deck, roomId);
+
+    // 페이지수 보정
+    const pages = await countSlides(toPrefix);
+
+    // decks 업데이트(필요 시에만)
+    const needUpdate = (deck.file_key !== nextFileKey) || (!deck.file_pages || deck.file_pages !== pages);
+    if (needUpdate) {
+        const { error } = await supabase
+            .from("decks")
+            .update({ file_key: nextFileKey, file_pages: pages })
+            .eq("id", deck.id);
+        if (error) throw error;
+    }
+
+    return { roomId, pages, file_key: nextFileKey };
+}
+
+async function copySlidesIfMissing(fromPrefix: string, toPrefix: string) {
+    const dst = await supabase.storage.from("slides").list(toPrefix, { limit: 2 });
+    if ((dst.data ?? []).length > 0) return; // 이미 있음 → 스킵
+
+    const src = await supabase.storage.from("slides").list(fromPrefix, { limit: 1000 });
+    for (const f of src.data ?? []) {
+        if (!isImage(f.name)) continue;
+        await supabase.storage.from("slides").copy(`${fromPrefix}${f.name}`, `${toPrefix}${f.name}`);
+    }
+}
+
+
 async function ensureSlotRow(roomId: string, slot: number) {
     const { error } = await supabase
         .from("room_lessons")
         .upsert({ room_id: roomId, slot, current_index: 0 }, { onConflict: "room_id,slot" });
     if (error) throw error;
 }
+
 
 async function readPagesFromDoneOrList(prefix: string): Promise<number> {
     // prefix 예: rooms/<room>/decks/<deckId>
@@ -238,7 +331,7 @@ function Thumb({ keyStr, badge }: { keyStr: string; badge: React.ReactNode }) {
     const dark = usePrefersDark();
     const [useSlidesImg, setUseSlidesImg] = React.useState(true);
     const folder = folderPrefixOfFileKey(keyStr);
-    const slidesKey = folder ? `${folder}/0.webp` : null;
+    const slidesKey = slidesPrefix ? `${folder}/0.webp` : null;
     const slidesUrl = slidesKey ? supabase.storage.from("slides").getPublicUrl(slidesKey).data.publicUrl : null;
     const pdfUrl = useReadableUrl(keyStr);
     return (
@@ -559,18 +652,25 @@ export default function PdfLibraryPage() {
         return { newDeckId };
     }
 
-    // ── B) 이미 ‘복제본(DB 덱)’이면 새로 만들지 말고 그대로 배정 ────────────────
-    async function assignExistingDbCopyToSlot(deckId: string, roomId: string, slot: number) {
-        await ensureSlotRow(roomId, slot);
-        logAssign(`기존 덱 배정: deck=${deckId} → slot=${slot}`);
-        const up = await supabase
-            .from("room_decks")
-            .upsert({ room_id: roomId, slot, deck_id: deckId }, { onConflict: "room_id,slot" })
-            .select("deck_id")
-            .single();
-        if (up.error) throw up.error;
-        logAssign(`배정 완료(중복 생성 없음)`);
+        // === PdfLibraryPage.tsx 내 카드 액션에서 사용 ===
+    async function assignExistingDbCopyToSlot(deck: DeckRow, slot: number) {
+        // 1) 파일/메타 보정(현재 ROOM 경로로 복사 + pages/파일키 정규화)
+        const { roomId } = await ensureDeckIsLocalToRoom(deck, roomCode); // ← 클로저에서 사용
+
+        // 2) room_lessons 보장
+        await supabase.from("room_lessons").upsert({ room_id: roomId, slot, current_index: 0 }, { onConflict: "room_id,slot" });
+
+        // 3) 배정 upsert (중복 없음)
+        const { error } = await supabase.from("room_decks").upsert(
+            { room_id: roomId, slot, deck_id: deck.id },
+            { onConflict: "room_id,slot" }
+        );
+        if (error) throw error;
+
+        // 4) 실시간 새로고침 브로드캐스트
+        sendRefresh?.("manifest");
     }
+
 
     // 분기 진입 함수(버튼 핸들러)
     async function handleAssign(d: DeckRow, slot: number) {
@@ -587,7 +687,7 @@ export default function PdfLibraryPage() {
 
             if (isCopy && d.origin === "db") {
                 // 복제본(rooms/*) + DB 덱 ⇒ 그대로 배정
-                await assignExistingDbCopyToSlot(d.id, rid, slot);
+                await assignExistingDbCopyToSlot(d, slot);
                 setAssign((a) => ({ ...a, progress: 100, text: "배정 완료!" }));
             } else if (isOriginal) {
                 // 원본(decks/*) ⇒ 새 덱 복제 후 배정
@@ -618,7 +718,7 @@ export default function PdfLibraryPage() {
         setDecks((prev) => prev.filter((x) => x.id !== d.id)); // 낙관적
         try {
             const bucket = "presentations";
-            const prefix = d.file_key ? folderPrefixOfFileKey(d.file_key) : null;
+            const prefix = d.file_key ? slidesPrefixOfPresentationsFile(d.file_key) : null;
             if (d.origin === "db") {
                 try {
                     const { error } = await supabase.rpc("delete_deck_deep", { p_deck_id: d.id });
