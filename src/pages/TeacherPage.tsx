@@ -182,9 +182,9 @@ export default function TeacherPage() {
         }
     }, [ensureRoomId, roomCode]);
 
-    useEffect(() => { refreshAssigned(); }, [refreshAssigned, manifest, roomId]);
-
     const [manifest, setManifest] = useState<RpcManifest | null>(null);
+
+    useEffect(() => { refreshAssigned(); }, [refreshAssigned, manifest, roomId]);
 
     /** ★ RPC 실패 시에도 발표/설정이 비지 않도록 폴백 manifest 조립 */
     const buildManifestFallback = useCallback(async (roomCodeStr: string): Promise<RpcManifest | null> => {
