@@ -167,10 +167,17 @@ export default function TeacherPage() {
     }
     const active = useMemo(() => {
         const s = currentSlide(); if (!s) return null;
-        const bgUrl = s.image_key ? supabase.storage.from("slides").getPublicUrl(s.image_key).data.publicUrl : null;
-        const overlays: Overlay[] = (s.overlays || []).map((o) => ({ id: String(o.id), z: o.z, type: o.type, payload: o.payload }));
-        return { bgUrl, overlays };
-    }, [manifest, page, activeSlot]);
+        // 1) RPC 제공 image_key 우선
+        let key = s.image_key ?? null;
+        // 2) 폴백: material_id + page_index로 slides 경로 직접 계산
+                  if (!key && roomId && s.material_id != null) {
+                      const idx = Number(s.page_index ?? Math.max(0, page - 1)); // 0-base
+                      key = `rooms/${roomId}/decks/${s.material_id}/${Math.max(0, idx)}.webp`;
+                  }
+              const bgUrl = key ? supabase.storage.from("slides").getPublicUrl(key).data.publicUrl : null;
+              const overlays: Overlay[] = (s.overlays || []).map((o) => ({ id: String(o.id), z: o.z, type: o.type, payload: o.payload }));
+              return { bgUrl, overlays };
+          }, [manifest, page, activeSlot, roomId]);
 
     // 신규 학생 hello → 현재 상태 안내
     useEffect(() => { if (!lastMessage) return; if (lastMessage.type === "hello") sendGoto(page, activeSlot); }, [lastMessage, page, activeSlot, sendGoto]);

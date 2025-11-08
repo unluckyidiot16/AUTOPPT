@@ -54,6 +54,14 @@ function useQuery() {
 export default function StudentPage() {
     const { slot } = useQuery();
     const roomCode = useRoomId("CLASS-XXXXXX");
+    const [roomId, setRoomId] = useState<string | null>(null);
+    useEffect(() => {
+        (async () => {
+            if (!roomCode) { setRoomId(null); return; }
+            const { data } = await supabase.from("rooms").select("id").eq("code", roomCode).maybeSingle();
+            setRoomId(data?.id ?? null);
+        })();
+        }, [roomCode]);
     const studentId = useMemo(() => getOrSetStudentId(), []);
     const [nickname, setNicknameState] = useState(getNickname());
     const [editNick, setEditNick] = useState(false);
@@ -122,14 +130,19 @@ export default function StudentPage() {
         const idx = Math.max(0, page - 1);
         const slide = s.slides[idx] as RpcSlide | undefined;
         if (!slide) return null;
-        const bgUrl = slide.image_key
-            ? supabase.storage.from("slides").getPublicUrl(slide.image_key).data.publicUrl
-            : null;
+        // 1) RPC image_key 우선
+        let key = slide.image_key ?? null;
+        // 2) 폴백 계산
+        if (!key && roomId && slide.material_id != null) {
+            const p = Number(slide.page_index ?? idx); // 0-base
+            key = `rooms/${roomId}/decks/${slide.material_id}/${Math.max(0, p)}.webp`;
+        }
+        const bgUrl = key ? supabase.storage.from("slides").getPublicUrl(key).data.publicUrl : null;
         const overlays: Overlay[] = (slide.overlays || []).map(o => ({
             id: String(o.id), z: o.z, type: o.type, payload: o.payload
         }));
         return { bgUrl, overlays };
-    }, [manifest, activeSlot, page]);
+    }, [manifest, activeSlot, page, roomId]);
 
     // 답안 제출
     const submitAnswer = async (val: any) => {
