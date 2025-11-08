@@ -96,78 +96,120 @@ export default function StudentPage() {
     const [manifest, setManifest] = useState<RpcManifest | null>(null);
 
     /** ★ RPC 실패 시 폴백 manifest 조립 */
+        // ⬇ 기존 함수 전체 교체
     const buildManifestFallback = useCallback(async (roomCodeStr: string): Promise<RpcManifest | null> => {
-        try {
-            const { data: roomRow } = await supabase.from("rooms").select("id").eq("code", roomCodeStr).maybeSingle();
-            const rid = roomRow?.id as string | undefined;
-            if (!rid) return null;
+            try {
+                const { data: roomRow } = await supabase.from("rooms").select("id").eq("code", roomCodeStr).maybeSingle();
+                const rid = roomRow?.id as string | undefined;
+                if (!rid) return null;
 
-            const { data: lessons } = await supabase
-                .from("room_lessons")
-                .select("slot,current_index")
-                .eq("room_id", rid)
-                .order("slot", { ascending: true });
+                // A) 두 테이블 모두 조회
+                const { data: lessons } = await supabase
+                    .from("room_lessons")
+                    .select("slot,current_index")
+                    .eq("room_id", rid)
+                    .order("slot", { ascending: true });
 
-            const { data: maps } = await supabase.from("room_decks").select("slot,deck_id").eq("room_id", rid);
+                const { data: maps } = await supabase
+                    .from("room_decks")
+                    .select("slot,deck_id")
+                    .eq("room_id", rid);
 
-            const deckIds = Array.from(new Set((maps ?? []).map((m: any) => m.deck_id).filter(Boolean)));
-            const decks: Record<string, { file_key: string | null; file_pages: number | null }> = {};
-            if (deckIds.length) {
-                const { data: ds } = await supabase.from("decks").select("id,file_key,file_pages").in("id", deckIds);
-                for (const d of ds ?? []) decks[d.id as string] = { file_key: d.file_key ?? null, file_pages: d.file_pages ?? null };
+                // B) 슬롯 집합(lessons ∪ maps)
+                const slotNums = Array.from(new Set([
+                    ...(lessons ?? []).map((L: any) => Number(L.slot)),
+                    ...(maps ?? []).map((m: any) => Number(m.slot)),
+                ].filter((n) => Number.isFinite(n)))).sort((a,b)=>a-b);
+
+                // C) 필요한 deck 메타 한번에 가져오기
+                const deckIds = Array.from(new Set((maps ?? []).map((m: any) => m.deck_id).filter(Boolean)));
+                const decks: Record<string, { file_key: string | null; file_pages: number | null }> = {};
+                if (deckIds.length) {
+                    const { data: ds } = await supabase.from("decks").select("id,file_key,file_pages").in("id", deckIds);
+                    for (const d of ds ?? []) decks[d.id as string] = { file_key: d.file_key ?? null, file_pages: d.file_pages ?? null };
+                }
+
+                // D) 슬롯별 슬라이드 합성 (deck이 없어도 슬롯 생성)
+                const slots: RpcSlot[] = slotNums.map((slot) => {
+                    const cur = (lessons ?? []).find((L: any) => Number(L.slot) === slot);
+                    const map = (maps ?? []).find((m: any) => Number(m.slot) === slot);
+                    const deckId = map?.deck_id ?? null;
+                    const meta = deckId ? decks[deckId] : null;
+                    const pages = Math.max(0, Number(meta?.file_pages ?? 0));
+
+                    const slides: RpcSlide[] = Array.from({ length: pages }, (_, i) => ({
+                        index: i,
+                        kind: "image",
+                        material_id: deckId,
+                        page_index: i,      // 0-base
+                        image_key: null,    // rooms/* 또는 decks/* 로 자동 유도
+                        overlays: [],
+                    }));
+
+                    return {
+                        slot,
+                        lesson_id: null,
+                        current_index: Number(cur?.current_index ?? 0),
+                        slides,
+                    };
+                });
+
+                return { room_code: roomCodeStr, slots };
+            } catch (e) {
+                DBG.err("fallback manifest error", e);
+                return null;
             }
+        }, []);
 
-            const slots: RpcSlot[] = (lessons ?? []).map((L: any) => {
-                const slot = Number(L.slot);
-                const map = (maps ?? []).find((m: any) => Number(m.slot) === slot);
-                const deckId = map?.deck_id ?? null;
-                const d = deckId ? decks[deckId] : null;
-                const pages = Math.max(0, Number(d?.file_pages ?? 0));
-
-                const slides: RpcSlide[] = Array.from({ length: pages }, (_, i) => ({
-                    index: i,
-                    kind: "image",
-                    material_id: deckId,
-                    page_index: i,
-                    image_key: null,
-                    overlays: [],
-                }));
-
-                return { slot, lesson_id: null, current_index: Number(L.current_index ?? 0), slides };
-            });
-
-            return { room_code: roomCodeStr, slots };
-        } catch (e) {
-            DBG.err("fallback manifest error", e);
-            return null;
-        }
-    }, []);
 
     /** 기존 RPC → 실패 시 폴백 */
+        // ⬇ loadManifest 내부 try 블록 직후에 조건 추가
     const loadManifest = useCallback(async () => {
-        if (!roomCode) { setManifest(null); return; }
-        try {
-            const { data, error } = await supabase.rpc("get_student_manifest_by_code", { p_room_code: roomCode });
-            if (error) throw error;
-            setManifest(data ?? null);
-            DBG.ok("rpc:get_student_manifest_by_code", data);
-        } catch (e) {
-            DBG.err("rpc:get_student_manifest_by_code failed → fallback", e);
-            const fb = await buildManifestFallback(roomCode);
-            setManifest(fb);
-            DBG.ok("fallback manifest", fb);
-        }
-    }, [roomCode, buildManifestFallback]);
+            if (!roomCode) { setManifest(null); return; }
+            try {
+                const { data, error } = await supabase.rpc("get_student_manifest_by_code", { p_room_code: roomCode });
+                if (error) throw error;
+
+                // ★ 서버가 빈 배열을 주는 케이스 보완
+                if (data && Array.isArray(data.slots) && data.slots.length === 0) {
+                    DBG.info("rpc manifest empty → building from room_decks fallback");
+                    const fb = await buildManifestFallback(roomCode);
+                    setManifest(fb);
+                    return;
+                }
+
+                setManifest(data ?? null);
+                DBG.ok("rpc:get_student_manifest_by_code", data);
+            } catch (e) {
+                DBG.err("rpc failed → fallback", e);
+                const fb = await buildManifestFallback(roomCode);
+                setManifest(fb);
+                DBG.ok("fallback manifest", fb);
+            }
+        }, [roomCode, buildManifestFallback]);
+
 
     useEffect(() => { loadManifest(); }, [loadManifest]);
 
     // manifest 적용: 현재 슬롯의 페이지 설정
+    // ⬇ manifest 적용 useEffect 교체
     useEffect(() => {
         if (!manifest) return;
-        const slotBundle = manifest.slots.find(s => s.slot === activeSlot);
-        if (!slotBundle) return;
-        setPageRaw(Number(slotBundle.current_index ?? 0) + 1);
+        let slotBundle = manifest.slots.find(s => s.slot === activeSlot);
+
+        // ★ 현재 activeSlot이 없으면, 첫 슬롯으로 교체
+        if (!slotBundle && manifest.slots.length > 0) {
+            const first = manifest.slots[0];
+            setActiveSlot(first.slot);
+            setPageRaw(Number(first.current_index ?? 0) + 1);
+            return;
+        }
+
+        if (slotBundle) {
+            setPageRaw(Number(slotBundle.current_index ?? 0) + 1);
+        }
     }, [manifest, activeSlot]);
+
 
     // 실시간 메시지 수신
     useEffect(() => {
