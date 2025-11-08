@@ -58,6 +58,9 @@ async function openPdfWithFallback(
             label,
         ) as Promise<PDFDocumentProxy>;
 
+    (pdfjs as any).GlobalWorkerOptions.workerSrc ??=
+        `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjs?.version ?? "5"}/build/pdf.worker.min.js`;
+    
     // A) v5 기본
     push("PDF 열기(A: v5 기본) …");
     try { return await tryOpen(pdfjs, "open-A"); } catch (e: any) { push(`A 실패: ${e?.message ?? e}`); }
@@ -75,16 +78,22 @@ async function openPdfWithFallback(
     } catch (e: any) { push(`B 실패: ${e?.message ?? e}`); }
 
     // C) legacy 4.8.69 (CDN) – 로컬 경로 임포트 없이 안전
-    push("PDF 열기(C: legacy 4.8.69) …");
-    const legacy: any = await import(
-        /* @vite-ignore */ "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69/legacy/build/pdf.min.mjs"
-        );
-    const baseV4 = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69";
-    return await tryOpen(legacy, "open-C", {
-        cMapUrl: `${baseV4}/cmaps/`,
-        cMapPacked: true,
-        standardFontDataUrl: `${baseV4}/standard_fonts/`,
-    }, 20000);
+        push("PDF 열기(C: legacy 4.8.69) …");
+        const legacy: any = await import(
+            /* @vite-ignore */ "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69/legacy/build/pdf.min.mjs"
+            );
+        const baseV4 = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69";
+    
+    // ★ 여기 한 줄 추가 (workerSrc를 반드시 유효한 문자열로 지정)
+    //   (legacy 빌드를 썼으니 경로도 legacy/build 계열로 맞춰줌)
+        (legacy as any).GlobalWorkerOptions.workerSrc = `${baseV4}/legacy/build/pdf.worker.min.js`;
+    
+        return await tryOpen(legacy, "open-C", {
+            cMapUrl: `${baseV4}/cmaps/`,
+            cMapPacked: true,
+            standardFontDataUrl: `${baseV4}/standard_fonts/`,
+        }, 20000);
+
 }
 
 /** 슬러그 */
