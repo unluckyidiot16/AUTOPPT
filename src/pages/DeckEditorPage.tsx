@@ -6,7 +6,9 @@ import DeckEditor from "../components/DeckEditor";
 import EditorPreviewPane from "../components/EditorPreviewPane";
 import type { ManifestItem } from "../types/manifest";
 import { getManifestByRoom } from "../api/overrides";
-import { slidesPrefixOfPresentationsFile } from "../utils/supaFiles"; // ★ 유지
+import { slidesPrefixOfPresentationsFile } from "../utils/supaFiles";
+import type { Overlay } from "../components/SlideStage";
+
 
 type RoomRow = { id: string; current_deck_id: string | null };
 
@@ -171,6 +173,31 @@ export default function DeckEditorPage() {
     const previewOnce = useRef(false);
     const onItemsChange = (next: ManifestItem[]) => setItems(next);
 
+    function pageNumberOf(item: any): number | null {
+        const p = item?.srcPage ?? item?.page ?? item?.targetPage;
+        return p == null ? null : Number(p);
+    }
+
+    function maxPageFromItems(items: ManifestItem[]): number {
+        const pages = items
+            .filter((it: any) => (it?.type === "page"))
+            .map((it) => pageNumberOf(it))
+            .filter((n): n is number => Number.isFinite(n) && n! >= 1);
+        return pages.length ? Math.max(...pages) : 0;
+    }
+
+    function overlaysForPage(items: ManifestItem[], page: number): Overlay[] {
+        return items
+            .filter((it: any) => it?.type && it?.type !== "page")
+            .filter((it: any) => Number(pageNumberOf(it)) === Number(page))
+            .map((it: any, i: number) => ({
+                id: String(it.id ?? `ov-${i}`),
+                z: Number(it.z ?? 0),
+                type: String(it.type),       // "quiz" 등
+                payload: it.payload ?? it,   // SlideStage 쪽에서 해석
+            }));
+    }
+
     useEffect(() => {
         let cancel = false;
 
@@ -297,9 +324,10 @@ export default function DeckEditorPage() {
                     <div>
                         <EditorPreviewPane
                             fileKey={fileKey}
-                            page={totalPages > 0 ? (previewPage ?? 1) : 0} // 변환/복제 전에는 0 고정 → 400 방지
+                            page={previewBgPage}                               // ★ 가상 페이지면 0(빈 캔버스)
                             height="calc(100vh - 220px)"
                             version={cacheVer}
+                            overlays={previewOverlays}                         // ★ 현재 페이지 오버레이 전달(퀴즈 등)
                         />
                     </div>
                     <div>
