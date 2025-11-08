@@ -9,22 +9,40 @@ import { getManifestByRoom } from "../api/overrides";
 
 type RoomRow = { id: string; current_deck_id: string | null };
 
-// DeckEditorPage.tsx 상단 임포트 근처에 추가
+// DeckEditorPage.tsx
 async function loadPdfJs(): Promise<{ pdfjs: any; mode: string }> {
-    try {
-        const pdfjs = await import("pdfjs-dist/build/pdf");
-        try {
-            const workerUrl = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
-            const worker = new Worker(workerUrl, { type: "module" as any });
-            pdfjs.GlobalWorkerOptions.workerPort = worker as any;
-        } catch {
-            // 모듈 워커 실패 시 자동 폴백
-        }
-        return { pdfjs, mode: "v5-esm" };
-    } catch (e) {
-        // v2/v3 호환 폴백 (실패 시 변환을 스킵)
-        return { pdfjs: null, mode: "fallback" };
+    let pdfjs: any = null;
+    let mode = "unknown";
+
+    // 1) import 경로 다단계 (환경별 번들 차이 대응)
+    try { pdfjs = await import("pdfjs-dist/build/pdf"); mode = "build"; }
+    catch {
+        try { pdfjs = await import("pdfjs-dist/legacy/build/pdf"); mode = "legacy"; }
+        catch { pdfjs = await import("pdfjs-dist"); mode = "root"; }
     }
+
+    const ver = (pdfjs as any).version || "latest";
+
+    // 2) v5 ESM 모듈 워커 우선 시도
+    let portSet = false;
+    try {
+        const workerUrl = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${ver}/build/pdf.worker.min.mjs`;
+        const worker = new Worker(workerUrl, { type: "module" as any });
+        if (pdfjs.GlobalWorkerOptions) {
+            pdfjs.GlobalWorkerOptions.workerPort = worker as any; // v5 경로
+            portSet = true;
+        }
+    } catch {
+        // 무시하고 아래 workerSrc 폴백
+    }
+
+    // 3) 클래식 workerSrc 폴백 (v2/v3 호환 + Safari 안전)
+    if (pdfjs.GlobalWorkerOptions && !portSet) {
+        pdfjs.GlobalWorkerOptions.workerSrc =
+            `https://cdn.jsdelivr.net/npm/pdfjs-dist@${ver}/build/pdf.worker.min.js`;
+    }
+
+    return { pdfjs, mode };
 }
 
 async function convertPdfToSlides({
@@ -269,7 +287,12 @@ export default function DeckEditorPage() {
                 // ✅ 2-컬럼: 프리뷰(좌) + 에디터(우)
                 <div className="panel" style={{ display: "grid", gridTemplateColumns: "minmax(420px, 48%) 1fr", gap: 16 }}>
                     <div>
-                        <EditorPreviewPane fileKey={fileKey} page={previewPage ?? 1} height="calc(100vh - 220px)" version={cacheVer} />
+                        <EditorPreviewPane
+                           fileKey={fileKey}
+                           page={totalPages > 0 ? (previewPage ?? 1) : 0} // 변환 전엔 0으로 고정 → 네트워크 400 방지
+                           height="calc(100vh - 220px)"
+                           version={cacheVer}
+                         />
                     </div>
                     <div>
                         <DeckEditor
