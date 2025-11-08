@@ -54,21 +54,23 @@ export default function TeacherPage() {
         }
     }, [roomCode, qs, nav]);
 
+    // TeacherPage.tsx 안
     const ensureRoomId = useCallback(async (): Promise<string> => {
         if (roomId) return roomId;
         if (!roomCode) throw new Error("ROOM_NOT_FOUND");
 
         // 1) 조회
         const got = await supabase.from("rooms").select("id").eq("code", roomCode).maybeSingle();
-        if (!got.error && got.data?.id) { setRoomId(got.data.id); return got.data.id; }
+        if (got?.data?.id) { setRoomId(got.data.id); return got.data.id; }
 
         // 2) 없으면 생성
         const ins = await supabase.from("rooms").insert({ code: roomCode, title: roomCode }).select("id").maybeSingle();
-        if (ins.error || !ins.data?.id) throw ins.error ?? new Error("ROOM_CREATE_FAILED");
+        if (!ins?.data?.id) throw new Error("ROOM_CREATE_FAILED");
         setRoomId(ins.data.id);
         return ins.data.id;
     }, [roomId, roomCode]);
-    
+
+
     useEffect(() => { (async () => { try { await ensureRoomId(); } catch (e) { DBG.err(e); } })(); }, [ensureRoomId]);
 
     useEffect(() => {

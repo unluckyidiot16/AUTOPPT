@@ -60,6 +60,7 @@ async function copyDirSameBucket(bucket: string, fromPrefix: string, toPrefix: s
     }
 }
 
+// (추가) presentations → slides 크로스 버킷 복제
 async function copyDirCrossBuckets(
     fromBucket: "presentations" | "slides",
     toBucket: "slides",
@@ -67,24 +68,21 @@ async function copyDirCrossBuckets(
     toPrefix: string,
     onlyExt: RegExp
 ) {
-    // 목적지에 이미 있으면 스킵
-    const dstProbe = await listAll(toBucket, toPrefix);
-    if ((dstProbe ?? []).length > 0) return;
+    const dst = await listAll(toBucket, toPrefix);
+    if ((dst ?? []).length > 0) return;
 
     const src = await listAll(fromBucket, fromPrefix);
     for (const f of src) {
         if (!onlyExt.test(f.name)) continue;
-        const from = `${withSlash(fromPrefix)}${f.name}`;
-        const to   = `${withSlash(toPrefix)}${f.name}`;
-
-        // download from 'fromBucket'
-        const dl = await supabase.storage.from(fromBucket).download(from);
+        const dl = await supabase.storage.from(fromBucket).download(`${withSlash(fromPrefix)}${f.name}`);
         if (dl.error) throw dl.error;
-        // upload to 'slides'
-        const up = await supabase.storage.from(toBucket).upload(to, dl.data, { upsert: true, contentType: "image/webp" });
+        const up = await supabase.storage.from(toBucket).upload(`${withSlash(toPrefix)}${f.name}`, dl.data, {
+            upsert: true, contentType: "image/webp",
+        });
         if (up.error) throw up.error;
     }
 }
+
 
 
 /** 원본 파일 키로부터 편집용 덱을 생성. PDF는 복사만, WEBP는 있으면 폴더 복제(재변환 없음). */
