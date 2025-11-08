@@ -797,7 +797,7 @@ export default function PdfLibraryPage() {
             <div className="panel mb-4" style={{ padding: 12 }}>
                 <div style={{ fontWeight: 700, marginBottom: 6 }}>자료함으로 업로드</div>
                 <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 8 }}>PDF를 업로드하면 변환되어 자료함에 추가됩니다. (변환 완료 후 자동 갱신)</div>
-                <PdfToSlidesUploader onFinished={onUploaded} />
+                <PdfToSlidesUploader onDone={onUploaded} />
             </div>
 
             {/* 교시 + 필터 */}

@@ -27,13 +27,17 @@ async function loadPdfJs(): Promise<any> {
     }
 }
 
-function slugify(basename: string) {
-    return basename
-        .replace(/\.[^.]+$/, "")
-        .replace(/[^\p{L}\p{N}]+/gu, "-")
-        .replace(/^-+|-+$/g, "")
-        .toLowerCase() || ("deck-" + Date.now());
-}
+// Supabase Storage용: ASCII만, 폴더 세그먼트 안전
+ function storageSafeSlug(basename: string) {
+       const stem = basename.replace(/\.[^.]+$/, "");
+       const ascii = stem
+             .normalize("NFKD").replace(/[\u0300-\u036f]/g, "") // 악센트 제거
+         .replace(/[^A-Za-z0-9]+/g, "-")                    // ASCII 외 제거
+         .replace(/^-+|-+$/g, "")
+         .toLowerCase();
+       const suffix = Date.now().toString(36);
+       return `${ascii || "deck"}-${suffix}`.slice(0, 80);
+     }
 
 async function toWebpBlob(canvas: HTMLCanvasElement, quality = 0.92): Promise<Blob> {
     return new Promise((resolve, reject) => {
@@ -58,7 +62,7 @@ export default function PdfToSlidesUploader({
     const handleFile = useCallback(async (file: File) => {
         setBusy(true); setLog([]); setProgress(0);
         try {
-            const base = slugify(file.name);
+            const base = storageSafeSlug(file.name);
             const pdfKey = `presentations/decks/${base}/slides-${Date.now()}.pdf`;
             push(`원본 PDF 업로드: ${pdfKey}`);
             const upPdf = await supabase.storage.from("presentations").upload(pdfKey, file, {
