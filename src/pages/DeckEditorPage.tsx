@@ -277,11 +277,25 @@ export default function DeckEditorPage() {
 
     /* ---------- 상단 버튼: 빈 페이지 추가 ---------- */
     const addBlankPage = () => {
-        applyPatchRef.current?.((cur) => {
-            const next: ManifestItem[] = [...cur, { type: "page", kind: "page", srcPage: 0 } as any];
-            return next;
-        });
+        const make = () => ({ id: crypto.randomUUID?.() ?? String(Date.now()),
+            type: "page", kind: "page", srcPage: 0 } as unknown as ManifestItem);
+
+        let delegated = false;
+
+        // 1) 자식(DeckEditor)이 패치함수를 제공했다면 우선 위임
+        if (applyPatchRef.current) {
+            applyPatchRef.current((cur) => {
+                delegated = true;
+                return [...cur, make()];
+            });
+        }
+
+        // 2) 아직 위임 연결 전이라면, 미리보기용으로 부모 상태도 낙관적 업데이트
+        if (!delegated) {
+            setItems((cur) => [...cur, make()]);
+        }
     };
+
 
     const dec = () => setPreviewPage((p) => Math.max(1, Math.min(effectiveMax, (p ?? 1) - 1)));
     const inc = () => setPreviewPage((p) => Math.max(1, Math.min(effectiveMax, (p ?? 1) + 1)));

@@ -1,5 +1,5 @@
 // src/components/EditorPreviewPane.tsx
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { resolveWebpUrl } from "../utils/supaFiles";
 
 export type Overlay = {
@@ -11,7 +11,7 @@ export type Overlay = {
 
 type Props = {
     fileKey: string;
-    page: number;                 // 1-base, 0 => 빈 캔버스(이미지 로드 금지)
+    page: number;                 // 1-base, 0 => 빈 캔버스
     height?: number | string;     // 기본: calc(100vh - 220px)
     version?: number | string;    // 캐시버스터
     overlays?: Overlay[];         // 퀴즈 등 오버레이
@@ -31,8 +31,6 @@ export default function EditorPreviewPane({
     const [bgUrl, setBgUrl] = useState<string | null>(null);
     const ver = useMemo(() => String(version ?? ""), [version]);
 
-    const isBlank = curSrcPage <= 0;
-    
     // page === 0 이면 절대 webp를 요청하지 않음
     useEffect(() => {
         let off = false;
@@ -48,12 +46,10 @@ export default function EditorPreviewPane({
                 if (!off) setBgUrl(null);
             }
         })();
-        return () => {
-            off = true;
-        };
+        return () => { off = true; };
     }, [fileKey, page, ver]);
 
-    // CSS aspect-ratio 사용
+    // CSS aspect-ratio
     const aspectStyle: React.CSSProperties =
         aspectMode === "auto"
             ? {}
@@ -75,14 +71,9 @@ export default function EditorPreviewPane({
                 overflow: "auto",
             }}
         >
-            {/* 스테이지 래퍼: 줌(Transform) 적용 */}
-            <div
-                style={{
-                    transform: `scale(${zoom})`,
-                    transformOrigin: "center top",
-                }}
-            >
-                {/* 스테이지: 배경 contain + 오버레이 레이어 */}
+            {/* 줌 스케일 */}
+            <div style={{ transform: `scale(${zoom})`, transformOrigin: "center top" }}>
+                {/* 스테이지 */}
                 <div
                     style={{
                         ...aspectStyle,
@@ -97,7 +88,7 @@ export default function EditorPreviewPane({
                         borderRadius: 10,
                     }}
                 >
-                    {/* 빈 캔버스 시 안내 워터마크 */}
+                    {/* 빈 캔버스 워터마크 */}
                     {!bgUrl && (
                         <div
                             style={{
@@ -138,6 +129,7 @@ export default function EditorPreviewPane({
                                         color: "#E5E7EB",
                                         fontSize: 12,
                                         pointerEvents: "none",
+                                        zIndex: (ov.z ?? 0) + 100, // ★ 항상 배경 위
                                     }}
                                 >
                                     {question || "퀴즈"}
