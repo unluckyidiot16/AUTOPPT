@@ -13,6 +13,20 @@ type RoomRow = { id: string; current_deck_id: string | null };
 
 function withSlash(p: string) { return p.endsWith("/") ? p : `${p}/`; }
 
+const [zoom, setZoom] = useState<0.75 | 1 | 1.25>(1);
+const [aspectMode, setAspectMode] = useState<"auto" | "16:9" | "4:3" | "A4">("auto");
+
+// DeckEditor 내부 items를 바깥에서 패치하기 위한 ref
+const applyPatchRef = useRef<((fn: (cur: ManifestItem[]) => ManifestItem[]) => void) | null>(null);
+
+// 빈 페이지(meta 일치) 추가
+const addBlankPage = () => {
+    applyPatchRef.current?.((cur) => [
+        ...cur,
+        { type: "page", kind: "page", srcPage: 0 } as any, // srcPage:0 == 빈 캔버스
+    ]);
+};
+
 /** prefix 아래 .webp 개수 카운트 */
 async function countWebps(bucket: string, prefix: string) {
     const { data, error } = await supabase.storage.from(bucket).list(withSlash(prefix), { limit: 1000 });
@@ -278,6 +292,29 @@ export default function DeckEditorPage() {
                     <button className="btn" onClick={inc}>Next ▶</button>
                 </div>
             </div>
+            {/* 프리뷰 상단 컨트롤 */}
+            <div style={{ display: "flex", gap: 8, alignItems: "center", margin: "0 0 8px 0" }}>
+                <div className="badge">Zoom</div>
+                {[0.75, 1, 1.25].map(v => (
+                    <button
+                        key={v}
+                        className={`btn ${zoom === v ? "btn-primary" : ""}`}
+                        onClick={() => setZoom(v as 0.75 | 1 | 1.25)}
+                    >{Math.round(v * 100)}%</button>
+                ))}
+
+                <div className="badge" style={{ marginLeft: 12 }}>비율</div>
+                {(["auto","16:9","4:3","A4"] as const).map(r => (
+                    <button
+                        key={r}
+                        className={`btn ${aspectMode === r ? "btn-primary" : ""}`}
+                        onClick={() => setAspectMode(r)}
+                    >{r}</button>
+                ))}
+
+                <div style={{ marginLeft: "auto" }} />
+                <button className="btn" onClick={addBlankPage}>+ 빈 페이지 추가</button>
+            </div>
 
             {loading ? (
                 <div className="panel">불러오는 중…</div>
@@ -294,6 +331,8 @@ export default function DeckEditorPage() {
                             height="calc(100vh - 220px)"
                             version={cacheVer}
                             overlays={overlaysForPreview}
+                            zoom={zoom}
+                            aspectMode={aspectMode}
                         />
                     </div>
                     <div>
@@ -307,6 +346,7 @@ export default function DeckEditorPage() {
                             tempCleanup={null}
                             onItemsChange={onItemsChange}
                             onSelectPage={(p) => setPreviewPage(Math.max(0, p))}
+                            applyPatchRef={applyPatchRef}
                         />
                     </div>
                 </div>

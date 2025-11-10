@@ -23,6 +23,9 @@ function ensureManifestPages(totalPages: number): ManifestPageItem[] {
     return Array.from({ length: n }, (_, i) => ({ type: "page", srcPage: i + 1 }));
 }
 
+const makePageItem = (srcPage: number) =>
+    ({ type: "page", kind: "page", srcPage } as ManifestPageItem);
+
 export default function DeckEditor({
                                        roomCode, deckId, totalPages, fileKey, onClose, onSaved,
                                        onItemsChange, onSelectPage, applyPatchRef, tempCleanup,
@@ -110,8 +113,10 @@ export default function DeckEditor({
     };
     const removeAt = (i: number) => setItems(items.filter((_, k) => k !== i));
     const duplicateAt = (i: number) => setItems((arr) => [...arr.slice(0, i + 1), arr[i], ...arr.slice(i + 1)]);
-    const pushPage = (srcPage: number) => setItems((arr) => [...arr, { type: "page", srcPage } as ManifestPageItem]);
-    const pushBlankPage = () => setItems((arr) => [...arr, { type: "page", srcPage: 0 } as ManifestPageItem]);
+    const pushPage = (srcPage: number) =>
+        setItems(arr => [...arr, makePageItem(srcPage)]);
+    const pushBlankPage = () =>
+        setItems(arr => [...arr, makePageItem(0)]);
     const pushQuiz = () => setItems((arr) => [...arr, {
         type: "quiz", prompt: "문제를 입력하세요", keywords: [],
         threshold: 1, autoAdvance: false,
