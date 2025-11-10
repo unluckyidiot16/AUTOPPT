@@ -42,17 +42,10 @@ export default function DeckEditor({
     const [items, _setItems] = useState<ManifestItem[]>([]);
     const [loading, setLoading] = useState(true);
 
-    // 외부 패치(프리뷰 드래그 등) 연결
-    useEffect(() => {
-        if (!applyPatchRef) return;
-        applyPatchRef.current = (fn) => _setItems(prev => {
-            const next = fn(prev);
-            try { onItemsChange?.(next); } catch {}
-            return next;
-        });
-        return () => { if (applyPatchRef) applyPatchRef.current = null; };
-    }, [applyPatchRef, onItemsChange]);
 
+    const [targetPage, setTargetPage] = useState<number>((totalPages ?? 0) > 0 ? 1 : 0);
+    useEffect(() => { setTargetPage((totalPages ?? 0) > 0 ? 1 : 0); }, [totalPages]);
+    
     const setItems = (updater: ManifestItem[] | ((prev: ManifestItem[]) => ManifestItem[])) => {
         _setItems(prev => {
             const next = typeof updater === "function" ? (updater as any)(prev) : updater;
@@ -79,15 +72,36 @@ export default function DeckEditor({
     const cardRefs = useRef<Map<number, HTMLDivElement>>(new Map());
     const [highlightIdx, setHighlightIdx] = useState<number | null>(null);
 
+
+    // 외부 패치(프리뷰 드래그 등) 연결
+    useEffect(() => {
+        if (!applyPatchRef) return;
+
+        // 부모가 넘겨준 패치 함수를 에디터의 setItems와 연결
+        applyPatchRef.current = (fn) => {
+            setItems((cur) => {
+                const next = fn(cur);
+                onItemsChange?.(next);    // 부모에도 동기화
+                return next;
+            });
+        };
+
+        return () => {
+            if (applyPatchRef) applyPatchRef.current = null;
+        };
+    }, [applyPatchRef, setItems, onItemsChange]);
+    
     useEffect(() => {
         (async () => {
             setLoading(true);
             try {
                 let next: ManifestItem[] = [];
-                        if (enableRealtime && roomCode) {
-                              const m = await getManifestByRoom(roomCode);
-                              next = Array.isArray(m) ? m : (Array.isArray((m as any)?.items) ? (m as any).items : []);
-                            }
+                                if (roomCode) {
+                                        try {
+                                                const m = await getManifestByRoom(roomCode);
+                                                next = Array.isArray(m) ? m : (Array.isArray((m as any)?.items) ? (m as any).items : []);
+                                            } catch {}
+                                    }
                 const hasPage = next.some(it => it.type === "page");
                 if ((!next.length || !hasPage) && (totalPages ?? 0) > 0) {
                     const pages = ensureManifestPages(totalPages!);
@@ -100,6 +114,36 @@ export default function DeckEditor({
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [roomCode, totalPages, enableRealtime]);
 
+
+    const addPageFromSrc = (srcPage: number) => {
+        setItems((cur) => {
+            const next = [...cur, { type: "page", kind: "page", srcPage } as any];
+            onItemsChange?.(next);
+            onSelectPage?.(Math.max(1, next.filter((i: any) => i.type === "page").length)); // 마지막 페이지로 포커스
+            return next;
+        });
+    };
+    //    - 빈 페이지 추가: srcPage:0 로 메타 반영(프리뷰는 빈 캔버스)
+    const addBlankPageLocal = () => addPageFromSrc(0);
+
+    //    - 퀴즈 삽입: 현재 선택 페이지 p에 정규화 좌표로 박스 추가
+    const insertQuizAt = (p: number) => {
+        setItems((cur) => {
+            const next = [
+                ...cur,
+                {
+                    type: "quiz",
+                    srcPage: p,      // ← 프리뷰 매핑과 동일한 키 사용
+                    x: 0.1, y: 0.1, w: 0.3, h: 0.2,
+                    question: "",
+                    answer: "",
+                } as any,
+            ];
+            onItemsChange?.(next);
+            return next;
+        });
+    };
+    
     const resetDefault = () => {
         if (!totalPages) return;
         const pages = ensureManifestPages(totalPages);
@@ -115,10 +159,17 @@ export default function DeckEditor({
     const duplicateAt = (i: number) => setItems((arr) => [...arr.slice(0, i + 1), arr[i], ...arr.slice(i + 1)]);
     const pushPage = (srcPage: number) =>
         setItems(arr => [...arr, makePageItem(srcPage)]);
-    const pushBlankPage = () =>
-        setItems(arr => [...arr, makePageItem(0)]);
+    const pushBlankPage = () => {
+          setItems(arr => [...arr, makePageItem(0)]);
+          setTargetPage(0); onSelectPage?.(0);
+        };
+    
     const pushQuiz = () => setItems((arr) => [...arr, {
-        type: "quiz", prompt: "문제를 입력하세요", keywords: [],
+        type: "quiz",
+            // 프리뷰가 즉시 보이도록 현재 타겟 페이지에 붙입니다.
+        srcPage: targetPage,
+        attachToSrcPage: targetPage,
+        prompt: "문제를 입력하세요", keywords: [],
         threshold: 1, autoAdvance: false,
         matchOptions: {
             enableSubstr: defaults.enableSubstr,
@@ -126,7 +177,7 @@ export default function DeckEditor({
             useSynonyms: defaults.useSynonyms,
             synonyms: { ...defaults.synonyms },
         },
-        attachToSrcPage: 0, position: "tl",
+        position: "tl",
     } as QuizX]);
 
     const [saving, setSaving] = useState(false);
@@ -242,7 +293,7 @@ export default function DeckEditor({
         const found = pageThumbs.find(t => t.id === id);
         if (!found) return;
         scrollToIndex(found.idx);
-        onSelectPage?.(found.page);
+        setTargetPage(found.page); onSelectPage?.(found.page);
     };
 
     const onDuplicatePage = (id: string) => {
@@ -314,10 +365,17 @@ export default function DeckEditor({
                                                value={(it as ManifestPageItem).srcPage}
                                                onChange={(e) => {
                                                    const v = Math.max(0, Number(e.target.value) || 0);
-                                                   setItems(arr => { const next = arr.slice(); (next[i] as ManifestPageItem).srcPage = v; return next; });
+                                                   setItems(arr => {
+                                                                     const next = arr.slice();
+                                                                     const qq = next[i] as QuizX;
+                                                                     qq.attachToSrcPage = v;
+                                                                     (qq as any).srcPage = v;        // ★ 프리뷰 매핑과 동기화
+                                                                     return next;
+                                                                   });
                                                }} />
                                     </label>
-                                    <button className="btn" onClick={() => onSelectPage?.((it as ManifestPageItem).srcPage)}>
+                                    <button className="btn" onClick={() => const p = (it as ManifestPageItem).srcPage;
+                                        setTargetPage(p); onSelectPage?.(p);}>
                                         이 페이지 미리보기
                                     </button>
                                 </div>
@@ -401,7 +459,9 @@ export default function DeckEditor({
                                                         <option value="free">자유배치(드래그)</option>
                                                     </select>
                                                 </label>
-                                                <button className="btn" onClick={() => onSelectPage?.(q.attachToSrcPage ?? 0)}>이 페이지 미리보기</button>
+                                                <button className="btn" onClick={() => { const p = q.attachToSrcPage ?? 0; setTargetPage(p); onSelectPage?.(p); }}>
+                                                      이 페이지 미리보기
+                                                    </button>                                   
                                             </div>
                                         </div>
                                     );
