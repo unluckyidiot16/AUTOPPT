@@ -438,7 +438,8 @@ export default function TeacherPage() {
                 <a className="btn" href={studentUrl} target="_blank" rel="noreferrer">학생 접속 링크</a>
                 <span className="badge" title="Realtime">{connected ? "RT:ON" : "RT:OFF"}</span>
             </div>
-            <div className="slide-stage" style={{ width: "100%", height: "72vh", display: "grid", placeItems: "center" }}>
+            <div className="slide-stage"
+                 style={{ width: "100%", height: "72vh", display: "grid", placeItems: "center", overflow: "hidden" }}>
                 <SlideStage bgUrl={activeBgUrl} overlays={activeOverlays} mode="teacher" />
             </div>
             <div style={{ display: "flex", gap: 8, justifyContent: "center", marginTop: 10 }}>

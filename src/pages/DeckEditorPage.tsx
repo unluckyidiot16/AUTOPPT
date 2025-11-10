@@ -207,10 +207,13 @@ export default function DeckEditorPage() {
     /* ---------- 프리뷰 최초 페이지 ---------- */
     useEffect(() => {
         if (previewOnce.current || loading) return;
-        const first = (items.find((x) => (x as any).type === "page") as any)?.srcPage ?? (totalPages > 0 ? 1 : 0);
-        setPreviewPage(first);
+        const firstPage =
+            (items.find(x => (x as any).type === "page") as any)?.srcPage
+            ?? (totalPages > 0 ? 1 : 0); // totalPages가 0이면 "빈 캔버스" 모드
+        setPreviewPage(firstPage);
         previewOnce.current = true;
     }, [loading, items, totalPages]);
+
 
     /* ---------- “빈 페이지 추가” 직후: 새 가상 페이지로 포커스 ---------- */
     const lastVirtualMaxRef = useRef(0);
@@ -233,6 +236,31 @@ export default function DeckEditorPage() {
         () => (previewPage ? overlaysForPage(items, previewPage) : []),
         [items, previewPage]
     );
+
+    const overlaysForPreview: Overlay[] = useMemo(() => {
+        try {
+            const p = Number(previewPage ?? 0);
+            if (!p || !Array.isArray(items)) return [];
+            // ManifestItem 구조를 보수적으로 처리: type === "quiz" 만 골라 Overlay로 매핑
+            // (키 이름이 다르면 안전하게 기본값 처리)
+            return items
+                .filter((it: any) => (it?.type === "quiz" || it?.kind === "quiz") && Number(it?.srcPage ?? it?.page) === p)
+                .map((q: any, idx: number) => ({
+                    id: String(q.id ?? `quiz-${p}-${idx}`),
+                    z: Number(q.z ?? 10 + idx),
+                    type: "quiz",
+                    payload: {
+                        // 위치/크기 등 에디터가 주는 값을 보수적으로 매핑
+                        x: Number(q.x ?? 0.1), y: Number(q.y ?? 0.1),
+                        w: Number(q.w ?? 0.3), h: Number(q.h ?? 0.2),
+                        question: q.question ?? q.payload?.question ?? "",
+                        answer: q.answer ?? q.payload?.answer ?? "",
+                        // 필요한 추가 필드가 있으면 SlideStage에서 참조
+                        ...q.payload,
+                    },
+                }));
+        } catch { return []; }
+    }, [items, previewPage]);
 
     const dec = () => setPreviewPage((p) => Math.max(1, Math.min(effectiveMax, (p ?? 1) - 1)));
     const inc = () => setPreviewPage((p) => Math.max(1, Math.min(effectiveMax, (p ?? 1) + 1)));
@@ -262,10 +290,10 @@ export default function DeckEditorPage() {
                     <div>
                         <EditorPreviewPane
                             fileKey={fileKey}
-                            page={previewBgPage}              // 파일 범위 밖이면 0 = 빈 캔버스
+                            page={totalPages > 0 ? (previewPage ?? 1) : 0}
                             height="calc(100vh - 220px)"
                             version={cacheVer}
-                            overlays={previewOverlays}       // 현재 페이지 오버레이(퀴즈) 미리보기
+                            overlays={overlaysForPreview}
                         />
                     </div>
                     <div>
