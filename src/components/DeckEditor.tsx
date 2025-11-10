@@ -487,6 +487,9 @@ export default function DeckEditor({
                 onAdd={onAddPage}
                 onDuplicate={onDuplicatePage}
                 onDelete={onDeletePage}
+                // ▼ 가로 스트립 + 고정 높이(스크롤)
+                orientation="horizontal"
+                maxExtent={height /* 또는 136 같은 고정 px 값 */ ?? 136}
             />
         </div>
     );
