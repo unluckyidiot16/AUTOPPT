@@ -53,8 +53,8 @@ export default function EditorPreviewPane({
     // 가로 긴 자료 기준: 더 넓은 폭을 허용(최소 900, 최대 1480)
     // auto(비율 미지정)일 땐 조금 좁게
     const stageWidth = aspectMode === "auto"
-        ? "clamp(720px, 58vw, 1180px)"
-        : "clamp(900px, 62vw, 1480px)";
+        ? "min(100%, 1180px)"
+        : "min(100%, 1480px)";
 
     return (
         <div

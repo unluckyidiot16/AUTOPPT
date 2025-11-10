@@ -312,7 +312,7 @@ export default function DeckEditor({
     };
 
     return (
-        <div className="panel" style={{ padding: 16 }}>
+        <div className="panel" style={{ padding: 16, display: "flex", flexDirection: "column", height: "calc(100vh - 220px)" }}>
             {/* 툴바 */}
             <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 12 }}>
                 <div style={{ fontWeight: 700 }}>자료 편집</div>
@@ -352,7 +352,7 @@ export default function DeckEditor({
             </div>
 
             {/* 메인 리스트 */}
-            <div style={{ display: "grid", gap: 8 }}>
+            <div style={{ display: "grid", gap: 8, flex: 1, minHeight: 0, overflowY: "auto" }}>
                 {items.map((it, i) => (
                     <div key={i} ref={(el) => { if (el) cardRefs.current.set(i, el); }}
                          className="card"

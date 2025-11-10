@@ -68,8 +68,15 @@ export default function EditorThumbnailStrip({
         };
 
     const trackStyle: React.CSSProperties = isH
-        ? { display: "inline-flex", gap: 8, alignItems: "flex-start" }
-        : { display: "grid", gap: 8, alignContent: "start" };
+            ? {
+                display: "flex",
+                flexWrap: "nowrap",     // 줄바꿈 방지
+                gap: 8,
+                alignItems: "flex-start",
+            width: "max-content",   // 내용 폭만큼 확장 → 바깥 컨테이너에서 overflow-x 작동
+            minWidth: "max-content"
+    }
+    : { display: "grid", gap: 8, alignContent: "start" };
 
     return (
         <div style={outerStyle}>

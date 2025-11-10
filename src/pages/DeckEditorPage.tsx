@@ -128,11 +128,10 @@ export default function DeckEditorPage() {
     const [loading, setLoading] = useState(true);
     const [err, setErr] = useState<string | null>(null);
 
-    const previewCol = (aspectMode === "16:9" || aspectMode === "16:10" || aspectMode === "3:2")
-        ? "minmax(640px, 62vw)"
-        : "minmax(480px, 52vw)";
-
-    // 1분 캐시버스터
+    const previewCol = "minmax(560px, 1.1fr)";   // 프리뷰: 최소 560px
+    const editorCol  = "minmax(420px, 0.9fr)";   // 편집기: 최소 420px
+    
+    
     const [cacheVer, setCacheVer] = useState<number>(() => Math.floor(Date.now() / 60000));
     useEffect(() => {
         const t = setInterval(() => setCacheVer(Math.floor(Date.now() / 60000)), 30000);
@@ -333,8 +332,8 @@ export default function DeckEditorPage() {
                     style={{
                         display: "grid",
                         gridTemplateColumns: thumbPos === "left"
-                            ? `${leftBarWidth}px ${previewCol} 1fr`
-                            : `${previewCol} 1fr`,
+                            ? `${leftBarWidth}px ${previewCol} ${editorCol}`
+                            : `${previewCol} ${editorCol}`,
                         gap: 16,
                         alignItems: "start",
                     }}
