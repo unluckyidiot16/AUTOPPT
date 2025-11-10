@@ -108,8 +108,9 @@ export default function DeckEditorPage() {
     const sourceDeckKey = qs.get("srcKey");
 
     // ✅ 훅들은 반드시 컴포넌트 내부에서!
-    const [zoom, setZoom] = useState<0.75 | 1 | 1.25>(1);
-    const [aspectMode, setAspectMode] = useState<"auto" | "16:9" | "4:3" | "A4">("auto");
+    const [zoom, setZoom] = useState<0.5 | 0.75 | 1 | 1.25 | 1.5>(1);
+    const [aspectMode, setAspectMode] =
+        useState<"auto" | "16:9" | "16:10" | "4:3" | "3:2" | "A4">("16:9");
     const applyPatchRef = useRef<((fn: (cur: ManifestItem[]) => ManifestItem[]) => void) | null>(null);
 
     const [deckId, setDeckId] = useState<string | null>(null);
@@ -121,6 +122,10 @@ export default function DeckEditorPage() {
 
     const [loading, setLoading] = useState(true);
     const [err, setErr] = useState<string | null>(null);
+
+    const previewCol = (aspectMode === "16:9" || aspectMode === "16:10" || aspectMode === "3:2")
+        ? "minmax(640px, 62vw)"  
+        : "minmax(480px, 52vw)";
 
     // 1분 캐시버스터
     const [cacheVer, setCacheVer] = useState<number>(() => Math.floor(Date.now() / 60000));
@@ -315,20 +320,28 @@ export default function DeckEditorPage() {
             </div>
 
             {/* 프리뷰 상단 컨트롤 */}
-            <div style={{ display: "flex", gap: 8, alignItems: "center", margin: "0 0 8px 0" }}>
+            <div
+                style={{
+                    display: "flex",
+                    gap: 8,
+                    alignItems: "center",
+                    margin: "0 0 8px 0",
+                    flexWrap: "wrap",        // ★ 좁은 화면 줄바꿈
+                }}
+            >
                 <div className="badge">Zoom</div>
-                {[0.75, 1, 1.25].map((v) => (
+                {[0.5, 0.75, 1, 1.25, 1.5].map((v) => (
                     <button
                         key={v}
                         className={`btn ${zoom === v ? "btn-primary" : ""}`}
-                        onClick={() => setZoom(v as 0.75 | 1 | 1.25)}
+                        onClick={() => setZoom(v as any)}
                     >
-                        {Math.round(v * 100)}%
+                        {Math.round(Number(v) * 100)}%
                     </button>
                 ))}
 
                 <div className="badge" style={{ marginLeft: 12 }}>비율</div>
-                {(["auto", "16:9", "4:3", "A4"] as const).map((r) => (
+                {(["16:9", "16:10", "4:3", "3:2", "A4", "auto"] as const).map((r) => (
                     <button
                         key={r}
                         className={`btn ${aspectMode === r ? "btn-primary" : ""}`}
@@ -349,14 +362,21 @@ export default function DeckEditorPage() {
             ) : !deckId || !fileKey ? (
                 <div className="panel" style={{ opacity: 0.6 }}>자료 없음</div>
             ) : (
-                <div className="panel" style={{ display: "grid", gridTemplateColumns: "minmax(420px, 48%) 1fr", gap: 16 }}>
+                <div
+                    className="panel"
+                    style={{
+                        display: "grid",
+                        gridTemplateColumns: `${previewCol} 1fr`, // ★ 가로 넓게
+                        gap: 16,
+                    }}
+                >
                     <div>
                         <EditorPreviewPane
                             fileKey={fileKey}
-                            page={previewBgPage}                      // 파일 밖이면 0 → 빈 캔버스
+                            page={previewBgPage}
                             height="calc(100vh - 220px)"
                             version={cacheVer}
-                            overlays={overlaysForPreview}             // 퀴즈를 프리뷰 위에
+                            overlays={overlaysForPreview}
                             zoom={zoom}
                             aspectMode={aspectMode}
                         />

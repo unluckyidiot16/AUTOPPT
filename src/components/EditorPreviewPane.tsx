@@ -2,21 +2,14 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { resolveWebpUrl } from "../utils/supaFiles";
 
-export type Overlay = {
-    id: string;
-    z?: number;
-    type: "quiz" | string;
-    payload: any;
-};
-
 type Props = {
     fileKey: string;
     page: number;                 // 1-base, 0 => 빈 캔버스
-    height?: number | string;     // 기본: calc(100vh - 220px)
-    version?: number | string;    // 캐시버스터
-    overlays?: Overlay[];         // 퀴즈 등 오버레이
-    zoom?: 0.75 | 1 | 1.25;       // 75/100/125%
-    aspectMode?: "auto" | "16:9" | "4:3" | "A4";
+    height?: number | string;     // 컨테이너 높이
+    version?: number | string;    // 캐시 버스터
+    overlays?: any[];             // 퀴즈 등 오버레이(정규화 좌표 0..1)
+    zoom?: 0.5 | 0.75 | 1 | 1.25 | 1.5;
+    aspectMode?: "auto" | "16:9" | "16:10" | "4:3" | "3:2" | "A4";
 };
 
 export default function EditorPreviewPane({
@@ -26,12 +19,11 @@ export default function EditorPreviewPane({
                                               version,
                                               overlays = [],
                                               zoom = 1,
-                                              aspectMode = "auto",
+                                              aspectMode = "16:9", // ★ 기본값 16:9
                                           }: Props) {
     const [bgUrl, setBgUrl] = useState<string | null>(null);
     const ver = useMemo(() => String(version ?? ""), [version]);
 
-    // page === 0 이면 절대 webp를 요청하지 않음
     useEffect(() => {
         let off = false;
         (async () => {
@@ -49,15 +41,20 @@ export default function EditorPreviewPane({
         return () => { off = true; };
     }, [fileKey, page, ver]);
 
-    // CSS aspect-ratio
+    // 비율 매핑
     const aspectStyle: React.CSSProperties =
-        aspectMode === "auto"
-            ? {}
-            : aspectMode === "16:9"
-                ? { aspectRatio: "16 / 9" }
-                : aspectMode === "4:3"
-                    ? { aspectRatio: "4 / 3" }
-                    : { aspectRatio: "210 / 297" }; // A4 (mm)
+        aspectMode === "auto" ? {} :
+            aspectMode === "16:9"  ? { aspectRatio: "16 / 9" }  :
+                aspectMode === "16:10" ? { aspectRatio: "16 / 10" } :
+                    aspectMode === "4:3"   ? { aspectRatio: "4 / 3" }   :
+                        aspectMode === "3:2"   ? { aspectRatio: "3 / 2" }   :
+                            { aspectRatio: "210 / 297" }; // A4 세로
+
+    // 가로 긴 자료 기준: 더 넓은 폭을 허용(최소 900, 최대 1480)
+    // auto(비율 미지정)일 땐 조금 좁게
+    const stageWidth = aspectMode === "auto"
+        ? "clamp(720px, 58vw, 1180px)"
+        : "clamp(900px, 62vw, 1480px)";
 
     return (
         <div
@@ -65,20 +62,20 @@ export default function EditorPreviewPane({
             style={{
                 height,
                 display: "grid",
-                placeItems: "center",
+                placeItems: "start center",
                 background: "rgba(2,6,23,.35)",
                 borderRadius: 12,
                 overflow: "auto",
+                padding: 8,
             }}
         >
             {/* 줌 스케일 */}
-            <div style={{ transform: `scale(${zoom})`, transformOrigin: "center top" }}>
-                {/* 스테이지 */}
+            <div style={{ transform: `scale(${zoom})`, transformOrigin: "top center" }}>
+                {/* 스테이지(비율+가로폭 기반, 세로는 자동) */}
                 <div
                     style={{
                         ...aspectStyle,
-                        width: aspectMode === "auto" ? "min(1000px, 90vw)" : "min(1200px, 92vw)",
-                        height: aspectMode === "auto" ? "calc(100vh - 260px)" : "auto",
+                        width: stageWidth,
                         position: "relative",
                         backgroundColor: "rgba(15,23,42,.7)",
                         backgroundImage: bgUrl ? `url(${bgUrl})` : "none",
@@ -88,28 +85,22 @@ export default function EditorPreviewPane({
                         borderRadius: 10,
                     }}
                 >
-                    {/* 빈 캔버스 워터마크 */}
                     {!bgUrl && (
                         <div
                             style={{
-                                position: "absolute",
-                                inset: 0,
-                                display: "grid",
-                                placeItems: "center",
-                                color: "#9CA3AF",
-                                fontSize: 14,
-                                opacity: 0.6,
+                                position: "absolute", inset: 0,
+                                display: "grid", placeItems: "center",
+                                color: "#9CA3AF", fontSize: 14, opacity: 0.6,
                             }}
                         >
                             빈 페이지(배경 없음)
                         </div>
                     )}
 
-                    {/* 오버레이(정규화 좌표 x,y,w,h 0..1) */}
                     {overlays
                         .slice()
                         .sort((a, b) => (a.z ?? 0) - (b.z ?? 0))
-                        .map((ov) => {
+                        .map((ov: any) => {
                             if (ov.type !== "quiz") return null;
                             const { x = 0.1, y = 0.1, w = 0.3, h = 0.2, question = "" } = ov.payload ?? {};
                             return (
@@ -117,19 +108,15 @@ export default function EditorPreviewPane({
                                     key={ov.id}
                                     style={{
                                         position: "absolute",
-                                        left: `${x * 100}%`,
-                                        top: `${y * 100}%`,
-                                        width: `${w * 100}%`,
-                                        height: `${h * 100}%`,
+                                        left: `${x * 100}%`, top: `${y * 100}%`,
+                                        width: `${w * 100}%`, height: `${h * 100}%`,
                                         border: "2px dashed rgba(96,165,250,.9)",
                                         background: "rgba(2,132,199,.08)",
                                         borderRadius: 8,
-                                        display: "grid",
-                                        placeItems: "center",
-                                        color: "#E5E7EB",
-                                        fontSize: 12,
+                                        display: "grid", placeItems: "center",
+                                        color: "#E5E7EB", fontSize: 12,
                                         pointerEvents: "none",
-                                        zIndex: (ov.z ?? 0) + 100, // ★ 항상 배경 위
+                                        zIndex: (ov.z ?? 0) + 100, // ★ 최상단 보장
                                     }}
                                 >
                                     {question || "퀴즈"}
