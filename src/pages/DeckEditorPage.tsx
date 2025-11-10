@@ -1,9 +1,10 @@
-// src/pages/DeckEditorPage.tsx  ★ 전체 교체
+// src/pages/DeckEditorPage.tsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { supabase } from "../supabaseClient";
 import DeckEditor from "../components/DeckEditor";
 import EditorPreviewPane from "../components/EditorPreviewPane";
+import EditorThumbnailStrip from "../components/EditorThumbnailStrip";
 import type { ManifestItem } from "../types/manifest";
 import { getManifestByRoom } from "../api/overrides";
 import { slidesPrefixOfPresentationsFile } from "../utils/supaFiles";
@@ -13,7 +14,7 @@ type RoomRow = { id: string; current_deck_id: string | null };
 
 function withSlash(p: string) { return p.endsWith("/") ? p : `${p}/`; }
 
-/* ── storage helpers ───────────────────────────────────────────── */
+/* ─ storage helpers (생략 없음) ─ */
 async function countWebps(bucket: string, prefix: string) {
     const { data, error } = await supabase.storage.from(bucket).list(withSlash(prefix), { limit: 1000 });
     if (error) return 0;
@@ -63,7 +64,7 @@ async function copyDirCrossBuckets(
     }
 }
 
-/** 편집용 덱 생성: PDF 사본 + 기존 WEBP 폴더 복제(재변환 없음) */
+/** 편집용 덱 생성: PDF 사본 + 기존 WEBP 복사(재변환 없음) */
 async function ensureEditingDeckFromFileKey_noConvert({ roomCode, fileKey }: { roomCode: string; fileKey: string }) {
     const { data: room, error: eRoom } = await supabase.from("rooms").select("id").eq("code", roomCode).maybeSingle();
     if (eRoom || !room?.id) throw eRoom ?? new Error("room not found");
@@ -107,10 +108,14 @@ export default function DeckEditorPage() {
     const sourceDeckId = qs.get("src");
     const sourceDeckKey = qs.get("srcKey");
 
-    // ✅ 훅들은 반드시 컴포넌트 내부에서!
     const [zoom, setZoom] = useState<0.5 | 0.75 | 1 | 1.25 | 1.5>(1);
     const [aspectMode, setAspectMode] =
         useState<"auto" | "16:9" | "16:10" | "4:3" | "3:2" | "A4">("16:9");
+
+    // 썸네일 토글: bottom | left
+    const [thumbPos, setThumbPos] = useState<"bottom" | "left">("bottom");
+    const leftBarWidth = 164;
+
     const applyPatchRef = useRef<((fn: (cur: ManifestItem[]) => ManifestItem[]) => void) | null>(null);
 
     const [deckId, setDeckId] = useState<string | null>(null);
@@ -124,7 +129,7 @@ export default function DeckEditorPage() {
     const [err, setErr] = useState<string | null>(null);
 
     const previewCol = (aspectMode === "16:9" || aspectMode === "16:10" || aspectMode === "3:2")
-        ? "minmax(640px, 62vw)"  
+        ? "minmax(640px, 62vw)"
         : "minmax(480px, 52vw)";
 
     // 1분 캐시버스터
@@ -134,32 +139,12 @@ export default function DeckEditorPage() {
         return () => clearInterval(t);
     }, []);
 
-    const previewOnce = useRef(false);
     const onItemsChange = (next: ManifestItem[]) => setItems(next);
 
-    /* ---------- util: 아이템 → 페이지/오버레이 ---------- */
-    function pageNumberOf(item: any): number | null {
-        const p = item?.srcPage ?? item?.page ?? item?.targetPage;
-        return p == null ? null : Number(p);
-    }
-    // (중요) 가상 페이지 수는 "page 아이템 개수"로 계산(빈페이지 srcPage:0 포함)
-    function maxPageFromItems(list: ManifestItem[]): number {
-        return list.filter((it: any) => it?.type === "page").length;
-    }
-    function overlaysForPage(list: ManifestItem[], page: number): Overlay[] {
-        return list
-            .filter((it: any) => it?.type && it?.type !== "page")
-            .filter((it: any) => Number(pageNumberOf(it)) === Number(page))
-            .map((it: any, i: number) => ({
-                id: String(it.id ?? `ov-${i}`),
-                z: Number(it.z ?? 0),
-                type: String(it.type),
-                payload: it.payload ?? it,
-            }))
-            .sort((a, b) => a.z - b.z);
-    }
+    const maxPageFromItems = (list: ManifestItem[]) =>
+        list.filter((it: any) => it?.type === "page").length;
 
-    /* ---------- 초기 로딩 ---------- */
+    // 초기 로드
     useEffect(() => {
         let cancel = false;
         (async () => {
@@ -178,10 +163,7 @@ export default function DeckEditorPage() {
                     if ((ensured.totalPages || 0) > 0) setCacheVer((v) => v + 1);
                 } else if (sourceDeckId) {
                     const { data: src, error: eSrc } = await supabase
-                        .from("decks")
-                        .select("file_key, file_pages")
-                        .eq("id", sourceDeckId)
-                        .maybeSingle();
+                        .from("decks").select("file_key, file_pages").eq("id", sourceDeckId).maybeSingle();
                     if (eSrc) throw eSrc;
                     if (!src?.file_key) throw new Error("원본 덱에 파일이 없습니다.");
                     const ensured = await ensureEditingDeckFromFileKey_noConvert({ roomCode, fileKey: src.file_key });
@@ -192,20 +174,14 @@ export default function DeckEditorPage() {
                     if ((ensured.totalPages || 0) > 0) setCacheVer((v) => v + 1);
                 } else {
                     const { data: roomRow, error: eRoom } = await supabase
-                        .from("rooms")
-                        .select("id,current_deck_id")
-                        .eq("code", roomCode)
-                        .maybeSingle<RoomRow>();
+                        .from("rooms").select("id,current_deck_id").eq("code", roomCode).maybeSingle<RoomRow>();
                     if (eRoom) throw eRoom;
                     const pickedDeck = (deckFromQS as string | null) ?? roomRow?.current_deck_id ?? null;
                     if (!pickedDeck) throw new Error("현재 선택된 자료(교시)가 없습니다. 교사 화면에서 먼저 선택하세요.");
 
                     setDeckId(pickedDeck);
                     const { data: d, error: eDeck } = await supabase
-                        .from("decks")
-                        .select("file_key,file_pages")
-                        .eq("id", pickedDeck)
-                        .maybeSingle();
+                        .from("decks").select("file_key,file_pages").eq("id", pickedDeck).maybeSingle();
                     if (eDeck) throw eDeck;
                     if (!d?.file_key) throw new Error("deck file not found");
                     setFileKey(d.file_key);
@@ -223,47 +199,27 @@ export default function DeckEditorPage() {
                 if (!cancel) setLoading(false);
             }
         })();
-        return () => {
-            cancel = true;
-        };
+        return () => { cancel = true; };
     }, [roomCode, deckFromQS, sourceDeckId, sourceDeckKey]);
 
-    /* ---------- 프리뷰 최초 페이지 ---------- */
+    // 프리뷰 초기 페이지
     useEffect(() => {
-        if (previewOnce.current || loading) return;
+        if (loading) return;
         const hasMetaPages = maxPageFromItems(items) > 0;
-        const firstPage = hasMetaPages || totalPages > 0 ? 1 : 0; // 파일/메타 중 하나라도 있으면 1페이지부터
-        setPreviewPage(firstPage);
-        previewOnce.current = true;
+        setPreviewPage(hasMetaPages || totalPages > 0 ? 1 : 0);
     }, [loading, items, totalPages]);
 
-    /* ---------- “빈 페이지 추가” 직후: 새 가상 페이지로 포커스 ---------- */
-    const lastVirtualMaxRef = useRef(0);
-    useEffect(() => {
-        const vm = maxPageFromItems(items);
-        if (vm > lastVirtualMaxRef.current) setPreviewPage(vm); // 새 페이지가 생기면 그 페이지로
-        lastVirtualMaxRef.current = vm;
-    }, [items]);
-
-    /* ---------- 프리뷰 계산(배경/오버레이) ---------- */
-    const effectiveMax = useMemo(
-        () => Math.max(totalPages || 0, maxPageFromItems(items) || 0, 1),
-        [totalPages, items]
-    );
+    // 프리뷰 계산
     const previewBgPage = useMemo(() => {
         const p = Number(previewPage || 0);
-        return p >= 1 && p <= (totalPages || 0) ? p : 0; // 파일 밖이면 빈 캔버스
+        return p >= 1 && p <= (totalPages || 0) ? p : 0;
     }, [previewPage, totalPages]);
 
     const overlaysForPreview: Overlay[] = useMemo(() => {
         const p = Number(previewPage ?? 0);
         if (!p || !Array.isArray(items)) return [];
         return items
-            .filter(
-                (it: any) =>
-                    (it?.type === "quiz" || it?.kind === "quiz") &&
-                    Number((it as any)?.srcPage ?? (it as any)?.page) === p
-            )
+            .filter((it: any) => (it?.type === "quiz" || it?.kind === "quiz") && Number((it as any)?.srcPage ?? (it as any)?.page) === p)
             .map((q: any, idx: number) => ({
                 id: String(q.id ?? `quiz-${p}-${idx}`),
                 z: Number(q.z ?? 10 + idx),
@@ -280,30 +236,55 @@ export default function DeckEditorPage() {
             }));
     }, [items, previewPage]);
 
-    /* ---------- 상단 버튼: 빈 페이지 추가 ---------- */
+    // 상단 내비
+    const dec = () => setPreviewPage((p) => Math.max(1, (p ?? 1) - 1));
+    const inc = () => setPreviewPage((p) => Math.max(1, (p ?? 1) + 1));
+
+    // “빈 페이지 추가” (부모에서 낙관적 추가, 자식 연결되면 패치 경유)
     const addBlankPage = () => {
-        const make = () => ({ id: crypto.randomUUID?.() ?? String(Date.now()),
-            type: "page", kind: "page", srcPage: 0 } as unknown as ManifestItem);
-
+        const make = (): ManifestItem =>
+            ({ id: crypto.randomUUID?.() ?? String(Date.now()), type: "page", kind: "page", srcPage: 0 } as any);
         let delegated = false;
-
-        // 1) 자식(DeckEditor)이 패치함수를 제공했다면 우선 위임
         if (applyPatchRef.current) {
-            applyPatchRef.current((cur) => {
-                delegated = true;
-                return [...cur, make()];
-            });
+            applyPatchRef.current((cur) => { delegated = true; return [...cur, make()]; });
         }
-
-        // 2) 아직 위임 연결 전이라면, 미리보기용으로 부모 상태도 낙관적 업데이트
-        if (!delegated) {
-            setItems((cur) => [...cur, make()]);
-        }
+        if (!delegated) setItems((cur) => [...cur, make()]);
     };
 
+    // 왼쪽 세로 스트립용 간단한 페이지 썸네일 목록
+    const pageThumbs = useMemo(() => {
+        const arr: { id: string; page: number; idx: number }[] = [];
+        items.forEach((it, idx) => { if ((it as any)?.type === "page") arr.push({ id: `pg-${idx}`, page: (it as any).srcPage ?? 0, idx }); });
+        return arr;
+    }, [items]);
 
-    const dec = () => setPreviewPage((p) => Math.max(1, Math.min(effectiveMax, (p ?? 1) - 1)));
-    const inc = () => setPreviewPage((p) => Math.max(1, Math.min(effectiveMax, (p ?? 1) + 1)));
+    const reorderPages = (next: { id: string; page: number; idx: number }[]) => {
+        if (!applyPatchRef.current) return;
+        applyPatchRef.current((cur) => {
+            const ordered = next.map(t => ({ type: "page", kind: "page", srcPage: t.page } as any));
+            let p = 0;
+            return cur.map(it => (it as any)?.type === "page" ? (ordered[p++] ?? it) : it);
+        });
+    };
+    const selectThumb = (id: string) => {
+        const f = pageThumbs.find(t => t.id === id); if (!f) return;
+        setPreviewPage(f.page >= 0 ? f.page : 0);
+    };
+    const addPage = () => {
+        if (!applyPatchRef.current) return;
+        const maxPg = Math.max(0, ...pageThumbs.map(t => t.page));
+        applyPatchRef.current(cur => ([...cur, { type:"page", kind:"page", srcPage: maxPg + 1 } as any]));
+    };
+    const duplicatePage = (id: string) => {
+        if (!applyPatchRef.current) return;
+        const f = pageThumbs.find(t => t.id === id); if (!f) return;
+        applyPatchRef.current(cur => { const arr = cur.slice(); arr.splice(f.idx+1,0,{ type:"page", kind:"page", srcPage:f.page } as any); return arr; });
+    };
+    const deletePage = (id: string) => {
+        if (!applyPatchRef.current) return;
+        const f = pageThumbs.find(t => t.id === id); if (!f) return;
+        applyPatchRef.current(cur => { const arr = cur.slice(); if ((arr[f.idx] as any)?.type==="page") arr.splice(f.idx,1); return arr; });
+    };
 
     return (
         <div style={{ padding: 12 }}>
@@ -319,40 +300,25 @@ export default function DeckEditorPage() {
                 </div>
             </div>
 
-            {/* 프리뷰 상단 컨트롤 */}
-            <div
-                style={{
-                    display: "flex",
-                    gap: 8,
-                    alignItems: "center",
-                    margin: "0 0 8px 0",
-                    flexWrap: "wrap",        // ★ 좁은 화면 줄바꿈
-                }}
-            >
+            {/* 프리뷰 상단 컨트롤 + 썸네일 위치 토글 */}
+            <div style={{ display: "flex", gap: 8, alignItems: "center", margin: "0 0 8px 0", flexWrap: "wrap" }}>
                 <div className="badge">Zoom</div>
                 {[0.5, 0.75, 1, 1.25, 1.5].map((v) => (
-                    <button
-                        key={v}
-                        className={`btn ${zoom === v ? "btn-primary" : ""}`}
-                        onClick={() => setZoom(v as any)}
-                    >
+                    <button key={v} className={`btn ${zoom === v ? "btn-primary" : ""}`} onClick={() => setZoom(v as any)}>
                         {Math.round(Number(v) * 100)}%
                     </button>
                 ))}
-
                 <div className="badge" style={{ marginLeft: 12 }}>비율</div>
                 {(["16:9", "16:10", "4:3", "3:2", "A4", "auto"] as const).map((r) => (
-                    <button
-                        key={r}
-                        className={`btn ${aspectMode === r ? "btn-primary" : ""}`}
-                        onClick={() => setAspectMode(r)}
-                    >
-                        {r}
-                    </button>
+                    <button key={r} className={`btn ${aspectMode === r ? "btn-primary" : ""}`} onClick={() => setAspectMode(r)}>{r}</button>
                 ))}
 
-                <div style={{ marginLeft: "auto" }} />
-                <button className="btn" onClick={addBlankPage}>+ 빈 페이지 추가</button>
+                <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+                    <span className="badge">썸네일</span>
+                    <button className={`btn ${thumbPos==="bottom" ? "btn-primary":""}`} onClick={()=>setThumbPos("bottom")}>하단</button>
+                    <button className={`btn ${thumbPos==="left" ? "btn-primary":""}`} onClick={()=>setThumbPos("left")}>왼쪽</button>
+                    <button className="btn" onClick={addBlankPage}>+ 빈 페이지 추가</button>
+                </div>
             </div>
 
             {loading ? (
@@ -366,10 +332,33 @@ export default function DeckEditorPage() {
                     className="panel"
                     style={{
                         display: "grid",
-                        gridTemplateColumns: `${previewCol} 1fr`, // ★ 가로 넓게
+                        gridTemplateColumns: thumbPos === "left"
+                            ? `${leftBarWidth}px ${previewCol} 1fr`
+                            : `${previewCol} 1fr`,
                         gap: 16,
+                        alignItems: "start",
                     }}
                 >
+                    {/* 왼쪽 세로 스트립 */}
+                    {thumbPos === "left" && (
+                        <div>
+                            <EditorThumbnailStrip
+                                fileKey={fileKey ?? null}
+                                items={pageThumbs.map(t => ({ id: t.id, page: t.page }))}
+                                onReorder={reorderPages}
+                                onSelect={selectThumb}
+                                onAdd={addPage}
+                                onDuplicate={duplicatePage}
+                                onDelete={deletePage}
+                                orientation="vertical"
+                                thumbWidth={leftBarWidth - 24}
+                                thumbHeight={Math.round((leftBarWidth - 24) * 0.75)}
+                                maxExtent={Math.max(320, (typeof window !== "undefined" ? window.innerHeight : 900) - 240)}
+                            />
+                        </div>
+                    )}
+
+                    {/* 프리뷰 */}
                     <div>
                         <EditorPreviewPane
                             fileKey={fileKey}
@@ -381,6 +370,8 @@ export default function DeckEditorPage() {
                             aspectMode={aspectMode}
                         />
                     </div>
+
+                    {/* 오른쪽 편집기 (하단 스트립은 토글에 따라 노출) */}
                     <div>
                         <DeckEditor
                             roomCode={roomCode}
@@ -392,7 +383,8 @@ export default function DeckEditorPage() {
                             tempCleanup={null}
                             onItemsChange={onItemsChange}
                             onSelectPage={(p) => setPreviewPage(Math.max(0, p))}
-                            applyPatchRef={applyPatchRef}             // ★ 부모→에디터 패치 연결
+                            applyPatchRef={applyPatchRef}
+                            showBottomStrip={thumbPos !== "left"}
                         />
                     </div>
                 </div>

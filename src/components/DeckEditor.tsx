@@ -30,6 +30,7 @@ export default function DeckEditor({
                                        roomCode, deckId, totalPages, fileKey, onClose, onSaved,
                                        onItemsChange, onSelectPage, applyPatchRef, tempCleanup,
                                        enableRealtime = false,
+                                       showBottomStrip = true,
                                    }: {
     roomCode: string; deckId: string; totalPages: number | null; fileKey?: string | null;
     onClose: () => void; onSaved?: () => void;
@@ -38,6 +39,7 @@ export default function DeckEditor({
     applyPatchRef?: React.MutableRefObject<((fn: (cur: ManifestItem[]) => ManifestItem[]) => void) | null>;
     tempCleanup?: { roomId: string; deleteDeckRow?: boolean };
     enableRealtime?: boolean;
+    showBottomStrip?: boolean;
 }) {
     const [items, _setItems] = useState<ManifestItem[]>([]);
     const [loading, setLoading] = useState(true);
@@ -361,22 +363,33 @@ export default function DeckEditor({
                                 <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                                     <span className="badge">PAGE</span>
                                     <label>srcPage:
-                                        <input className="input" style={{ width: 90, marginLeft: 6 }} type="number" min={0}
-                                               value={(it as ManifestPageItem).srcPage}
-                                               onChange={(e) => {
-                                                   const v = Math.max(0, Number(e.target.value) || 0);
-                                                   setItems(arr => {
-                                                                     const next = arr.slice();
-                                                                     const qq = next[i] as QuizX;
-                                                                     qq.attachToSrcPage = v;
-                                                                     (qq as any).srcPage = v;        // ★ 프리뷰 매핑과 동기화
-                                                                     return next;
-                                                                   });
-                                               }} />
+                                        <input
+                                            className="input"
+                                            style={{ width: 90, marginLeft: 6 }}
+                                            type="number"
+                                            min={0}
+                                            value={(it as ManifestPageItem).srcPage}
+                                            onChange={(e) => {
+                                                const v = Math.max(0, Number(e.target.value) || 0);
+                                                setItems(arr => {
+                                                    const next = arr.slice();
+                                                    (next[i] as ManifestPageItem).srcPage = v;   // ✅ 페이지만 수정
+                                                    return next;
+                                                });
+                                            }}
+                                        />
                                     </label>
-                                    <button className="btn" onClick={() => { const p = q.attachToSrcPage ?? 0; setTargetPage(p); onSelectPage?.(p); }}>
-                                          이 페이지 미리보기
-                                        </button>
+
+                                    <button
+                                        className="btn"
+                                        onClick={() => {
+                                            const p = (it as ManifestPageItem).srcPage;      // ✅ 현재 페이지 번호로
+                                            setTargetPage(p);
+                                            onSelectPage?.(p);
+                                        }}
+                                    >
+                                        이 페이지 미리보기
+                                    </button>
                                 </div>
                             ) : (
                                 (() => {
@@ -479,18 +492,21 @@ export default function DeckEditor({
             </div>
 
             {/* 썸네일 스트립 */}
-            <EditorThumbnailStrip
-                fileKey={fileKey ?? null}
-                items={pageThumbs.map(t => ({ id: t.id, page: t.page }))}
-                onReorder={onReorderPages}
-                onSelect={onSelectThumb}
-                onAdd={onAddPage}
-                onDuplicate={onDuplicatePage}
-                onDelete={onDeletePage}
-                // ▼ 가로 스트립 + 고정 높이(스크롤)
-                orientation="horizontal"
-                maxExtent={height /* 또는 136 같은 고정 px 값 */ ?? 136}
-            />
+            {showBottomStrip && (
+                <EditorThumbnailStrip
+                    fileKey={fileKey ?? null}
+                    items={pageThumbs.map(t => ({ id: t.id, page: t.page }))}
+                    onReorder={onReorderPages}
+                    onSelect={onSelectThumb}
+                    onAdd={onAddPage}
+                    onDuplicate={onDuplicatePage}
+                    onDelete={onDeletePage}
+                    orientation="horizontal"
+                    thumbWidth={112}
+                    thumbHeight={84}   // ← 변경
+                    maxExtent={132}    // = 84 + 여백
+                />
+            )}
         </div>
     );
 }
