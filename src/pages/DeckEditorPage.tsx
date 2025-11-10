@@ -64,6 +64,16 @@ async function copyDirCrossBuckets(
     }
 }
 
+async function getActualSlidesCountByFileKey(fileKey: string): Promise<number> {
+    const prefix =
+        slidesPrefixOfPresentationsFile(fileKey) ??
+        slidesPrefixOfPresentationsFile(String(fileKey).replace(/^presentations\//i, "")) ??
+        null;
+    if (!prefix) return 0;
+    return await countWebps("slides", prefix).catch(() => 0);
+}
+
+
 /** 편집용 덱 생성: PDF 사본 + 기존 WEBP 복사(재변환 없음) */
 async function ensureEditingDeckFromFileKey_noConvert({ roomCode, fileKey }: { roomCode: string; fileKey: string }) {
     const { data: room, error: eRoom } = await supabase.from("rooms").select("id").eq("code", roomCode).maybeSingle();
@@ -158,7 +168,12 @@ export default function DeckEditorPage() {
                     if (cancel) return;
                     setDeckId(ensured.deckId);
                     setFileKey(ensured.file_key);
-                    setTotalPages(ensured.totalPages || 0);
+                    {
+                           let pages = ensured.totalPages || 0;
+                           if (!pages) pages = await getActualSlidesCountByFileKey(ensured.file_key);
+                           setTotalPages(pages);
+                           if (pages > 0) setCacheVer(v => v + 1);
+                         }
                     if ((ensured.totalPages || 0) > 0) setCacheVer((v) => v + 1);
                 } else if (sourceDeckId) {
                     const { data: src, error: eSrc } = await supabase
@@ -169,7 +184,12 @@ export default function DeckEditorPage() {
                     if (cancel) return;
                     setDeckId(ensured.deckId);
                     setFileKey(ensured.file_key);
-                    setTotalPages(ensured.totalPages || Number(src.file_pages || 0));
+                    {
+                           let pages = ensured.totalPages || Number(src.file_pages || 0);
+                           if (!pages) pages = await getActualSlidesCountByFileKey(ensured.file_key);
+                           setTotalPages(pages);
+                           if (pages > 0) setCacheVer(v => v + 1);
+                         }
                     if ((ensured.totalPages || 0) > 0) setCacheVer((v) => v + 1);
                 } else {
                     const { data: roomRow, error: eRoom } = await supabase
@@ -184,7 +204,17 @@ export default function DeckEditorPage() {
                     if (eDeck) throw eDeck;
                     if (!d?.file_key) throw new Error("deck file not found");
                     setFileKey(d.file_key);
-                    setTotalPages(Number(d.file_pages || 0));
+                     {
+                       let pages = Number(d.file_pages || 0);
+                       if (!pages) {
+                            pages = await getActualSlidesCountByFileKey(d.file_key);
+                             if (pages > 0) {
+                                   // DB도 최신화(선택 사항)
+                                       await supabase.from("decks").update({ file_pages: pages }).eq("id", pickedDeck);
+                                 }
+                           }
+                       setTotalPages(pages);
+                     }
                 }
 
                 try {
@@ -209,10 +239,7 @@ export default function DeckEditorPage() {
     }, [loading, items, totalPages]);
 
     // 프리뷰 계산
-    const previewBgPage = useMemo(() => {
-        const p = Number(previewPage || 0);
-        return p >= 1 && p <= (totalPages || 0) ? p : 0;
-    }, [previewPage, totalPages]);
+    const previewBgPage = useMemo(() => Number(previewPage || 0), [previewPage]);
 
     const overlaysForPreview: Overlay[] = useMemo(() => {
         const p = Number(previewPage ?? 0);

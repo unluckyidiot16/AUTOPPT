@@ -32,7 +32,7 @@ export default function EditorPreviewPane({
                 return;
             }
             try {
-                const url = await resolveWebpUrl(fileKey, page, { ttlSec: 1800, cachebuster: !!ver });
+                const url = await resolveWebpUrl(fileKey, page, { ttlSec: 600 });
                 if (!off) setBgUrl(url);
             } catch {
                 if (!off) setBgUrl(null);
