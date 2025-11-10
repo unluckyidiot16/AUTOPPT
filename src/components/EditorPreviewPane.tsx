@@ -24,6 +24,16 @@ export default function EditorPreviewPane({
     const [bgUrl, setBgUrl] = useState<string | null>(null);
     const ver = useMemo(() => String(version ?? ""), [version]);
 
+
+    const probe = (url: string) =>
+                new Promise<boolean>((resolve) => {
+                        const img = new Image();
+                        img.onload  = () => resolve(true);
+                        img.onerror = () => resolve(false);
+                        img.decoding = "async";
+                        img.src = url;
+                    });
+
     useEffect(() => {
         let off = false;
         (async () => {
@@ -32,8 +42,18 @@ export default function EditorPreviewPane({
                 return;
             }
             try {
-                const url = await resolveWebpUrl(fileKey, page, { ttlSec: 600 });
-                if (!off) setBgUrl(url);
+                // 후보: [요청 페이지, 0/1베이스 오차 보정, 첫 페이지]
+                                const cands = Array.from(
+                                        new Set([page, page - 1, page + 1, 1, 0].filter((n) => n >= 0))
+                                    );
+                                let ok: string | null = null;
+                                for (const p of cands) {
+                                        try {
+                                                const u = await resolveWebpUrl(fileKey, p, { ttlSec: 600 });
+                                                if (await probe(u)) { ok = u; break; }
+                                            } catch {}
+                                    }
+                                if (!off) setBgUrl(ok);
             } catch {
                 if (!off) setBgUrl(null);
             }

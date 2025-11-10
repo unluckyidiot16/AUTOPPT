@@ -272,8 +272,8 @@ export default function DeckEditorPage() {
     }, [items, previewPage]);
 
     // 상단 내비
-    const dec = () => setPreviewPage((p) => Math.max(1, (p ?? 1) - 1));
-    const inc = () => setPreviewPage((p) => Math.max(1, (p ?? 1) + 1));
+    const dec = () => setPreviewPage((p) => clampPage((p ?? 1) - 1));
+    const inc = () => setPreviewPage((p) => clampPage((p ?? 1) + 1));
 
     // “빈 페이지 추가” (부모에서 낙관적 추가, 자식 연결되면 패치 경유)
     const addBlankPage = () => {
@@ -417,7 +417,7 @@ export default function DeckEditorPage() {
                             onSaved={() => nav(`/teacher?room=${roomCode}&mode=setup`)}
                             tempCleanup={null}
                             onItemsChange={onItemsChange}
-                            onSelectPage={(p) => setPreviewPage(Math.max(0, p))}
+                            onSelectPage={(p) => setPreviewPage(clampPage(p))}
                             applyPatchRef={applyPatchRef}
                             showBottomStrip={thumbPos !== "left"}
                         />
