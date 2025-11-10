@@ -374,10 +374,9 @@ export default function DeckEditor({
                                                                    });
                                                }} />
                                     </label>
-                                    <button className="btn" onClick={() => const p = (it as ManifestPageItem).srcPage;
-                                        setTargetPage(p); onSelectPage?.(p);}>
-                                        이 페이지 미리보기
-                                    </button>
+                                    <button className="btn" onClick={() => { const p = q.attachToSrcPage ?? 0; setTargetPage(p); onSelectPage?.(p); }}>
+                                          이 페이지 미리보기
+                                        </button>
                                 </div>
                             ) : (
                                 (() => {
