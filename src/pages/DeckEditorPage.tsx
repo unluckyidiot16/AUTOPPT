@@ -141,7 +141,6 @@ export default function DeckEditorPage() {
     const previewCol = "minmax(560px, 1.1fr)";   // 프리뷰: 최소 560px
     const editorCol  = "minmax(420px, 0.9fr)";   // 편집기: 최소 420px
     
-    
     const [cacheVer, setCacheVer] = useState<number>(() => Math.floor(Date.now() / 60000));
     useEffect(() => {
         const t = setInterval(() => setCacheVer(Math.floor(Date.now() / 60000)), 30000);
@@ -153,6 +152,16 @@ export default function DeckEditorPage() {
     const maxPageFromItems = (list: ManifestItem[]) =>
         list.filter((it: any) => it?.type === "page").length;
 
+    const clampPage = (p: number | null | undefined) => {
+        const max = Math.max(1, Number(totalPages || 0));
+        const n = Math.max(1, Number(p || 1));
+        return Math.min(n, max);
+    };
+
+    useEffect(() => {
+        setPreviewPage(p => clampPage(p));
+    }, [totalPages]);
+    
     // 초기 로드
     useEffect(() => {
         let cancel = false;
@@ -294,7 +303,7 @@ export default function DeckEditorPage() {
     };
     const selectThumb = (id: string) => {
         const f = pageThumbs.find(t => t.id === id); if (!f) return;
-        setPreviewPage(f.page >= 0 ? f.page : 0);
+        setPreviewPage(clampPage(f.page));
     };
     const addPage = () => {
         if (!applyPatchRef.current) return;
@@ -321,7 +330,7 @@ export default function DeckEditorPage() {
                 {deckId ? <span className="badge">deck: {deckId.slice(0, 8)}…</span> : <span className="badge">deck: 없음</span>}
                 <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
                     <button className="btn" onClick={dec}>◀ Prev</button>
-                    <div className="badge">p.{previewPage ?? 0}</div>
+                    <div className="badge">p.{previewPage ?? 0} / {totalPages || 0}</div>
                     <button className="btn" onClick={inc}>Next ▶</button>
                 </div>
             </div>
