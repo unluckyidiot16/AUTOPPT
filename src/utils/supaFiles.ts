@@ -8,64 +8,67 @@ function stripBucketPrefix(key: string, bucket: string) {
 
 export function normalizeSlidesKey(key: string | null | undefined): string {
     if (!key) return "";
-    if (/^https?:\/\//i.test(key)) return key;       // 이미 절대 URL이면 그대로
+    if (/^https?:\/\//i.test(key)) return key; // 이미 절대 URL이면 그대로
     return String(key).replace(/^\/+/, "").replace(/^slides\/+/i, "");
 }
 
-/** presentations/* PDF → slides/* 디렉토리 프리픽스 계산 */
+/** presentations/* PDF → slides/* 디렉토리 프리픽스 계산 (기존 함수) */
 export function slidesPrefixOfPresentationsFile(fileKey?: string | null): string | null {
     if (!fileKey) return null;
     const rel = String(fileKey).replace(/^presentations\//i, "");
-    
+
     // 0) 이미 slides 경로가 들어온 경우
     let m = fileKey.match(/^slides\/(.+)$/i);
     if (m) return m[1];
 
-    // 1) rooms/<room>/decks/<deck>/slides-TS.pdf (presentations/ 접두 포함)
+    // rooms/<room>/decks/<deck>/slides-TS.pdf
     m = fileKey.match(/^presentations\/rooms\/([0-9a-f-]{36})\/decks\/([0-9a-f-]{36})\/slides-[^/]+\.pdf$/i);
     if (m) return `rooms/${m[1]}/decks/${m[2]}`;
 
-    // 1') rooms/<room>/decks/<deck>/slides-TS.pdf (접두 미포함)
     m = fileKey.match(/^rooms\/([0-9a-f-]{36})\/decks\/([0-9a-f-]{36})\/slides-[^/]+\.pdf$/i);
     if (m) return `rooms/${m[1]}/decks/${m[2]}`;
 
-    // 2) decks/<slug>/slides-TS.pdf (presentations/ 접두 포함)
+    // decks/<slug>/slides-TS.pdf
     m = fileKey.match(/^presentations\/decks\/([^/]+)\/slides-[^/]+\.pdf$/i);
     if (m) return `decks/${m[1]}`;
-
-    // 2') decks/<slug>/slides-TS.pdf (접두 미포함) ← ★ 추가
     m = fileKey.match(/^decks\/([^/]+)\/slides-[^/]+\.pdf$/i);
     if (m) return `decks/${m[1]}`;
 
-    // 3) 과거 형태: decks/<slug>/*.pdf (presentations/ 접두 포함)
+    // 과거 형태: decks/<slug>/*.pdf
     m = fileKey.match(/^presentations\/decks\/([^/]+)\/[^/]+\.pdf$/i);
     if (m) return `decks/${m[1]}`;
-
-    // 3') 과거 형태: decks/<slug>/*.pdf (접두 미포함) ← ★ 추가
     m = fileKey.match(/^decks\/([^/]+)\/[^/]+\.pdf$/i);
     if (m) return `decks/${m[1]}`;
 
     return null;
 }
 
+/** ✅ 어떤 형태의 키든 slides/* 프리픽스로 정규화 */
+function slidesPrefixOfAny(fileKey?: string | null): string | null {
+    if (!fileKey) return null;
+
+    // 이미 slides prefix 또는 디렉터리 자체가 넘어오는 경우
+    let m =
+        fileKey.match(/^(?:slides\/)?(rooms\/[0-9a-f-]{36}\/decks\/[0-9a-f-]{36})(?:\/\d+\.webp)?$/i) ||
+        fileKey.match(/^(?:slides\/)?(decks\/[^/]+)(?:\/\d+\.webp)?$/i);
+    if (m) return m[1];
+
+    // PDF 키라면 기존 규칙으로
+    return slidesPrefixOfPresentationsFile(fileKey);
+}
+
 /** decks.file_key(또는 presentations PDF key) + 페이지(1-base) → slides/* 내부 이미지 키 */
 export function resolveSlidesKey(fileKey: string, page: number): string | null {
-    const prefix = slidesPrefixOfPresentationsFile(fileKey);
-    if (prefix) return `${prefix}/${Math.max(0, page - 1)}.webp`;
-
-    // 최후: slides 프리픽스만 넘어온 경우 보호
-    let m = fileKey.match(/^decks\/([^/]+)\/?$/i);
-    if (m) return `decks/${m[1]}/${Math.max(0, page - 1)}.webp`;
-
-    return null;
+    const prefix = slidesPrefixOfAny(fileKey);
+    if (!prefix) return null;
+    return `${prefix}/${Math.max(0, page - 1)}.webp`;
 }
 
 /** slides/* 키 → 읽기 URL (Signed 우선, 실패 시 Public 폴백) */
 export async function signedSlidesUrl(slidesKey: string, ttlSec = 1800): Promise<string> {
     const key = normalizeSlidesKey(slidesKey);
     if (!key) return "";
-    // 절대 URL이면 그대로 반환 (스토리지 서명 시도 금지)
-    if (/^https?:\/\//i.test(key)) return key;
+    if (/^https?:\/\//i.test(key)) return key; // 절대 URL 그대로
 
     const { data } = await supabase.storage.from("slides").createSignedUrl(key, ttlSec);
     if (data?.signedUrl) return data.signedUrl;
@@ -73,7 +76,6 @@ export async function signedSlidesUrl(slidesKey: string, ttlSec = 1800): Promise
     const { data: pub } = supabase.storage.from("slides").getPublicUrl(key);
     return pub.publicUrl || "";
 }
-
 
 /** 파일키 + 페이지(1-base) → WebP 이미지 URL */
 export async function resolveWebpUrl(
@@ -88,7 +90,7 @@ export async function resolveWebpUrl(
     return opts?.cachebuster ? `${url}&_=${Date.now()}` : url;
 }
 
-/** ✅ presentations 버킷의 PDF 키 → 읽기 URL (Signed 우선, Public 폴백) */
+/** presentations 버킷의 PDF 키 → 읽기 URL (Signed 우선, Public 폴백) */
 export async function getPdfUrlFromKey(
     fileKey: string,
     opts?: { ttlSec?: number; cachebuster?: boolean },
