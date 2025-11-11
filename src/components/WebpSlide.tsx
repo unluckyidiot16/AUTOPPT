@@ -22,7 +22,7 @@ export default function WebpSlide({
         (async () => {
             if (!fileKey || !page || page < 1) { if (!off) setUrl(null); return; }
             // ✅ 1→0 변환 + slidesPrefix 계산 + Signed URL 생성
-            const u = await resolveWebpUrl(fileKey, page, { ttlSec: 1800, cachebuster: !!ver });
+            const u = await resolveWebpUrl(fileKey, page, { ttlSec: 600});
             if (!off) setUrl(u);
         })();
         return () => { off = true; };
