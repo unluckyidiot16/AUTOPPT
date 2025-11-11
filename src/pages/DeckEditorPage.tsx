@@ -269,7 +269,7 @@ export default function DeckEditorPage() {
                     y: Number(q.y ?? 0.1),
                     w: Number(q.w ?? 0.3),
                     h: Number(q.h ?? 0.2),
-                    question: q.question ?? q.payload?.question ?? "",
+                    question: q.prompt ?? q.question ?? q.payload?.question ?? "",
                     answer: q.answer ?? q.payload?.answer ?? "",
                     ...q.payload,
                 },
@@ -387,6 +387,7 @@ export default function DeckEditorPage() {
                             <EditorThumbnailStrip
                                 fileKey={fileKey ?? null}
                                 items={pageThumbs.map(t => ({ id: t.id, page: t.page }))}
+                                version={cacheVer}
                                 onReorder={reorderPages}
                                 onSelect={selectThumb}
                                 onAdd={addPage}
