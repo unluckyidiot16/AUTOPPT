@@ -12,6 +12,17 @@ import type { Overlay } from "../components/SlideStage";
 
 type RoomRow = { id: string; current_deck_id: string | null };
 
+// ✅ 쿼리 파라미터 정리 유틸
+function sanitizeParam(v?: string | null) {
+    // '?', '#' 이후 꼬리 제거 + 공백 트림
+    return String(v ?? "").split(/[?#]/)[0].trim();
+}
+function pickUuid(v?: string | null): string | null {
+    const s = sanitizeParam(v);
+    const m = s.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+    return m ? m[0] : null;
+}
+
 function withSlash(p: string) { return p.endsWith("/") ? p : `${p}/`; }
 
 /* ─ storage helpers (생략 없음) ─ */
@@ -120,10 +131,10 @@ export default function DeckEditorPage() {
     const { search } = useLocation();
     const qs = useMemo(() => new URLSearchParams(search), [search]);
 
-    const roomCode = qs.get("room") || "";
-    const deckFromQS = qs.get("deck");
-    const sourceDeckId = qs.get("src");
-    const sourceDeckKey = qs.get("srcKey");
+    const roomCode     = sanitizeParam(qs.get("room") || "");
+    const deckFromQS   = pickUuid(qs.get("deck"));
+    const sourceDeckId = pickUuid(qs.get("src"));
+    const sourceDeckKey= sanitizeParam(qs.get("srcKey"));
 
     const [zoom, setZoom] = useState<0.5 | 0.75 | 1 | 1.25 | 1.5>(1);
     const [aspectMode, setAspectMode] =
