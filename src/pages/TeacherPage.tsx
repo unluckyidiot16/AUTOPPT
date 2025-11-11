@@ -408,7 +408,7 @@ export default function TeacherPage() {
     }, [studentUrl]);
 
     const sendLinkToStudents = useCallback(async (url?: string) => {
-        const u = (url ?? quickLink || "").trim();
+        const u = (url ?? quickLink ?? "").trim();
         if (!u) { alert("보낼 링크를 입력하세요."); return; }
         if (!linkChan) { alert("실시간 연결이 아직 준비되지 않았습니다."); return; }
         await linkChan.send({ type: "broadcast", event: "link", payload: { url: u, by: "teacher", at: Date.now() } });
