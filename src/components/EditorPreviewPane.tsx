@@ -1,18 +1,33 @@
 // src/components/EditorPreviewPane.tsx
-import React, { useEffect, useMemo, useState } from "react";
+import React from "react";
 import { resolveWebpUrl } from "../utils/supaFiles";
 
-const __DBG = typeof window !== "undefined" && new URLSearchParams(location.search).has("debugSlides");
+const __DBG =
+    typeof window !== "undefined" &&
+    new URLSearchParams(location.search).has("debugSlides");
+
+type Overlay = { id: string; z?: number; type: string; payload?: any };
 
 type Props = {
-    fileKey: string;
-    page: number;                 // 1-base, 0 => 빈 캔버스
-    height?: number | string;     // 컨테이너 높이
-    version?: number | string;    // 캐시 버스터
-    overlays?: any[];             // 정규화 좌표(0..1)
+    fileKey: string;                // slides prefix or presentations key
+    page: number;                   // 1-based (0이면 빈 화면)
+    height?: number | string;       // 컨테이너 높이
+    version?: number | string;      // 캐시 버스터
+    overlays?: Overlay[];           // 정규좌표(0..1)
     zoom?: 0.5 | 0.75 | 1 | 1.25 | 1.5;
     aspectMode?: "auto" | "16:9" | "16:10" | "4:3" | "3:2" | "A4";
 };
+
+function aspectToRatio(mode: Props["aspectMode"]) {
+    switch (mode) {
+        case "16:9": return 16 / 9;
+        case "16:10": return 16 / 10;
+        case "4:3": return 4 / 3;
+        case "3:2": return 3 / 2;
+        case "A4": return 210 / 297; // w/h
+        default: return null;         // auto
+    }
+}
 
 export default function EditorPreviewPane({
                                               fileKey,
@@ -21,135 +36,144 @@ export default function EditorPreviewPane({
                                               version,
                                               overlays = [],
                                               zoom = 1,
-                                              aspectMode = "16:9",
+                                              aspectMode = "auto",
                                           }: Props) {
-    const [bgUrl, setBgUrl] = useState<string | null>(null);
-    const ver = useMemo(() => String(version ?? ""), [version]);
+    const [url, setUrl] = React.useState<string | null>(null);
+    const [err, setErr] = React.useState<string | null>(null);
+    const containerRef = React.useRef<HTMLDivElement>(null);
 
-    useEffect(() => {
-        let off = false;
+    // URL 준비(썸네일과 동일 경로: <img src>에 그대로 사용)
+    React.useEffect(() => {
+        let alive = true;
+        setUrl(null);
+        setErr(null);
+
+        const p = Number(page || 0);
+        if (!fileKey || !p) return;
+
         (async () => {
-            if (!fileKey || !page || page < 1) {
-                if (!off) setBgUrl(null);
-                return;
-            }
             try {
-                // 썸네일과 완전히 동일한 경로/함수 사용
-                const u = await resolveWebpUrl(fileKey, page, { ttlSec: 600, cachebuster: true });
-                if (__DBG) console.log("[preview] resolved", { fileKey, page, url: u });
-                if (!off) setBgUrl(u);
-            } catch (e) {
-                if (__DBG) console.warn("[preview] resolve error", e);
-                if (!off) setBgUrl(null);
+                const u = await resolveWebpUrl(fileKey, p, { cachebuster: true });
+                if (__DBG) console.log("[preview] resolved", { fileKey, page: p, url: u });
+                if (!alive) return;
+                setUrl(u);
+            } catch (e: any) {
+                if (!alive) return;
+                setErr(e?.message || "미리보기 URL 생성 실패");
             }
         })();
-        return () => { off = true; };
-    }, [fileKey, page, ver]);
 
-    const aspectStyle: React.CSSProperties =
-        aspectMode === "auto" ? { aspectRatio: "16 / 9" } :
-            aspectMode === "16:9" ? { aspectRatio: "16 / 9" } :
-                aspectMode === "16:10" ? { aspectRatio: "16 / 10" } :
-                    aspectMode === "4:3"   ? { aspectRatio: "4 / 3" }   :
-                        aspectMode === "3:2"   ? { aspectRatio: "3 / 2" }   :
-                            { aspectRatio: "210 / 297" }; // A4
+        return () => { alive = false; };
+    }, [fileKey, page, version]);
 
-    const stageWidth = aspectMode === "auto" ? "min(100%, 1180px)" : "min(100%, 1480px)";
+    const ratio = aspectToRatio(aspectMode);
+    const paddingTop = ratio ? `${100 / ratio}%` : undefined; // aspect-ratio 흉내
 
     return (
         <div
-            className="editor-preview-pane"
+            ref={containerRef}
+            className="panel"
             style={{
                 height,
-                display: "grid",
-                placeItems: "start center",
-                background: "rgba(2,6,23,.35)",
-                borderRadius: 12,
-                overflow: "auto",
-                padding: 8,
+                position: "relative",
+                overflow: "hidden",
+                background: "#0b1220",
             }}
         >
-            <div style={{ transform: `scale(${zoom})`, transformOrigin: "top center" }}>
-                <div
-                    style={{
-                        ...aspectStyle,
-                        width: stageWidth,
-                        position: "relative",
-                        backgroundColor: "rgba(15,23,42,.7)",
-                        borderRadius: 10,
-                        overflow: "hidden",
-                    }}
-                >
-                    {/* 배경 이미지 */}
-                    {bgUrl ? (
-                        <img
-                            src={bgUrl}
-                            alt={`p${page}`}
+            {/* 슬라이드 본문(이미지) */}
+            <div
+                style={{
+                    position: "relative",
+                    width: "100%",
+                    height: "100%",
+                    display: "grid",
+                    placeItems: "center",
+                }}
+            >
+                {/* 고정 비율 모드 */}
+                {ratio ? (
+                    <div style={{ position: "relative", width: "100%", maxWidth: "100%" }}>
+                        <div style={{ paddingTop }} />
+                        <div
                             style={{
                                 position: "absolute",
                                 inset: 0,
-                                width: "100%",
-                                height: "100%",
-                                objectFit: "contain",
+                                display: "grid",
+                                placeItems: "center",
+                            }}
+                        >
+                            {url ? (
+                                <img
+                                    src={url}
+                                    alt={`page-${page}`}
+                                    style={{
+                                        maxWidth: "100%",
+                                        maxHeight: "100%",
+                                        transform: `scale(${zoom})`,
+                                        transformOrigin: "center center",
+                                        userSelect: "none",
+                                    }}
+                                    draggable={false}
+                                />
+                            ) : (
+                                <div style={{ opacity: 0.6, fontSize: 12 }}>{err || "로딩 중…"}</div>
+                            )}
+                        </div>
+                    </div>
+                ) : (
+                    // auto 모드
+                    url ? (
+                        <img
+                            src={url}
+                            alt={`page-${page}`}
+                            style={{
+                                maxWidth: "100%",
+                                maxHeight: "100%",
+                                transform: `scale(${zoom})`,
+                                transformOrigin: "center center",
                                 userSelect: "none",
-                                pointerEvents: "none",
                             }}
                             draggable={false}
                         />
                     ) : (
-                        <div
-                            style={{
-                                position: "absolute", inset: 0,
-                                display: "grid", placeItems: "center",
-                                color: "#9CA3AF", fontSize: 14, opacity: 0.9,
-                            }}
-                        >
-                            {page > 0 ? "이미지를 불러오는 중…" : "빈 페이지"}
-                        </div>
-                    )}
-
-                    {/* (옵션) 디버그 라벨 */}
-                    {__DBG && (
-                        <div
-                            style={{
-                                position: "absolute", left: 8, top: 8,
-                                padding: "4px 8px", fontSize: 12, borderRadius: 6,
-                                background: "rgba(0,0,0,.55)", color: "#cbd5e1",
-                            }}
-                        >
-                            p.{page} {bgUrl ? "✅" : "❌"}
-                        </div>
-                    )}
-
-                    {/* 오버레이(퀴즈 등) */}
-                    {overlays
-                        .slice()
-                        .sort((a, b) => (a.z ?? 0) - (b.z ?? 0))
-                        .map((ov: any, idx: number) => {
-                            if (ov.type !== "quiz") return null;
-                            const { x = 0.1, y = 0.1, w = 0.3, h = 0.2, question = "" } = ov.payload ?? {};
-                            return (
-                                <div
-                                    key={ov.id ?? idx}
-                                    style={{
-                                        position: "absolute",
-                                        left: `${x * 100}%`, top: `${y * 100}%`,
-                                        width: `${w * 100}%`, height: `${h * 100}%`,
-                                        border: "2px dashed rgba(96,165,250,.9)",
-                                        background: "rgba(2,132,199,.08)",
-                                        borderRadius: 8,
-                                        display: "grid", placeItems: "center",
-                                        color: "#E5E7EB", fontSize: 12,
-                                        pointerEvents: "none",
-                                        zIndex: (ov.z ?? 0) + 100,
-                                    }}
-                                >
-                                    {question || "퀴즈"}
-                                </div>
-                            );
-                        })}
-                </div>
+                        <div style={{ opacity: 0.6, fontSize: 12 }}>{err || "로딩 중…"}</div>
+                    )
+                )}
             </div>
+
+            {/* 오버레이(정규좌표 0..1) */}
+            {Array.isArray(overlays) && overlays.map((ov) => {
+                const p = ov?.payload || {};
+                const left = `${(Number(p.x ?? 0) * 100).toFixed(4)}%`;
+                const top = `${(Number(p.y ?? 0) * 100).toFixed(4)}%`;
+                const width = `${(Number(p.w ?? 0) * 100).toFixed(4)}%`;
+                const height = `${(Number(p.h ?? 0) * 100).toFixed(4)}%`;
+                const zIndex = (ov.z ?? 0) + 100;
+
+                const question =
+                    p.prompt ?? p.question ?? p.title ?? p.label ?? "";
+
+                return (
+                    <div
+                        key={ov.id}
+                        style={{
+                            position: "absolute",
+                            left, top, width, height,
+                            border: "1px dashed rgba(255,255,255,0.5)",
+                            background: "rgba(255,255,255,0.04)",
+                            color: "#E5E7EB",
+                            fontSize: 12,
+                            display: "grid",
+                            placeItems: "center",
+                            zIndex,
+                            pointerEvents: "none",
+                        }}
+                        title={question}
+                    >
+                        {question || "퀴즈"}
+                    </div>
+                );
+            })}
         </div>
     );
 }
