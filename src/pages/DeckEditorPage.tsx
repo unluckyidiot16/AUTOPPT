@@ -9,6 +9,7 @@ import type { ManifestItem } from "../types/manifest";
 import { getManifestByRoom } from "../api/overrides";
 import { slidesPrefixOfAny } from "../utils/supaFiles";
 import type { Overlay } from "../components/SlideStage";
+import { safeRpc } from "../utils/supaRpc";
 
 type RoomRow = { id: string; current_deck_id: string | null };
 
@@ -90,32 +91,46 @@ async function getActualSlidesCountByFileKey(fileKey: string): Promise<number> {
 
 /** 편집용 덱 생성: PDF 사본 + 기존 WEBP 복사(재변환 없음) */
 // ⬇ 기존 ensureEditingDeckFromFileKey_noConvert 삭제 후 대체
-async function ensureEditingDeckFromSlidesOnly({ roomCode, fileKey }: { roomCode: string; fileKey: string }) {
-    // 1) room/덱 생성
-    const { data: room, error: eRoom } = await supabase.from("rooms").select("id").eq("code", roomCode).maybeSingle();
-    if (eRoom || !room?.id) throw eRoom ?? new Error("room not found");
-    const roomId = room.id as string;
-
+// 기존 함수 대체
+async function ensureEditingDeckFromSlidesOnly({
+                                                   roomCode,
+                                                   fileKey,
+                                               }: { roomCode: string; fileKey: string }) {
+    // 0) 목적지 데크부터 생성
     const ins = await supabase.from("decks").insert({ title: "Untitled (편집)" }).select("id").single();
     if (ins.error) throw ins.error;
     const deckId = ins.data.id as string;
 
-    // 2) 소스 슬라이드 prefix 계산(입력이 pdf든 slides든 OK)
+    // 1) roomId (있으면 사용, 없으면 라이브러리 모드)
+    let roomId: string | null = null;
+    if (roomCode) {
+        const { data: room } = await supabase.from("rooms").select("id").eq("code", roomCode).maybeSingle();
+        roomId = room?.id ?? null;
+    }
+
+    // 2) 소스 prefix 파싱
     const srcPrefix = slidesPrefixOfAny(fileKey);
-    const dstPrefix = `rooms/${roomId}/decks/${deckId}`;
     if (!srcPrefix) throw new Error("source slides not found");
 
-    // 3) slides -> slides 복사 (WebP만)
+    // 3) 목적지 prefix: roomId가 있으면 rooms/, 없으면 decks/로
+    const dstPrefix = roomId
+        ? `rooms/${roomId}/decks/${deckId}`
+        : `decks/${deckId}`;
+
+    // 4) WebP만 복사
     const srcCount = await countWebps("slides", srcPrefix).catch(() => 0);
     if (srcCount <= 0) throw new Error("no webp slides to copy");
     await copyDirSameBucket("slides", srcPrefix, dstPrefix, /\.webp$/i);
 
-    // 4) 페이지 수 기록, file_key는 **슬라이드 prefix**로 저장(프리뷰 전용)
+    // 5) 메타 업데이트
     const pages = await countWebps("slides", dstPrefix).catch(() => 0);
-    await supabase.from("decks").update({ file_key: dstPrefix, file_pages: pages || null }).eq("id", deckId);
+    await supabase.from("decks")
+        .update({ file_key: dstPrefix, file_pages: pages || null })
+        .eq("id", deckId);
 
     return { roomId, deckId, file_key: dstPrefix, totalPages: pages };
 }
+
 
 
 /* ───────────────────────────── DeckEditorPage ───────────────────────────── */
@@ -181,7 +196,9 @@ export default function DeckEditorPage() {
             setErr(null);
             setFileKey(null);
             try {
-                if (!roomCode && !deckFromQS && !sourceDeckId) throw new Error("room 또는 deck/src 파라미터가 필요합니다.");
+                if (!roomCode && !deckFromQS && !sourceDeckId && !sourceDeckKey) {
+                    throw new Error("room 또는 deck/src/srcKey 파라미터가 필요합니다.");
+                }
 
                 if (sourceDeckKey) {
                     const ensured = await ensureEditingDeckFromSlidesOnly({ roomCode, fileKey: sourceDeckKey });
@@ -200,8 +217,7 @@ export default function DeckEditorPage() {
                         .from("decks").select("file_key, file_pages").eq("id", sourceDeckId).maybeSingle();
                     if (eSrc) throw eSrc;
                     if (!src?.file_key) throw new Error("원본 덱에 파일이 없습니다.");
-                    const ensured = await ensureEditingDeckFromSlidesOnly({ roomCode, fileKey: sourceDeckKey });
-                    if (cancel) return;
+                    const ensured = await ensureEditingDeckFromSlidesOnly({ roomCode, fileKey: src.file_key });                    if (cancel) return;
                     setDeckId(ensured.deckId);
                     setFileKey(ensured.file_key);
                     {
@@ -408,15 +424,19 @@ export default function DeckEditorPage() {
 
                     {/* 프리뷰 */}
                     <div>
-                        <EditorPreviewPane
-                            fileKey={previewKey}
-                            page={previewBgPage}
-                            height="calc(100vh - 220px)"
-                            version={cacheVer}
-                            overlays={overlaysForPreview}
-                            zoom={zoom}
-                            aspectMode={aspectMode}
-                        />
+                        {totalPages > 0 && (previewBgPage ?? 0) >= 1 ? (
+                            <EditorPreviewPane
+                                fileKey={previewKey}
+                                page={previewBgPage}
+                                height="calc(100vh - 220px)"
+                                version={cacheVer}
+                                overlays={overlaysForPreview}
+                                zoom={zoom}
+                                aspectMode={aspectMode}
+                            />
+                        ) : (
+                            <div className="panel" style={{opacity:.7}}>슬라이드가 없습니다.</div>
+                        )}
                     </div>
 
                     {/* 오른쪽 편집기 (하단 스트립은 토글에 따라 노출) */}
