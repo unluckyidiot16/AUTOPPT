@@ -527,18 +527,25 @@ export default function DeckEditor({
                                                 <span className="badge">배치</span>
                                                 <label>
                                                     붙일 페이지:&nbsp;
-                                                    <select className="input" value={q.attachToSrcPage ?? 0}
-                                                            onChange={(e) => {
-                                                                   const v = Math.max(0, Number(e.target.value) || 0);
-                                                                   setItems(arr => {
-                                                                         const next = arr.slice();
-                                                                         const q = (next[i] as QuizX);
-                                                                         q.attachToSrcPage = v;
-                                                                         q.srcPage = v;              // ← 프리뷰에서도 동일 페이지를 보도록 동기화
-                                                                         return next;
-                                                                       });
-                                                                 }}
-                                                        {pagesList.map((p) => (<option key={`opt-${p}`} value={p}>{p === 0 ? "빈 화면(0)" : `p.${p}`}</option>))}
+                                                    <select
+                                                        className="input"
+                                                        value={q.attachToSrcPage ?? 0}
+                                                        onChange={(e) => {
+                                                            const v = Math.max(0, Number(e.target.value) || 0);
+                                                            setItems(arr => {
+                                                                const next = arr.slice();
+                                                                const qq = next[i] as QuizX;
+                                                                qq.attachToSrcPage = v;
+                                                                qq.srcPage = v; // 프리뷰 동기화
+                                                                return next;
+                                                            });
+                                                        }}
+                                                    >
+                                                        {pagesList.map((p) => (
+                                                            <option key={`opt-${p}`} value={p}>
+                                                                {p === 0 ? "빈 화면(0)" : `p.${p}`}
+                                                            </option>
+                                                        ))}
                                                     </select>
                                                 </label>
                                                 <label>
