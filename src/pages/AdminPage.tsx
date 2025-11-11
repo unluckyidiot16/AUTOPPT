@@ -1,10 +1,10 @@
-// src/pages/AdminDataHealth.tsx
+// src/pages/AdminPage.tsx (WebP only / no PDF deps)
 import React from "react";
 import { supabase } from "../supabaseClient";
-import { getPdfUrlFromKey } from "../utils/supaFiles";
 import { useNavigate } from "react-router-dom";
+import { slidesPrefixOfAny, signedSlidesUrl } from "../utils/supaFiles";
 
-/** 간단 도우미 */
+/** date helper */
 function fmtDate(s?: string | null) {
     if (!s) return "";
     const d = new Date(s);
@@ -12,14 +12,39 @@ function fmtDate(s?: string | null) {
     return d.toLocaleString();
 }
 
-type Room = { id: string; code: string; title?: string | null; created_at?: string };
+type Room = { id: string; code: string; title?: string | null; created_at?: string | null };
 type Deck = {
     id: string; title?: string | null; is_temp?: boolean | null; file_key?: string | null;
     file_pages?: number | null; created_at?: string | null; archived_at?: string | null;
 };
 type RoomDeck = { room_id: string; deck_id: string; slot: number };
 
-export default function AdminDataHealth() {
+// slides 트리 통째 삭제
+async function removeTree(bucket: string, prefix: string) {
+    const b = supabase.storage.from(bucket);
+    const root = prefix.replace(/\/+$/, "");
+    // BFS로 파일들 수집
+    const stack = [root];
+    const files: string[] = [];
+    while (stack.length) {
+        const cur = stack.pop()!;
+        const ls = await b.list(cur, { limit: 1000 });
+        if (ls.error) throw ls.error;
+        for (const ent of ls.data || []) {
+            const child = `${cur}/${ent.name}`;
+            const probe = await b.list(child, { limit: 1000 });
+            if (!probe.error && (probe.data?.length || 0) > 0) stack.push(child);
+            else files.push(child);
+        }
+    }
+    if (files.length) {
+        const rm = await b.remove(files);
+        if (rm.error) throw rm.error;
+    }
+    try { await b.remove([root]); } catch {}
+}
+
+export default function AdminPage() {
     const nav = useNavigate();
     const [rooms, setRooms] = React.useState<Room[]>([]);
     const [decks, setDecks] = React.useState<Deck[]>([]);
@@ -28,7 +53,6 @@ export default function AdminDataHealth() {
     const [msg, setMsg] = React.useState<string>("");
     const [filter, setFilter] = React.useState("");
     const [editRoomCode, setEditRoomCode] = React.useState(""); // 에디터 테스트용 room 코드
-
 
     // 계산 필드
     const roomMap = React.useMemo(() => new Map(rooms.map(r => [r.id, r])), [rooms]);
@@ -54,7 +78,8 @@ export default function AdminDataHealth() {
         try {
             const [{ data: r, error: er }, { data: d, error: ed }, { data: rd, error: erd }] =
                 await Promise.all([
-                    supabase.from("rooms_public").select("code,is_open").order("code"),
+                    // rooms_public 대신 rooms를 바로 읽어 안정화
+                    supabase.from("rooms").select("id,code,title,created_at").order("code"),
                     supabase.from("decks").select("id,title,is_temp,file_key,file_pages,created_at,archived_at").order("created_at", { ascending: false }).limit(500),
                     supabase.from("room_decks").select("room_id,deck_id,slot").limit(2000),
                 ]);
@@ -100,7 +125,6 @@ export default function AdminDataHealth() {
 
     async function archiveDeck(deckId: string) {
         if (!confirm("덱을 아카이브 처리할까요? (DB에 남고 숨김 상태)")) return;
-        // RPC 없을 수 있으니 직접 업데이트
         const { error } = await supabase.from("decks")
             .update({ archived_at: new Date().toISOString() })
             .eq("id", deckId);
@@ -110,24 +134,29 @@ export default function AdminDataHealth() {
 
     async function purgeDeck(deck: Deck) {
         if (!confirm("덱을 영구 삭제할까요? (room_decks 링크가 있으면 먼저 지워야 할 수 있어요)")) return;
-        // 스토리지 파일 제거 시도 → DB 삭제
         try {
+            // slides 파일 제거 (WebP 전용)
             if (deck.file_key) {
-                const rm = await supabase.storage.from("presentations").remove([deck.file_key]);
-                if (rm.error) console.warn("storage.remove error:", rm.error.message);
+                const prefix = slidesPrefixOfAny(deck.file_key);
+                if (prefix) await removeTree("slides", prefix);
             }
-        } catch {}
-        // room_decks 링크 제거(혹시 FK가 없을 때 대비)
+        } catch (e) {
+            console.warn("slides remove error:", e);
+        }
+        // 링크 제거 후 덱 삭제
         await supabase.from("room_decks").delete().eq("deck_id", deck.id);
         const { error } = await supabase.from("decks").delete().eq("id", deck.id);
         if (error) { alert(error.message); return; }
         await refresh();
     }
 
+    // WebP 0.webp 링크 열기
     async function openSigned(fileKey?: string | null) {
         if (!fileKey) return;
         try {
-            const url = await getPdfUrlFromKey(fileKey, { ttlSec: 1800 });
+            const prefix = slidesPrefixOfAny(fileKey);
+            if (!prefix) throw new Error("잘못된 file_key");
+            const url = await signedSlidesUrl(`${prefix}/0.webp`, 1800);
             window.open(url, "_blank");
         } catch (e: any) {
             alert(e?.message || "서명 URL 생성 실패");
@@ -147,8 +176,8 @@ export default function AdminDataHealth() {
         const k = filter.trim().toLowerCase();
         if (!k) return rooms;
         return rooms.filter(r =>
-            r.code.toLowerCase().includes(k) ||
-            (r.name || "").toLowerCase().includes(k) ||
+            (r.code || "").toLowerCase().includes(k) ||
+            (r.title || "").toLowerCase().includes(k) ||
             (r.id || "").includes(k)
         );
     }, [rooms, filter]);
@@ -180,7 +209,7 @@ export default function AdminDataHealth() {
             <div className="flex flex-wrap gap-2 items-center mb-3">
                 <input
                     className="px-3 py-2 border rounded w-[280px]"
-                    placeholder="검색(방 코드/이름, 덱 제목/파일키)…"
+                    placeholder="검색(방 코드/제목, 덱 제목/파일키)…"
                     value={filter}
                     onChange={(e) => setFilter(e.target.value)}
                 />
@@ -223,7 +252,7 @@ export default function AdminDataHealth() {
                                                         <div className="flex gap-2">
                                                             {dk.file_key && (
                                                                 <button className="px-2 py-1 border rounded text-xs"
-                                                                        onClick={() => openSigned(dk.file_key!)}>링크</button>
+                                                                        onClick={() => openSigned(dk.file_key!)}>미리보기</button>
                                                             )}
                                                             <button className="px-2 py-1 border rounded text-xs"
                                                                     onClick={() => dk.file_key ? openEditByKey(dk.file_key) : openEditByDeck(dk.id)}>편집</button>
@@ -256,10 +285,12 @@ export default function AdminDataHealth() {
                         <div key={d.id} style={{ border: "1px solid #e5e7eb", borderRadius: 10, padding: 12 }}>
                             <div className="text-sm font-medium truncate mb-1">{d.title || "(untitled)"}</div>
                             <div className="text-xs opacity-70 mb-1"><code>{d.id}</code></div>
-                            <div className="text-xs opacity-70 mb-1">{d.is_temp ? "is_temp · " : ""}{d.archived_at ? "archived · " : ""}{fmtDate(d.created_at)}</div>
+                            <div className="text-xs opacity-70 mb-1">
+                                {d.is_temp ? "is_temp · " : ""}{d.archived_at ? "archived · " : ""}{fmtDate(d.created_at)}
+                            </div>
                             <div className="text-xs break-all mb-2">{d.file_key || "(file_key 없음)"}</div>
                             <div className="flex flex-wrap gap-2">
-                                {d.file_key && <button className="px-2 py-1 border rounded text-xs" onClick={() => openSigned(d.file_key!)}>링크</button>}
+                                {d.file_key && <button className="px-2 py-1 border rounded text-xs" onClick={() => openSigned(d.file_key!)}>미리보기</button>}
                                 {d.file_key
                                     ? <button className="px-2 py-1 border rounded text-xs" onClick={() => openEditByKey(d.file_key!)}>편집</button>
                                     : <button className="px-2 py-1 border rounded text-xs" onClick={() => openEditByDeck(d.id)}>편집</button>}
@@ -301,7 +332,7 @@ export default function AdminDataHealth() {
                                 <div className="text-xs opacity-70">is_temp:{String(!!d.is_temp)} · archived:{String(!!d.archived_at)} · {fmtDate(d.created_at)}</div>
                                 <div className="text-xs break-all mb-2">{d.file_key || "(no file_key)"}</div>
                                 <div className="flex gap-2">
-                                    {d.file_key && <button className="px-2 py-1 border rounded text-xs" onClick={() => openSigned(d.file_key!)}>링크</button>}
+                                    {d.file_key && <button className="px-2 py-1 border rounded text-xs" onClick={() => openSigned(d.file_key!)}>미리보기</button>}
                                     <button className="px-2 py-1 border rounded text-xs" onClick={() => archiveDeck(d.id)}>아카이브</button>
                                     <button className="px-2 py-1 border rounded text-xs" onClick={() => purgeDeck(d)}>영구삭제</button>
                                 </div>
