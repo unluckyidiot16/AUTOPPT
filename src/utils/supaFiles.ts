@@ -1,139 +1,178 @@
 // src/utils/supaFiles.ts
 import { supabase } from "../supabaseClient";
 
-/** 내부 유틸: 버킷 prefix 제거 */
+/* ============================================================================
+ * DEBUG 스위치 (주소창에 ?debugSlides=1 붙이면 상세 로그)
+ * ==========================================================================*/
+const DEBUG = typeof window !== "undefined" && /(?:\?|&)debugSlides=1\b/i.test(window.location.search);
+function dlog(...args: any[]) { if (DEBUG) console.debug("[slides]", ...args); }
+
+/* ------------------------------- small utils ------------------------------ */
 function stripBucketPrefix(key: string, bucket: string) {
     return key.replace(new RegExp(`^${bucket}/`, "i"), "");
 }
-
 export function normalizeSlidesKey(key: string | null | undefined): string {
     if (!key) return "";
-    if (/^https?:\/\//i.test(key)) return key; // 이미 절대 URL이면 그대로
+    if (/^https?:\/\//i.test(key)) return key;
     return String(key).replace(/^\/+/, "").replace(/^slides\/+/i, "");
 }
+function withSlash(p: string) { return p.endsWith("/") ? p : `${p}/`; }
 
-/** presentations/* PDF → slides/* 디렉토리 프리픽스 계산 (기존 함수) */
-export function slidesPrefixOfPresentationsFile(fileKey?: string | null): string | null {
-    if (!fileKey) return null;
-    const rel = String(fileKey).replace(/^presentations\//i, "");
-
-    // 0) 이미 slides 경로가 들어온 경우
-    let m = fileKey.match(/^slides\/(.+)$/i);
-    if (m) return m[1];
-
-    // rooms/<room>/decks/<deck>/slides-TS.pdf
-    m = fileKey.match(/^presentations\/rooms\/([0-9a-f-]{36})\/decks\/([0-9a-f-]{36})\/slides-[^/]+\.pdf$/i);
-    if (m) return `rooms/${m[1]}/decks/${m[2]}`;
-
-    m = fileKey.match(/^rooms\/([0-9a-f-]{36})\/decks\/([0-9a-f-]{36})\/slides-[^/]+\.pdf$/i);
-    if (m) return `rooms/${m[1]}/decks/${m[2]}`;
-
-    // decks/<slug>/slides-TS.pdf
-    m = fileKey.match(/^presentations\/decks\/([^/]+)\/slides-[^/]+\.pdf$/i);
-    if (m) return `decks/${m[1]}`;
-    m = fileKey.match(/^decks\/([^/]+)\/slides-[^/]+\.pdf$/i);
-    if (m) return `decks/${m[1]}`;
+/* ------------------------- pdf key → room/deck/ts ------------------------- */
+type PdfCtx = { roomId?: string | null; deckId?: string | null; ts?: string | null; raw: string };
+function parsePdfCtx(fileKey?: string | null): PdfCtx {
+    const raw = String(fileKey ?? "");
+    const a = raw.match(/rooms\/([0-9a-f-]{36})\/decks\/([0-9a-f-]{36})\/slides-(\d+)\.pdf$/i);
+    if (a) return { roomId: a[1], deckId: a[2], ts: a[3], raw };
+    const b = raw.match(/decks\/([^/]+)\/slides-(\d+)\.pdf$/i);
+    if (b) return { roomId: null, deckId: b[1], ts: b[2], raw };
 
     // 과거 형태: decks/<slug>/*.pdf
-    m = fileKey.match(/^presentations\/decks\/([^/]+)\/[^/]+\.pdf$/i);
-    if (m) return `decks/${m[1]}`;
-    m = fileKey.match(/^decks\/([^/]+)\/[^/]+\.pdf$/i);
-    if (m) return `decks/${m[1]}`;
+    const c = raw.match(/decks\/([^/]+)\/[^/]+\.pdf$/i);
+    if (c) return { roomId: null, deckId: c[1], ts: null, raw };
 
-    return null;
+    return { roomId: null, deckId: null, ts: null, raw };
 }
 
-/** ✅ 어떤 형태의 키든 slides/* 프리픽스로 정규화 */
-function slidesPrefixOfAny(fileKey?: string | null): string | null {
-    if (!fileKey) return null;
+/* ---------------------------- prefix candidates --------------------------- */
+// 주 경로 규칙: rooms/<roomId>/decks/<deckId>   (+ /slides-<ts> 하위)
+function baseCandidatesFromCtx(ctx: PdfCtx): string[] {
+    const out: string[] = [];
 
-    // 이미 slides prefix 또는 디렉터리 자체가 넘어오는 경우
-    let m =
+    // 표준
+    if (ctx.roomId && ctx.deckId) out.push(`rooms/${ctx.roomId}/decks/${ctx.deckId}`);
+
+    // 과거/오류 저장 보정: rooms/ 빠진 케이스
+    if (ctx.roomId && ctx.deckId) out.push(`${ctx.roomId}/decks/${ctx.deckId}`);
+
+    // slug/uuid만 있는 케이스 (라이브러리형)
+    if (ctx.deckId) out.push(`decks/${ctx.deckId}`);
+
+    // 중첩 decks/ 가 들어간 실수 케이스까지 (보수적으로)
+    if (ctx.roomId && ctx.deckId) out.push(`rooms/${ctx.roomId}/decks/${ctx.deckId}/decks`);
+
+    // 중복 제거
+    return Array.from(new Set(out));
+}
+
+function slidesCandidatePrefixes(fileKey?: string | null): string[] {
+    if (!fileKey) return [];
+    // 이미 slides/* 디렉터리가 들어온 경우
+    let m: RegExpMatchArray | null =
         fileKey.match(/^(?:slides\/)?(rooms\/[0-9a-f-]{36}\/decks\/[0-9a-f-]{36})(?:\/\d+\.webp)?$/i) ||
-        fileKey.match(/^(?:slides\/)?(decks\/[^/]+)(?:\/\d+\.webp)?$/i);
-    if (m) return m[1];
+        fileKey.match(/^(?:slides\/)?(decks\/[^/]+)(?:\/\d+\.webp)?$/i) ||
+        fileKey.match(/^(?:slides\/)?([0-9a-f-]{36}\/decks\/[0-9a-f-]{36})(?:\/\d+\.webp)?$/i);
+    if (m) return [m[1]];
 
-    // PDF 키라면 기존 규칙으로
-    return slidesPrefixOfPresentationsFile(fileKey);
+    // PDF 키에서 파싱
+    const ctx = parsePdfCtx(fileKey);
+    const bases = baseCandidatesFromCtx(ctx);
+    // TS 변형 포함
+    const tsBases = ctx.ts ? bases.map(b => `${b}/slides-${ctx.ts}`) : [];
+    const out = [...bases, ...tsBases];
+    dlog("candidates(from key)", { fileKey, ctx, bases: out });
+    return out;
 }
 
-/** PDF 키에서 slides-타임스탬프 추출 (있으면) */
-function slidesTimestampFromPdfKey(fileKey?: string | null): string | null {
-      const m = String(fileKey ?? "").match(/slides-(\d+)\.pdf$/i);
-      return m ? m[1] : null;
-    }
-
-/** 후보 프리픽스: (1) <deck> 루트, (2) <deck>/slides-TS (있으면) */
-    function slidesCandidatePrefixes(fileKey?: string | null): string[] {
-          const base = slidesPrefixOfAny(fileKey);
-          if (!base) return [];
-          const ts = slidesTimestampFromPdfKey(fileKey);
-          return ts ? [base, `${base}/slides-${ts}`] : [base];
-        }
-
-/** decks.file_key(또는 presentations PDF key) + 페이지(1-base) → slides/* 내부 이미지 키 */
-export function resolveSlidesKey(fileKey: string, page: number): string | null {
-    const prefix = slidesPrefixOfAny(fileKey);
-    if (!prefix) return null;
-    return `${prefix}/${Math.max(0, page - 1)}.webp`;
+/* -------------------------- storage existence check ----------------------- */
+// 파일 존재 확인(디렉토리 list로 확인 → CORS/브라우저 preload 의존 X)
+async function existsInSlides(key: string): Promise<boolean> {
+    const k = normalizeSlidesKey(key);
+    const dir = k.replace(/\/[^/]+$/, "");
+    const name = k.split("/").pop()!;
+    const { data, error } = await supabase.storage.from("slides").list(withSlash(dir), { limit: 1, search: name });
+    if (DEBUG && error) dlog("exists:list error", { key: k, error });
+    return !!(data && data.length > 0);
 }
 
-/** slides/* 키 → 읽기 URL (Signed 우선, 실패 시 Public 폴백) */
+/* ------------------------------- URL helpers ------------------------------ */
 export async function signedSlidesUrl(slidesKey: string, ttlSec = 1800): Promise<string> {
     const key = normalizeSlidesKey(slidesKey);
     if (!key) return "";
-    if (/^https?:\/\//i.test(key)) return key; // 절대 URL 그대로
+    if (/^https?:\/\//i.test(key)) return key;
 
-    const { data } = await supabase.storage.from("slides").createSignedUrl(key, ttlSec);
-    if (data?.signedUrl) return data.signedUrl;
+    // 없으면 URL 안 돌려줌
+    const ok = await existsInSlides(key);
+    if (!ok) return "";
 
+    // Public 버킷이라도 signed 우선 (만료/권한 일관성)
+    try {
+        const { data } = await supabase.storage.from("slides").createSignedUrl(key, ttlSec);
+        if (data?.signedUrl) return data.signedUrl;
+    } catch {}
     const { data: pub } = supabase.storage.from("slides").getPublicUrl(key);
     return pub.publicUrl || "";
 }
 
-/** 파일키 + 페이지(1-base) → WebP 이미지 URL */
+/* -------------------------- main resolution function ---------------------- */
+/** 파일키 + 페이지(1-base) → WebP URL (존재검사 + 후보 탐색 + 상세로그) */
 export async function resolveWebpUrl(
     fileKey: string,
     page: number,
     opts?: { ttlSec?: number; cachebuster?: boolean },
 ): Promise<string | null> {
+    const n = Math.max(0, page - 1);
 
-    // 이미 slides 경로의 .webp가 들어온 경우 그대로 서명 URL 반환
+    // 이미 slides/*.webp가 직접 들어오면 그대로 처리
     if (/^slides\/.+\.webp$/i.test(fileKey)) {
         const url = await signedSlidesUrl(normalizeSlidesKey(fileKey), opts?.ttlSec ?? 1800);
+        dlog("direct-webp", { fileKey, page, url });
         return url ? (opts?.cachebuster ? `${url}&_=${Date.now()}` : url) : null;
     }
 
     const prefixes = slidesCandidatePrefixes(fileKey);
-    if (!prefixes.length) return null;
+    const tried: Array<{ key: string; exists: boolean; url: string }> = [];
 
-    const n = Math.max(0, page - 1); // 1-base → 0-base
     for (const p of prefixes) {
         const key = `${p}/${n}.webp`;
+        const exists = await existsInSlides(key);
+        if (!exists) { tried.push({ key, exists, url: "" }); continue; }
+
         const url = await signedSlidesUrl(key, opts?.ttlSec ?? 1800);
+        tried.push({ key, exists: true, url });
         if (url) {
+            dlog("RESOLVED ✅", { fileKey, page, chosen: key, url, tried });
             return opts?.cachebuster ? `${url}&_=${Date.now()}` : url;
         }
     }
+
+    dlog("RESOLVE FAILED ❌", { fileKey, page, tried });
     return null;
 }
 
-/** presentations 버킷의 PDF 키 → 읽기 URL (Signed 우선, Public 폴백) */
+/* --------------------------- (참고) PDF URL helper ------------------------ */
 export async function getPdfUrlFromKey(
     fileKey: string,
     opts?: { ttlSec?: number; cachebuster?: boolean },
 ): Promise<string | null> {
     const rel = stripBucketPrefix(fileKey, "presentations");
     const b = supabase.storage.from("presentations");
-
     try {
         const { data } = await b.createSignedUrl(rel, opts?.ttlSec ?? 1800);
         if (data?.signedUrl) return opts?.cachebuster ? `${data.signedUrl}&_=${Date.now()}` : data.signedUrl;
     } catch {}
-    try {
-        const { data } = await b.getPublicUrl(rel);
-        if (data?.publicUrl) return opts?.cachebuster ? `${data.publicUrl}&_=${Date.now()}` : data.publicUrl;
-    } catch {}
+    const { data } = await b.getPublicUrl(rel);
+    if (data?.publicUrl) return opts?.cachebuster ? `${data.publicUrl}&_=${Date.now()}` : data.publicUrl;
+    return null;
+}
 
+/* ----------------------------- (옵션) exporter ---------------------------- */
+export function slidesPrefixOfPresentationsFile(fileKey?: string | null): string | null {
+    if (!fileKey) return null;
+    const rel = String(fileKey).replace(/^presentations\//i, "");
+    let m = fileKey.match(/^slides\/(.+)$/i);
+    if (m) return m[1];
+    m = fileKey.match(/^presentations\/rooms\/([0-9a-f-]{36})\/decks\/([0-9a-f-]{36})\/slides-[^/]+\.pdf$/i);
+    if (m) return `rooms/${m[1]}/decks/${m[2]}`;
+    m = fileKey.match(/^rooms\/([0-9a-f-]{36})\/decks\/([0-9a-f-]{36})\/slides-[^/]+\.pdf$/i);
+    if (m) return `rooms/${m[1]}/decks/${m[2]}`;
+    m = fileKey.match(/^presentations\/decks\/([^/]+)\/slides-[^/]+\.pdf$/i);
+    if (m) return `decks/${m[1]}`;
+    m = fileKey.match(/^decks\/([^/]+)\/slides-[^/]+\.pdf$/i);
+    if (m) return `decks/${m[1]}`;
+    m = fileKey.match(/^presentations\/decks\/([^/]+)\/[^/]+\.pdf$/i);
+    if (m) return `decks/${m[1]}`;
+    m = fileKey.match(/^decks\/([^/]+)\/[^/]+\.pdf$/i);
+    if (m) return `decks/${m[1]}`;
     return null;
 }
