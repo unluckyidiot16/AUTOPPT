@@ -1,16 +1,6 @@
 // src/utils/supaFiles.ts
 import { supabase } from "../supabaseClient";
 
-async function probeImage(url: string): Promise<boolean> {
-      return new Promise((resolve) => {
-            const img = new Image();
-            img.onload = () => resolve(true);
-            img.onerror = () => resolve(false);
-            img.decoding = "async";
-            img.src = url;
-          });
-    }
-
 /** 내부 유틸: 버킷 prefix 제거 */
 function stripBucketPrefix(key: string, bucket: string) {
     return key.replace(new RegExp(`^${bucket}/`, "i"), "");
@@ -107,16 +97,25 @@ export async function resolveWebpUrl(
     page: number,
     opts?: { ttlSec?: number; cachebuster?: boolean },
 ): Promise<string | null> {
+
+    // 이미 slides 경로의 .webp가 들어온 경우 그대로 서명 URL 반환
+    if (/^slides\/.+\.webp$/i.test(fileKey)) {
+        const url = await signedSlidesUrl(normalizeSlidesKey(fileKey), opts?.ttlSec ?? 1800);
+        return url ? (opts?.cachebuster ? `${url}&_=${Date.now()}` : url) : null;
+    }
+
     const prefixes = slidesCandidatePrefixes(fileKey);
-        if (!prefixes.length) return null;
-        const n = Math.max(0, page - 1); // 1-base → 0-base
-        for (const p of prefixes) {
-                const key = `${p}/${n}.webp`;
-                const url = await signedSlidesUrl(key, opts?.ttlSec ?? 1800);
-                if (!url) continue;
-                if (await probeImage(url)) return opts?.cachebuster ? `${url}&_=${Date.now()}` : url;
-            }
-        return null;
+    if (!prefixes.length) return null;
+
+    const n = Math.max(0, page - 1); // 1-base → 0-base
+    for (const p of prefixes) {
+        const key = `${p}/${n}.webp`;
+        const url = await signedSlidesUrl(key, opts?.ttlSec ?? 1800);
+        if (url) {
+            return opts?.cachebuster ? `${url}&_=${Date.now()}` : url;
+        }
+    }
+    return null;
 }
 
 /** presentations 버킷의 PDF 키 → 읽기 URL (Signed 우선, Public 폴백) */

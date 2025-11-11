@@ -27,10 +27,12 @@ export default function EditorPreviewPane({
     useEffect(() => {
         let off = false;
         (async () => {
-            if (!fileKey || !page || page < 1) { if (!off) setBgUrl(null); return; }
+            if (!fileKey || !page || page < 1) {
+                if (!off) setBgUrl(null);
+                return;
+            }
             try {
-                // 썸네일과 동일 전략: 바로 URL 사용 (프리로드 제거)
-                const u = await resolveWebpUrl(fileKey, page, { ttlSec: 600 });
+                const u = await resolveWebpUrl(fileKey, page, { ttlSec: 600, cachebuster: true });
                 if (!off) setBgUrl(u);
             } catch {
                 if (!off) setBgUrl(null);
@@ -39,16 +41,14 @@ export default function EditorPreviewPane({
         return () => { off = true; };
     }, [fileKey, page, ver]);
 
-    // 비율 매핑
     const aspectStyle: React.CSSProperties =
         aspectMode === "auto" ? {} :
             aspectMode === "16:9"  ? { aspectRatio: "16 / 9" }  :
                 aspectMode === "16:10" ? { aspectRatio: "16 / 10" } :
                     aspectMode === "4:3"   ? { aspectRatio: "4 / 3" }   :
                         aspectMode === "3:2"   ? { aspectRatio: "3 / 2" }   :
-                            { aspectRatio: "210 / 297" }; // A4 세로
+                            { aspectRatio: "210 / 297" }; // A4
 
-    // 가로 긴 자료 기준: 더 넓은 폭 허용
     const stageWidth = aspectMode === "auto" ? "min(100%, 1180px)" : "min(100%, 1480px)";
 
     return (
@@ -64,23 +64,34 @@ export default function EditorPreviewPane({
                 padding: 8,
             }}
         >
-            {/* 줌 스케일 */}
             <div style={{ transform: `scale(${zoom})`, transformOrigin: "top center" }}>
-                {/* 스테이지(비율+가로폭 기반) */}
                 <div
                     style={{
                         ...aspectStyle,
                         width: stageWidth,
                         position: "relative",
                         backgroundColor: "rgba(15,23,42,.7)",
-                        backgroundImage: bgUrl ? `url(${bgUrl})` : "none",
-                        backgroundSize: "contain",
-                        backgroundRepeat: "no-repeat",
-                        backgroundPosition: "center",
                         borderRadius: 10,
+                        overflow: "hidden",
                     }}
                 >
-                    {!bgUrl && (
+                    {/* 배경 이미지는 <img>로 직접 렌더 (배경 CSS 대신) */}
+                    {bgUrl ? (
+                        <img
+                            src={bgUrl}
+                            alt={`p${page}`}
+                            style={{
+                                position: "absolute",
+                                inset: 0,
+                                width: "100%",
+                                height: "100%",
+                                objectFit: "contain",
+                                userSelect: "none",
+                                pointerEvents: "none",
+                            }}
+                            draggable={false}
+                        />
+                    ) : (
                         <div
                             style={{
                                 position: "absolute", inset: 0,
