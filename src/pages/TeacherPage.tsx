@@ -1,4 +1,4 @@
-// src/pages/TeacherPage.tsx
+// src/pages/TeacherPage.tsx (WebP-only)
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { supabase } from "../supabaseClient";
@@ -9,7 +9,7 @@ import PresenceSidebar from "../components/PresenceSidebar";
 import { useArrowNav } from "../hooks/useArrowNav";
 import { getBasePath } from "../utils/getBasePath";
 import SlideStage, { type Overlay } from "../components/SlideStage";
-import { slidesPrefixOfPresentationsFile, signedSlidesUrl, getPdfUrlFromKey } from "../utils/supaFiles";
+import { slidesPrefixOfAny, signedSlidesUrl } from "../utils/supaFiles";
 
 type RpcOverlay = { id: string; z: number; type: string; payload: any };
 type RpcSlide = { index: number; kind: string; material_id: string | null; page_index: number | null; image_key: string | null; overlays: RpcOverlay[]; };
@@ -23,15 +23,16 @@ const DBG = {
     err:  (...a: any[]) => DEBUG && console.log("%c[AUTOPPT:ERR]", "color:#dc2626", ...a),
 };
 
-
-
 async function rpc<T = any>(fn: string, args?: Record<string, any>) {
     const { data, error } = await supabase.rpc(fn, args ?? {});
     if (error) { DBG.err("rpc error:", fn, error.message || error); throw error; }
     return data as T;
 }
 
-function useQS() { const { search } = useLocation(); return useMemo(() => new URLSearchParams(search), [search]); }
+function useQS() {
+    const { search } = useLocation();
+    return useMemo(() => new URLSearchParams(search), [search]);
+}
 
 export default function TeacherPage() {
     const nav = useNavigate();
@@ -54,22 +55,16 @@ export default function TeacherPage() {
         }
     }, [roomCode, qs, nav]);
 
-    // TeacherPage.tsx 안
     const ensureRoomId = useCallback(async (): Promise<string> => {
         if (roomId) return roomId;
         if (!roomCode) throw new Error("ROOM_NOT_FOUND");
-
-        // 1) 조회
         const got = await supabase.from("rooms").select("id").eq("code", roomCode).maybeSingle();
         if (got?.data?.id) { setRoomId(got.data.id); return got.data.id; }
-
-        // 2) 없으면 생성
         const ins = await supabase.from("rooms").insert({ code: roomCode, title: roomCode }).select("id").maybeSingle();
         if (!ins?.data?.id) throw new Error("ROOM_CREATE_FAILED");
         setRoomId(ins.data.id);
         return ins.data.id;
     }, [roomId, roomCode]);
-
 
     useEffect(() => { (async () => { try { await ensureRoomId(); } catch (e) { DBG.err(e); } })(); }, [ensureRoomId]);
 
@@ -79,7 +74,7 @@ export default function TeacherPage() {
                 await ensureRoomId();
                 const { error } = await supabase.rpc("claim_host", { p_room_code: roomCode });
                 if (error && error.message.includes("BUSY")) alert("다른 교사가 발표 중입니다.");
-            } catch (e:any) {
+            } catch (e: any) {
                 if (e.message === "ROOM_NOT_FOUND") {
                     alert("방이 없습니다. 로비에서 방을 생성/선택하세요.");
                     location.href = "/AUTOPPT/#/lobby";
@@ -93,17 +88,15 @@ export default function TeacherPage() {
         slot: number;
         deck_id: string | null;
         title: string | null;
-        file_key: string | null;     // presentations/* 원본 경로
-        file_pages: number | null;   // DB에 기록된 페이지 수
-        slides_prefix: string | null; // 실제 참조되는 slides/* 프리픽스 (room 또는 원본)
-        slides_count: number | null;  // slides/*에 존재하는 .webp 개수
-        page0_url: string | null;     // 0.webp 미리보기 링크
-        pdf_url: string | null;       // PDF 보기 링크
+        file_key: string | null;      // 항상 slides prefix 기대
+        file_pages: number | null;
+        slides_prefix: string | null; // 실제 참조되는 slides/* 프리픽스
+        slides_count: number | null;  // 실제 .webp 개수
+        page0_url: string | null;     // 0.webp 서명 URL
     };
     const [assigned, setAssigned] = useState<SlotAssign[]>([]);
     const [assignLoading, setAssignLoading] = useState(false);
 
-// slides/* 아래에서 .webp 개수 카운트
     async function countSlides(prefix: string) {
         const { data, error } = await supabase.storage.from("slides").list(prefix, { limit: 1000 });
         if (error) return 0;
@@ -116,13 +109,11 @@ export default function TeacherPage() {
         try {
             const rid = await ensureRoomId();
 
-            // room_decks ↔ decks 매핑
             const { data: maps } = await supabase
                 .from("room_decks")
                 .select("slot,deck_id")
                 .eq("room_id", rid);
 
-            // 교시 목록(배정 없더라도 모두 표시)
             const { data: lessons } = await supabase
                 .from("room_lessons")
                 .select("slot")
@@ -147,7 +138,7 @@ export default function TeacherPage() {
                 const deckId = (map?.deck_id as string | null) ?? null;
                 const d = deckId ? decks[deckId] : null;
 
-                // slides prefix: (1) rooms/<rid>/decks/<deckId> 우선 (2) 원본 presentations/*에서 유도
+                // slides prefix: rooms/<rid>/decks/<deckId> 우선, 없으면 decks/<slug> 등 원본 프리픽스
                 let slidesPrefix: string | null = null;
                 let slidesCount: number | null = null;
 
@@ -157,7 +148,7 @@ export default function TeacherPage() {
                     if (c > 0) { slidesPrefix = preferRoomPrefix; slidesCount = c; }
                 }
                 if (slidesPrefix == null) {
-                    const fromSrc = d?.file_key ? slidesPrefixOfPresentationsFile(d.file_key) : null;
+                    const fromSrc = d?.file_key ? slidesPrefixOfAny(d.file_key) : null;  // file_key 자체를 정규화
                     if (fromSrc) {
                         const c2 = await countSlides(fromSrc);
                         slidesPrefix = fromSrc;
@@ -168,7 +159,6 @@ export default function TeacherPage() {
                 }
 
                 const page0Url = slidesPrefix ? await signedSlidesUrl(`${slidesPrefix}/0.webp`, 1800) : null;
-                const pdfUrl   = d?.file_key ? await getPdfUrlFromKey(d.file_key, { ttlSec: 3600 }) : null;
 
                 out.push({
                     slot: s,
@@ -179,7 +169,6 @@ export default function TeacherPage() {
                     slides_prefix: slidesPrefix,
                     slides_count: slidesCount,
                     page0_url: page0Url,
-                    pdf_url: pdfUrl,
                 });
             }
 
@@ -196,7 +185,7 @@ export default function TeacherPage() {
 
     useEffect(() => { refreshAssigned(); }, [refreshAssigned, manifest, roomId]);
 
-    /** ★ RPC 실패 시에도 발표/설정이 비지 않도록 폴백 manifest 조립 */
+    // manifest RPC 실패 시 폴백 조립
     const buildManifestFallback = useCallback(async (roomCodeStr: string): Promise<RpcManifest | null> => {
         try {
             const { data: roomRow } = await supabase.from("rooms").select("id").eq("code", roomCodeStr).maybeSingle();
@@ -226,12 +215,7 @@ export default function TeacherPage() {
                 const pages = Math.max(0, Number(d?.file_pages ?? 0));
 
                 const slides: RpcSlide[] = Array.from({ length: pages }, (_, i) => ({
-                    index: i,
-                    kind: "image",
-                    material_id: deckId,
-                    page_index: i,
-                    image_key: null,
-                    overlays: [],
+                    index: i, kind: "image", material_id: deckId, page_index: i, image_key: null, overlays: [],
                 }));
 
                 return { slot, lesson_id: null, current_index: Number(L.current_index ?? 0), slides };
@@ -244,7 +228,6 @@ export default function TeacherPage() {
         }
     }, []);
 
-    /** 기존 manifest 로딩 → 실패 시 폴백 */
     const refreshManifest = useCallback(async () => {
         if (!roomCode) { setManifest(null); return; }
         try {
@@ -258,7 +241,7 @@ export default function TeacherPage() {
 
     useEffect(() => { refreshManifest(); }, [refreshManifest]);
 
-    // DB 변경 감지 시 manifest 자동 새로고침 (원본 유지)
+    // DB 변경 감지 시 manifest 자동 새로고침
     useEffect(() => {
         let chan: ReturnType<typeof supabase.channel> | null = null;
         let alive = true;
@@ -305,7 +288,7 @@ export default function TeacherPage() {
             await refreshSlotsList();
             setActiveSlot(next);
             sendRefresh("manifest");
-            await refreshAssigned(); // ← 추가
+            await refreshAssigned();
         } catch (e: any) { alert(e?.message ?? String(e)); }
     }, [ensureRoomId, ensureSlotRow, refreshSlotsList, slots, sendRefresh, refreshAssigned]);
 
@@ -324,55 +307,45 @@ export default function TeacherPage() {
         const slot = manifest?.slots?.find((s) => s.slot === activeSlot);
         const mpages = slot?.slides?.length ?? 0;
         if (mpages > 0) return mpages;
-
-        // manifest가 빈 경우 → 배정 현황(스토리지 실제 개수)로 폴백
         const a = assigned.find((x) => x.slot === activeSlot);
         return a?.slides_count ?? 0;
     }, [manifest, assigned, activeSlot]);
 
-    // ▼▼▼ 배경 URL 해석 (signed URL + 폴백) ▼▼▼
-    const deckPrefixCache = useRef(new Map<string, string>()); // deckId -> slidesPrefix(decks/<slug>)
+    const deckPrefixCache = useRef(new Map<string, string>());
     const [activeBgUrl, setActiveBgUrl] = useState<string | null>(null);
     const [activeOverlays, setActiveOverlays] = useState<Overlay[]>([]);
 
-    // 상단 의존성에 assigned 포함 (중요)
     const refreshActiveSlide = useCallback(async () => {
         const slot = manifest?.slots?.find((s) => s.slot === activeSlot);
         const idx = Math.max(0, page - 1);
 
-        // 우선 manifest 기반
         const slide = slot?.slides?.[idx] as RpcSlide | undefined;
 
-        // 오버레이
         const overlays: Overlay[] = (slide?.overlays || []).map((o) => ({
             id: String(o.id), z: o.z, type: o.type, payload: o.payload
         }));
         setActiveOverlays(overlays);
 
-        const pageIdx0 = Number(slide?.page_index ?? idx); // 0-base
+        const pageIdx0 = Number(slide?.page_index ?? idx);
         let key: string | null = slide?.image_key ?? null;
 
-        // 1) rooms/<roomId>/decks/<deckId>/<page>.webp (manifest가 비어도 material_id가 있으면 시도)
+        // 1) rooms/<roomId>/decks/<deckId>/<page>.webp (material_id 우선)
         if (!key && roomId && slide?.material_id) {
             key = `rooms/${roomId}/decks/${slide.material_id}/${Math.max(0, pageIdx0)}.webp`;
         }
 
-        // 2) decks/<slug>/<page>.webp (원본 경로)
+        // 2) decks/<slug>/<page>.webp (원본 프리픽스)
         if (!key && slide?.material_id) {
             let prefix = deckPrefixCache.current.get(slide.material_id);
             if (!prefix) {
-                const { data } = await supabase
-                    .from("decks")
-                    .select("file_key")
-                    .eq("id", slide.material_id)
-                    .maybeSingle();
-                const p = slidesPrefixOfPresentationsFile(data?.file_key ?? null);
+                const { data } = await supabase.from("decks").select("file_key").eq("id", slide.material_id).maybeSingle();
+                const p = slidesPrefixOfAny(data?.file_key ?? null);
                 if (p) { prefix = p; deckPrefixCache.current.set(slide.material_id, p); }
             }
             if (prefix) key = `${prefix}/${Math.max(0, pageIdx0)}.webp`;
         }
 
-        // ★ 3) manifest 자체가 비어 slide가 undefined인 경우 → assigned 폴백
+        // 3) manifest가 비어 있을 때 assigned 폴백
         if (!key) {
             const a = assigned.find((x) => x.slot === activeSlot);
             if (a?.slides_prefix && (a.slides_count ?? 0) > pageIdx0) {
@@ -389,9 +362,7 @@ export default function TeacherPage() {
         }
     }, [manifest, assigned, activeSlot, page, roomId]);
 
-
     useEffect(() => { refreshActiveSlide(); }, [refreshActiveSlide]);
-
     useEffect(() => { if (!lastMessage) return; if (lastMessage.type === "hello") sendGoto(page, activeSlot); }, [lastMessage, page, activeSlot, sendGoto]);
 
     const gotoPageForSlot = useCallback(async (slot: number, nextPage: number) => {
@@ -400,12 +371,10 @@ export default function TeacherPage() {
             const rid = await ensureRoomId();
             const { error } = await supabase.from("room_lessons").update({ current_index: p - 1 }).eq("room_id", rid).eq("slot", slot);
             if (error) throw error;
-            setPage(p);
-            sendGoto(p, slot);
+            setPage(p); sendGoto(p, slot);
         } catch (e) {
             DBG.err("gotoPageForSlot", e);
-            setPage(p);
-            sendGoto(p, slot);
+            setPage(p); sendGoto(p, slot);
         }
     }, [ensureRoomId, sendGoto]);
     const next = useCallback(async () => { if (totalPages && page >= totalPages) return; await gotoPageForSlot(activeSlot, page + 1); }, [page, totalPages, activeSlot, gotoPageForSlot]);
@@ -438,8 +407,7 @@ export default function TeacherPage() {
                 <a className="btn" href={studentUrl} target="_blank" rel="noreferrer">학생 접속 링크</a>
                 <span className="badge" title="Realtime">{connected ? "RT:ON" : "RT:OFF"}</span>
             </div>
-            <div className="slide-stage"
-                 style={{ width: "100%", height: "72vh", display: "grid", placeItems: "center", overflow: "hidden" }}>
+            <div className="slide-stage" style={{ width: "100%", height: "72vh", display: "grid", placeItems: "center", overflow: "hidden" }}>
                 <SlideStage bgUrl={activeBgUrl} overlays={activeOverlays} mode="teacher" />
             </div>
             <div style={{ display: "flex", gap: 8, justifyContent: "center", marginTop: 10 }}>
@@ -473,26 +441,21 @@ export default function TeacherPage() {
 
             <div>
                 <div style={{ fontWeight: 700, marginBottom: 6 }}>배정 현황 (실제 파일/슬라이드)</div>
-
                 <div style={{ display: "grid", gap: 8 }}>
                     {assigned.length === 0 ? (
                         <div style={{ opacity: 0.6, fontSize: 13 }}>표시할 교시가 없습니다.</div>
                     ) : assigned.map(a => (
-                        <div key={a.slot} style={{
-                            border: "1px solid rgba(148,163,184,.35)",
-                            borderRadius: 10, padding: 8, background: "rgba(248,250,252,.5)"
-                        }}>
+                        <div key={a.slot} style={{ border: "1px solid rgba(148,163,184,.35)", borderRadius: 10, padding: 8, background: "rgba(248,250,252,.5)" }}>
                             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                                 <span className="badge">{a.slot}교시</span>
                                 {a.deck_id ? (
                                     <span style={{ fontSize: 13 }}>
-              {a.title || "(제목 없음)"} <span style={{ opacity: .6 }}>· {a.deck_id}</span>
-            </span>
+                    {a.title || "(제목 없음)"} <span style={{ opacity: .6 }}>· {a.deck_id}</span>
+                  </span>
                                 ) : (
                                     <span style={{ opacity: .7, fontSize: 13 }}>배정 없음</span>
                                 )}
                                 <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
-                                    {a.pdf_url && <a className="btn" href={a.pdf_url} target="_blank" rel="noreferrer">PDF</a>}
                                     {a.page0_url && <a className="btn" href={a.page0_url} target="_blank" rel="noreferrer">0.webp</a>}
                                 </div>
                             </div>
@@ -521,7 +484,6 @@ export default function TeacherPage() {
                     </button>
                 </div>
             </div>
-
 
             <div>
                 <div style={{ fontWeight: 700, marginBottom: 6 }}>최근 제출(50)</div>
