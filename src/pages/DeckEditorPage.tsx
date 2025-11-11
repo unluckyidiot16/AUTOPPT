@@ -22,12 +22,6 @@ function pickUuid(v?: string | null): string | null {
     const m = s.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
     return m ? m[0] : null;
 }
-
-const previewKey = useMemo(() => {
-    if (fileKey && fileKey.trim()) return fileKey;
-    return deckId ? `decks/${deckId}` : "";  // slidesPrefixOfAny가 처리 가능한 표준 프리픽스
-}, [fileKey, deckId]);
-
 function withSlash(p: string) { return p.endsWith("/") ? p : `${p}/`; }
 
 /* ─ storage helpers (생략 없음) ─ */
@@ -95,7 +89,9 @@ async function getActualSlidesCountByFileKey(fileKey: string): Promise<number> {
 
 
 /** 편집용 덱 생성: PDF 사본 + 기존 WEBP 복사(재변환 없음) */
-async function ensureEditingDeckFromFileKey_noConvert({ roomCode, fileKey }: { roomCode: string; fileKey: string }) {
+// ⬇ 기존 ensureEditingDeckFromFileKey_noConvert 삭제 후 대체
+async function ensureEditingDeckFromSlidesOnly({ roomCode, fileKey }: { roomCode: string; fileKey: string }) {
+    // 1) room/덱 생성
     const { data: room, error: eRoom } = await supabase.from("rooms").select("id").eq("code", roomCode).maybeSingle();
     if (eRoom || !room?.id) throw eRoom ?? new Error("room not found");
     const roomId = room.id as string;
@@ -104,28 +100,23 @@ async function ensureEditingDeckFromFileKey_noConvert({ roomCode, fileKey }: { r
     if (ins.error) throw ins.error;
     const deckId = ins.data.id as string;
 
-    const ts = Date.now();
-    const destPdfKey = `rooms/${roomId}/decks/${deckId}/slides-${ts}.pdf`;
-    const srcRel = String(fileKey).replace(/^presentations\//i, "");
-    await copyObjectInBucket("presentations", srcRel, destPdfKey, "application/pdf");
-
-    const srcPrefix = slidesPrefixOfAny(fileKey) ?? slidesPrefixOfAny(srcRel) ?? null;
+    // 2) 소스 슬라이드 prefix 계산(입력이 pdf든 slides든 OK)
+    const srcPrefix = slidesPrefixOfAny(fileKey);
     const dstPrefix = `rooms/${roomId}/decks/${deckId}`;
+    if (!srcPrefix) throw new Error("source slides not found");
 
-    if (srcPrefix) {
-        const srcSlides = await countWebps("slides", srcPrefix).catch(() => 0);
-        if (srcSlides > 0) {
-            await copyDirSameBucket("slides", srcPrefix, dstPrefix, /\.webp$/i);
-        } else {
-            const legacy = await countWebps("presentations", srcPrefix).catch(() => 0);
-            if (legacy > 0) await copyDirCrossBuckets("presentations", "slides", srcPrefix, dstPrefix, /\.webp$/i);
-        }
-    }
+    // 3) slides -> slides 복사 (WebP만)
+    const srcCount = await countWebps("slides", srcPrefix).catch(() => 0);
+    if (srcCount <= 0) throw new Error("no webp slides to copy");
+    await copyDirSameBucket("slides", srcPrefix, dstPrefix, /\.webp$/i);
 
+    // 4) 페이지 수 기록, file_key는 **슬라이드 prefix**로 저장(프리뷰 전용)
     const pages = await countWebps("slides", dstPrefix).catch(() => 0);
-    await supabase.from("decks").update({ file_key: destPdfKey, file_pages: pages || null }).eq("id", deckId);
-    return { roomId, deckId, file_key: destPdfKey, totalPages: pages };
+    await supabase.from("decks").update({ file_key: dstPrefix, file_pages: pages || null }).eq("id", deckId);
+
+    return { roomId, deckId, file_key: dstPrefix, totalPages: pages };
 }
+
 
 /* ───────────────────────────── DeckEditorPage ───────────────────────────── */
 export default function DeckEditorPage() {
@@ -193,7 +184,7 @@ export default function DeckEditorPage() {
                 if (!roomCode && !deckFromQS && !sourceDeckId) throw new Error("room 또는 deck/src 파라미터가 필요합니다.");
 
                 if (sourceDeckKey) {
-                    const ensured = await ensureEditingDeckFromFileKey_noConvert({ roomCode, fileKey: sourceDeckKey });
+                    const ensured = await ensureEditingDeckFromSlidesOnly({ roomCode, fileKey: sourceDeckKey });
                     if (cancel) return;
                     setDeckId(ensured.deckId);
                     setFileKey(ensured.file_key);
@@ -209,7 +200,7 @@ export default function DeckEditorPage() {
                         .from("decks").select("file_key, file_pages").eq("id", sourceDeckId).maybeSingle();
                     if (eSrc) throw eSrc;
                     if (!src?.file_key) throw new Error("원본 덱에 파일이 없습니다.");
-                    const ensured = await ensureEditingDeckFromFileKey_noConvert({ roomCode, fileKey: src.file_key });
+                    const ensured = await ensureEditingDeckFromSlidesOnly({ roomCode, fileKey: sourceDeckKey });
                     if (cancel) return;
                     setDeckId(ensured.deckId);
                     setFileKey(ensured.file_key);
@@ -294,6 +285,8 @@ export default function DeckEditorPage() {
     // 상단 내비
     const dec = () => setPreviewPage((p) => clampPage((p ?? 1) - 1));
     const inc = () => setPreviewPage((p) => clampPage((p ?? 1) + 1));
+
+    const previewKey = fileKey || null;
 
     // “빈 페이지 추가” (부모에서 낙관적 추가, 자식 연결되면 패치 경유)
     const addBlankPage = () => {
