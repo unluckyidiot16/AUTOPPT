@@ -33,11 +33,26 @@ async function getRoomIdByCode(roomCode: string) {
     return data.id as string;
 }
 async function ensureSlotRow(roomId: string, slot: number) {
-    const { error } = await supabase
-        .from("room_lessons")
-        .upsert({ room_id: roomId, slot, current_index: 0 }, { onConflict: "room_id,slot" });
-    if (error) throw error;
-}
+      try {
+            const { error } = await supabase
+              .from("room_lessons")
+              .upsert({ room_id: roomId, slot, current_index: 0 }, { onConflict: "room_id,slot" });
+            if (error) throw error;
+          } catch (e:any) {
+            // room_lessons 테이블이 없는 설치에서도 배정은 진행되도록 무시
+                console.warn("[ensureSlotRow] skipped:", e?.message || e);
+          }
+    }
+
+
+async function setCurrentDeck(roomId: string, deckId: string) {
+      try {
+            await supabase.from("rooms").update({ current_deck_id: deckId }).eq("id", roomId);
+          } catch (e) {
+            console.warn("[setCurrentDeck] fail", e);
+          }
+    }
+
 function usePrefersDark() {
     const [dark, setDark] = React.useState<boolean>(
         typeof window !== "undefined" &&
@@ -473,7 +488,7 @@ export default function PdfLibraryPage() {
 
         // D) room_decks 배정
         await supabase.from("room_decks").upsert({ room_id: roomId, slot, deck_id: newDeckId }, { onConflict: "room_id,slot" });
-
+        await setCurrentDeck(roomId, newDeckId);
         return { newDeckId };
     }
 
@@ -486,6 +501,7 @@ export default function PdfLibraryPage() {
             { onConflict: "room_id,slot" }
         );
         if (error) throw error;
+        await setCurrentDeck(roomId, deck.id);
         sendRefresh?.("manifest");
     }
 

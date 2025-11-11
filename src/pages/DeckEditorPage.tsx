@@ -118,8 +118,6 @@ export default function DeckEditorPage() {
     const deckFromQS   = pickUuid(qs.get("deck"));
     const sourceDeckId = pickUuid(qs.get("src"));
     const sourceDeckKey= sanitizeParam(qs.get("srcKey"));
-
-    const [previewPage, setPreviewPage] = useState<number>((totalPages ?? 0) > 0 ? 1 : 0);
     
     const [zoom, setZoom] = useState<0.5 | 0.75 | 1 | 1.25 | 1.5>(1);
     const [aspectMode, setAspectMode] =
@@ -136,6 +134,13 @@ export default function DeckEditorPage() {
 
     const [items, setItems] = useState<ManifestItem[]>([]);
     const [previewPage, setPreviewPage] = useState<number | null>(1);
+    
+    const slotFromQS = Math.max(1, Number(new URLSearchParams(search).get("slot") || 1));
+
+    const [roomId, setRoomId] = useState<string | null>(null);
+    const [assigned, setAssigned] = useState<boolean>(false);
+    const [assigning, setAssigning] = useState<boolean>(false);
+
 
     const [loading, setLoading] = useState(true);
     const [err, setErr] = useState<string | null>(null);
@@ -181,6 +186,7 @@ export default function DeckEditorPage() {
                     if (cancel) return;
                     setDeckId(ensured.deckId);
                     setFileKey(ensured.file_key);
+                    setRoomId(ensured.roomId ?? null);
 
                     let pages = ensured.totalPages || 0;
                     if (!pages) pages = await getActualSlidesCountByFileKey(ensured.file_key);
@@ -199,6 +205,8 @@ export default function DeckEditorPage() {
                     setDeckId(ensured.deckId);
                     setFileKey(ensured.file_key);
 
+                    setRoomId(ensured.roomId ?? null);
+                    
                     let pages = ensured.totalPages || Number(src.file_pages || 0);
                     if (!pages) pages = await getActualSlidesCountByFileKey(ensured.file_key);
                     setTotalPages(pages);
@@ -220,6 +228,10 @@ export default function DeckEditorPage() {
                     if (!d?.file_key) throw new Error("deck file not found");
 
                     setFileKey(d.file_key);
+
+                    setRoomId(roomRow?.id ?? null);
+                    const currentId = roomRow?.current_deck_id ?? null;
+                    setAssigned(!!(currentId && pickedDeck && currentId === pickedDeck));
 
                     let pages = Number(d.file_pages || 0);
                     if (!pages) {
