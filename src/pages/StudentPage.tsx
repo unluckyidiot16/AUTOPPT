@@ -4,7 +4,7 @@ import { useRoomId } from "../hooks/useRoomId";
 import { useRealtime } from "../hooks/useRealtime";
 import { usePresence } from "../hooks/usePresence";
 import SlideStage, { type Overlay } from "../components/SlideStage";
-import { slidesPrefixOfPresentationsFile, signedSlidesUrl, normalizeSlidesKey } from "../utils/supaFiles";
+import { slidesPrefixOfAny, signedSlidesUrl, normalizeSlidesKey } from "../utils/supaFiles";
 
 type RpcOverlay = { id: string; z: number; type: string; payload: any };
 type RpcSlide = {
@@ -242,7 +242,7 @@ export default function StudentPage() {
 
         // A) image_key → 정규화 + 1-base까지 시도
         if (slide.image_key) {
-            const direct = stripBucketPrefix(normalizeSlidesKey(slide.image_key)!);
+            const direct = normalizeSlidesKey(slide.image_key)!;
             out.push(direct);
             out.push(direct.replace(/\/(\d+)(\.webp)$/i, (_m, p, ext) => `/${Number(p) + 1}${ext}`)); // 0->1 폴백
         }
@@ -258,7 +258,7 @@ export default function StudentPage() {
             let prefix = deckPrefixCache.current.get(slide.material_id);
             if (!prefix) {
                 const { data } = await supabase.from("decks").select("file_key").eq("id", slide.material_id).maybeSingle();
-                const p = stripBucketPrefix(slidesPrefixOfPresentationsFile(data?.file_key ?? null) || "");
+                const p = slidesPrefixOfAny(data?.file_key ?? null) || "";
                 if (p) { prefix = p; deckPrefixCache.current.set(slide.material_id, p); }
             }
             if (prefix) {
