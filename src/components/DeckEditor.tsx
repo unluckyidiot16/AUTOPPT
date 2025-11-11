@@ -65,9 +65,12 @@ export default function DeckEditor({
                     if (!fileKey) return alert("파일 키가 없습니다.");
                     const prefix = slidesPrefixOfAny(fileKey) ?? "";
                     if (!prefix) return alert("슬라이드 경로 해석 실패");
-                
-                        const idx0 = Math.max(0, Number(totalPages || 0)); // 다음 인덱스
-                    const blob = await makeWhiteWebpBlob(aspect);
+
+                  const currentCount = await supabase.storage.from("slides")
+                          .list(prefix, { limit: 1000 })
+                      .then(({ data }) => (data ?? []).filter(f => /\.webp$/i.test(f.name)).length)
+                      .catch(() => Number(totalPages || 0));
+                    const idx0 = Math.max(0, currentCount); // 다음 인덱스                    const blob = await makeWhiteWebpBlob(aspect);
                     const path = `${prefix}/${idx0}.webp`;
                     const up = await supabase.storage.from("slides").upload(path, blob, { upsert: true, contentType: "image/webp" });
                     if (up.error) { alert("업로드 실패: " + up.error.message); return; }
@@ -203,8 +206,8 @@ export default function DeckEditor({
     const pushQuiz = () => setItems((arr) => [...arr, {
         type: "quiz",
             // 프리뷰가 즉시 보이도록 현재 타겟 페이지에 붙입니다.
-        srcPage: targetPage,
-        attachToSrcPage: targetPage,
+        srcPage: Math.max(1, targetPage || 1),
+        attachToSrcPage: Math.max(1, targetPage || 1),
         prompt: "문제를 입력하세요", keywords: [],
         threshold: 1, autoAdvance: false,
         matchOptions: {
