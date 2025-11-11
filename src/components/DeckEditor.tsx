@@ -4,6 +4,8 @@ import type { ManifestItem, ManifestPageItem, ManifestQuizItem } from "../types/
 import { getManifestByRoom, upsertManifest } from "../api/overrides";
 import EditorThumbnailStrip from "./EditorThumbnailStrip";
 import { finalizeTempDeck } from "../utils/tempDeck";
+import { supabase } from "../supabaseClient";
+import { slidesPrefixOfAny } from "../utils/supaFiles";
 
 type MatchOptions = {
     enableSubstr?: boolean;
@@ -43,9 +45,41 @@ export default function DeckEditor({
 }) {
     const [items, _setItems] = useState<ManifestItem[]>([]);
     const [loading, setLoading] = useState(true);
-
-
     const [targetPage, setTargetPage] = useState<number>((totalPages ?? 0) > 0 ? 1 : 0);
+
+
+    async function makeWhiteWebpBlob(aspect: "16:9"|"16:10"|"4:3"|"3:2"|"A4"|"auto" = "16:9"): Promise<Blob> {
+            const w = 1920;
+            const ratio = (aspect==="16:9")?16/9: (aspect==="16:10")?16/10: (aspect==="4:3")?4/3: (aspect==="3:2")?3/2: (aspect==="A4")?210/297: (16/9);
+            const h = Math.round(w / ratio);
+            const c = document.createElement("canvas");
+            c.width = w; c.height = h;
+            const g = c.getContext("2d")!;
+            g.fillStyle = "#ffffff";
+            g.fillRect(0,0,w,h);
+            return await new Promise((res, rej) => c.toBlob(b => b?res(b):rej(new Error("toBlob failed")), "image/webp", 0.92));
+          }
+    
+          // slides/<prefix>/<idx0>.webp 로 업로드하고 decks.file_pages +1
+              async function createRealBlankSlide(aspect: "16:9"|"16:10"|"4:3"|"3:2"|"A4"|"auto" = "16:9") {
+                    if (!fileKey) return alert("파일 키가 없습니다.");
+                    const prefix = slidesPrefixOfAny(fileKey) ?? "";
+                    if (!prefix) return alert("슬라이드 경로 해석 실패");
+                
+                        const idx0 = Math.max(0, Number(totalPages || 0)); // 다음 인덱스
+                    const blob = await makeWhiteWebpBlob(aspect);
+                    const path = `${prefix}/${idx0}.webp`;
+                    const up = await supabase.storage.from("slides").upload(path, blob, { upsert: true, contentType: "image/webp" });
+                    if (up.error) { alert("업로드 실패: " + up.error.message); return; }
+                    
+                           const upd = await supabase.from("decks").update({ file_pages: idx0 + 1 }).eq("id", deckId);
+                    if (upd.error) console.warn("[createRealBlankSlide] file_pages update failed", upd.error);
+                
+                            pushPage(idx0 + 1);
+                    setTargetPage(idx0 + 1);
+                    onSelectPage?.(idx0 + 1);
+                  }
+    
     useEffect(() => { setTargetPage((totalPages ?? 0) > 0 ? 1 : 0); }, [totalPages]);
     
     const setItems = (updater: ManifestItem[] | ((prev: ManifestItem[]) => ManifestItem[])) => {
@@ -348,6 +382,7 @@ export default function DeckEditor({
             <div style={{ display: "flex", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
                 <button className="btn" onClick={onAddPage}>페이지 추가</button>
                 <button className="btn" onClick={pushBlankPage}>빈 페이지 추가</button>
+                <button className="btn" onClick={() => createRealBlankSlide(aspectMode as any)}>빈 페이지(실제 슬라이드) 생성</button>
                 <button className="btn" onClick={pushQuiz}>퀴즈 삽입</button>
             </div>
 

@@ -119,6 +119,8 @@ export default function DeckEditorPage() {
     const sourceDeckId = pickUuid(qs.get("src"));
     const sourceDeckKey= sanitizeParam(qs.get("srcKey"));
 
+    const [previewPage, setPreviewPage] = useState<number>((totalPages ?? 0) > 0 ? 1 : 0);
+    
     const [zoom, setZoom] = useState<0.5 | 0.75 | 1 | 1.25 | 1.5>(1);
     const [aspectMode, setAspectMode] =
         useState<"auto" | "16:9" | "16:10" | "4:3" | "3:2" | "A4">("16:9");
@@ -413,20 +415,16 @@ export default function DeckEditorPage() {
 
                     {/* 프리뷰 (페이지 1 이상일 때만 렌더 → 0.webp 방지) */}
                     <div>
-                        {totalPages > 0 && (previewIsBlank ?? 0) >= 1 ? (
-                            <EditorPreviewPane
-                                fileKey={fileKey}
-                                page={previewIsBlank}
-                                isBlank={previewIsBlank}
-                                height="calc(100vh - 220px)"
-                                version={cacheVer}
-                                overlays={overlaysForPreview}
-                                zoom={zoom}
-                                aspectMode={aspectMode}
-                            />
-                        ) : (
-                            <div className="panel" style={{ opacity: .7 }}>슬라이드가 없습니다.</div>
-                        )}
+                        <EditorPreviewPane
+                           fileKey={fileKey ?? ""}
+                           // 빈 페이지(0)는 URL 생성이 필요 없으므로 page는 아무 값이나 가능
+                           page={Number(previewPage || 0) <= 0 ? 1 : Number(previewPage)}
+                           isBlank={Number(previewPage || 0) <= 0}
+                           version={cacheVer}
+                           overlays={overlaysForPreview}
+                           zoom={zoom}
+                           aspectMode={aspectMode}
+                        />
                     </div>
 
                     {/* 오른쪽 편집기 */}
@@ -440,7 +438,7 @@ export default function DeckEditorPage() {
                             onSaved={() => nav(`/teacher?room=${roomCode}&mode=setup`)}
                             tempCleanup={null}
                             onItemsChange={onItemsChange}
-                            onSelectPage={(p) => setPreviewPage(clampPage(p))}
+                            onSelectPage={(p) => setPreviewPage(p)}
                             applyPatchRef={applyPatchRef}
                             showBottomStrip={thumbPos !== "left"}
                         />
