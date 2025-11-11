@@ -295,10 +295,20 @@ export default function DeckEditorPage() {
 
     // 왼쪽 세로 스트립용 썸네일 목록
     const pageThumbs = useMemo(() => {
-        const arr: { id: string; page: number; idx: number }[] = [];
-        items.forEach((it, idx) => { if ((it as any)?.type === "page") arr.push({ id: `pg-${idx}`, page: (it as any).srcPage ?? 0, idx }); });
-        return arr;
-    }, [items]);
+        // 1) manifest 기반
+        const manifestPages: { id: string; page: number; idx: number }[] = [];
+        items.forEach((it, idx) => {
+            if ((it as any)?.type === "page") {
+                                const pg = Number((it as any).srcPage ?? 0);
+                                manifestPages.push({ id: `pg-${idx}`, page: pg, idx });
+                            }
+                    });
+                if (manifestPages.length > 0) return manifestPages;
+                // 2) 폴백: totalPages 기반 1..N
+                    return Array.from({ length: Math.max(0, Number(totalPages || 0)) }, (_, i) => ({
+                        id: `pg-fb-${i + 1}`, page: i + 1, idx: i
+                }));
+            }, [items, totalPages]);
 
     const reorderPages = (next: { id: string; page: number; idx: number }[]) => {
         if (!applyPatchRef.current) return;

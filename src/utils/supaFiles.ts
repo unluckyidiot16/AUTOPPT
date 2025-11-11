@@ -1,9 +1,15 @@
 // src/utils/supaFiles.ts
 import { supabase } from "../supabaseClient";
+
+function stripQ(s?: string | null) {
+      return String(s ?? "").split(/[?#]/)[0];
+    }
+
 export function slidesPrefixOfAny(key?: string | null): string | null {
-    if (!key) return null;
-    if (/^https?:\/\//i.test(key)) return key; // (거의 안 씀)
-    const k = key.replace(/^slides\//i, "").replace(/^\/+/, "");
+    const raw = stripQ(key);
+    if (!raw) return null;
+    if (/^https?:\/\//i.test(raw)) return raw; // (거의 안 씀)
+    const k = raw.replace(/^slides\//i, "").replace(/^\/+/, "");
     // 이미 slides prefix?
     if (/^(rooms\/[^/]+\/decks\/[^/]+|decks\/[^/]+)$/i.test(k)) return k;
     // presentations → decks / rooms/decks
@@ -15,13 +21,14 @@ export function slidesPrefixOfAny(key?: string | null): string | null {
 }
 
 export function normalizeSlidesKey(key?: string | null): string | null {
-    if (!key) return null;
-    if (/^https?:\/\//i.test(key)) return key;
-    return key.replace(/^slides\//i, "").replace(/^\/+/, "");
+    const raw = stripQ(key);
+    if (!raw) return null;
+    if (/^https?:\/\//i.test(raw)) return raw;
+    return raw.replace(/^slides\//i, "").replace(/^\/+/, "");
 }
 
 export async function signedSlidesUrl(path: string, ttlSec = 1800): Promise<string> {
-    const key = path.replace(/^slides\//i, "");
+    const key = stripQ(path).replace(/^slides\//i, "");
     const { data } = await supabase.storage.from("slides").createSignedUrl(key, ttlSec);
     if (data?.signedUrl) return data.signedUrl;
     const { data: pub } = supabase.storage.from("slides").getPublicUrl(key);
