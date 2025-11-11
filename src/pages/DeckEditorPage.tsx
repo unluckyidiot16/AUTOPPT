@@ -7,7 +7,7 @@ import EditorPreviewPane from "../components/EditorPreviewPane";
 import EditorThumbnailStrip from "../components/EditorThumbnailStrip";
 import type { ManifestItem } from "../types/manifest";
 import { getManifestByRoom } from "../api/overrides";
-import { slidesPrefixOfPresentationsFile } from "../utils/supaFiles";
+import { slidesPrefixOfAny } from "../utils/supaFiles";
 import type { Overlay } from "../components/SlideStage";
 
 type RoomRow = { id: string; current_deck_id: string | null };
@@ -22,6 +22,11 @@ function pickUuid(v?: string | null): string | null {
     const m = s.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
     return m ? m[0] : null;
 }
+
+const previewKey = useMemo(() => {
+    if (fileKey && fileKey.trim()) return fileKey;
+    return deckId ? `decks/${deckId}` : "";  // slidesPrefixOfAny가 처리 가능한 표준 프리픽스
+}, [fileKey, deckId]);
 
 function withSlash(p: string) { return p.endsWith("/") ? p : `${p}/`; }
 
@@ -76,10 +81,7 @@ async function copyDirCrossBuckets(
 }
 
 async function getActualSlidesCountByFileKey(fileKey: string): Promise<number> {
-    const prefix =
-              slidesPrefixOfPresentationsFile(fileKey) ??
-              slidesPrefixOfPresentationsFile(String(fileKey).replace(/^presentations\//i, "")) ??
-              null;
+    const prefix = slidesPrefixOfAny(fileKey);
         if (!prefix) return 0;
         const p1 = await countWebps("slides", prefix).catch(() => 0);
         if (p1 > 0) return p1;
@@ -107,7 +109,7 @@ async function ensureEditingDeckFromFileKey_noConvert({ roomCode, fileKey }: { r
     const srcRel = String(fileKey).replace(/^presentations\//i, "");
     await copyObjectInBucket("presentations", srcRel, destPdfKey, "application/pdf");
 
-    const srcPrefix = slidesPrefixOfPresentationsFile(fileKey) ?? slidesPrefixOfPresentationsFile(srcRel) ?? null;
+    const srcPrefix = slidesPrefixOfAny(fileKey) ?? slidesPrefixOfAny(srcRel) ?? null;
     const dstPrefix = `rooms/${roomId}/decks/${deckId}`;
 
     if (srcPrefix) {
@@ -378,7 +380,7 @@ export default function DeckEditorPage() {
                 <div className="panel">불러오는 중…</div>
             ) : err ? (
                 <div className="panel" style={{ color: "#f87171" }}>{err}</div>
-            ) : !deckId || !fileKey ? (
+            ) : !deckId && !fileKey ? (
                 <div className="panel" style={{ opacity: 0.6 }}>자료 없음</div>
             ) : (
                 <div
@@ -396,7 +398,7 @@ export default function DeckEditorPage() {
                     {thumbPos === "left" && (
                         <div>
                             <EditorThumbnailStrip
-                                fileKey={fileKey ?? null}
+                                fileKey={previewKey ?? null}
                                 items={pageThumbs.map(t => ({ id: t.id, page: t.page }))}
                                 onReorder={reorderPages}
                                 onSelect={selectThumb}
@@ -414,7 +416,7 @@ export default function DeckEditorPage() {
                     {/* 프리뷰 */}
                     <div>
                         <EditorPreviewPane
-                            fileKey={fileKey}
+                            fileKey={previewKey}
                             page={previewBgPage}
                             height="calc(100vh - 220px)"
                             version={cacheVer}
