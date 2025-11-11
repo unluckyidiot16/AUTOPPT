@@ -209,24 +209,75 @@ export default function DeckEditor({
            setItems(arr => [...arr, { type: "page", kind: "page", srcPage: nextPg, blank: true } as any]);
            setTargetPage(nextPg); onSelectPage?.(nextPg);
          };
-    
-    const pushQuiz = () => setItems((arr) => [...arr, {
-        type: "quiz",
-            // 프리뷰가 즉시 보이도록 현재 타겟 페이지에 붙입니다.
-        srcPage: Math.max(1, targetPage || 1),
-        attachToSrcPage: Math.max(1, targetPage || 1),
-        prompt: "문제를 입력하세요", keywords: [],
-        threshold: 1, autoAdvance: false,
-        matchOptions: {
-            enableSubstr: defaults.enableSubstr,
-            minLen: defaults.minLen,
-            useSynonyms: defaults.useSynonyms,
-            synonyms: { ...defaults.synonyms },
-        },
-        position: "tl",
-    } as QuizX]);
+
+    const genId = () =>
+        (globalThis.crypto?.randomUUID?.() ??
+            `q-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+
+    const pushQuiz = () =>
+        setItems((arr) => {
+            const p = Math.max(1, targetPage || 1);  // ← 0번 방지
+            return [
+                ...arr,
+                {
+                    id: genId(),
+                    type: "quiz",
+                    srcPage: p,
+                    attachToSrcPage: p,
+                    prompt: "문제를 입력하세요",
+                    keywords: [],
+                    threshold: 1,
+                    autoAdvance: false,
+                    matchOptions: {
+                        enableSubstr: defaults.enableSubstr,
+                        minLen: defaults.minLen,
+                        useSynonyms: defaults.useSynonyms,
+                        synonyms: { ...defaults.synonyms },
+                    },
+                    position: "tl", // tl/tr/bl/br/free
+                } as QuizX,
+            ];
+        });
 
     const [saving, setSaving] = useState(false);
+
+    function serializeForSave(list: ManifestItem[]): ManifestItem[] {
+        return list.map((it: any) => {
+            if (it?.type === "page") {
+                return {
+                    type: "page",
+                    srcPage: Number(it.srcPage || 0),
+                    blank: !!(it.blank || it.isBlank),
+                } as any;
+            }
+            if (it?.type === "quiz" || it?.kind === "quiz") {
+                const srcPage = Number(it.attachToSrcPage ?? it.srcPage ?? 0);
+                const x = Number(it.posX ?? it.x ?? 0.1);
+                const y = Number(it.posY ?? it.y ?? 0.1);
+                const w = Number(it.w ?? 0.3);
+                const h = Number(it.h ?? 0.2);
+                const payload = {
+                    position: it.position ?? "tl",
+                    x, y, w, h,
+                    bg: it.bg ?? it.payload?.bg,
+                    fg: it.fg ?? it.payload?.fg,
+                    ...(it.payload || {}),
+                };
+                return {
+                    id: it.id,
+                    type: "quiz",
+                    srcPage,
+                    prompt: it.prompt ?? it.payload?.prompt ?? "",
+                    keywords: Array.isArray(it.keywords) ? it.keywords : (it.payload?.keywords ?? []),
+                    threshold: Number(it.threshold ?? it.payload?.threshold ?? 1),
+                    autoAdvance: !!it.autoAdvance,
+                    payload,
+                } as any;
+            }
+            return it;
+        });
+    }
+
     const save = async () => {
         if (saving) return;
         setSaving(true);

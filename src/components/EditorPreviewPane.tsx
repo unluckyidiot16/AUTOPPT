@@ -1,192 +1,172 @@
 // src/components/EditorPreviewPane.tsx
-import React from "react";
-import { resolveWebpUrl } from "../utils/supaFiles";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { signedSlidesUrl } from "../utils/supaFiles";
 
-const __DBG =
-    typeof window !== "undefined" &&
-    new URLSearchParams(location.search).has("debugSlides");
-
-type Overlay = { id: string; z?: number; type: string; payload?: any };
-
-type Props = {
-    fileKey: string;
-    page: number; // 1-base. 0이면 빈 캔버스 취급
-    isBlank?: boolean;           // 빈 페이지 강제 표시
-    height?: number | string;
-    version?: number | string;   // 캐시버스터
-    overlays?: Overlay[];        // 0..1 정규 좌표
-    zoom?: 0.5 | 0.75 | 1 | 1.25 | 1.5;
-    aspectMode?: "auto" | "16:9" | "16:10" | "4:3" | "3:2" | "A4";
+type OverlayQuiz = {
+    id: string;
+    z?: number;
+    type: "quiz";
+    payload: {
+        x: number; y: number; w: number; h: number;
+        position?: "tl" | "tr" | "bl" | "br" | "free";
+        draggable?: boolean;
+        prompt?: string;
+        keywords?: string[];
+        threshold?: number;
+        bg?: string; fg?: string;
+    };
 };
 
-function aspectToRatio(mode: Props["aspectMode"]) {
-    switch (mode) {
-        case "16:9": return 16 / 9;
-        case "16:10": return 16 / 10;
-        case "4:3": return 4 / 3;
-        case "3:2": return 3 / 2;
-        case "A4": return 210 / 297; // w/h
-        default: return null; // auto
-    }
-}
+export type Overlay = OverlayQuiz; // 확장 여지
 
 export default function EditorPreviewPane({
-                                              fileKey,
-                                              page,
-                                              isBlank,
-                                              height = "calc(100vh - 220px)",
-                                              version,
+                                              fileKey, page, isBlank, version,
                                               overlays = [],
                                               zoom = 1,
-                                              aspectMode = "auto",
-                                          }: Props) {
-    const [url, setUrl] = React.useState<string | null>(null);
-    const [err, setErr] = React.useState<string | null>(null);
+                                              aspectMode = "16:9",
+                                              onMoveOverlay,
+                                          }: {
+    fileKey: string;
+    page: number;
+    isBlank?: boolean;
+    version?: number;
+    overlays?: Overlay[];
+    zoom?: 0.5 | 0.75 | 1 | 1.25 | 1.5;
+    aspectMode?: "auto" | "16:9" | "16:10" | "4:3" | "3:2" | "A4";
+    onMoveOverlay?: (id: string, x: number, y: number) => void;
+}) {
+    const [imgUrl, setImgUrl] = useState<string | null>(null);
 
-    const ratio = aspectToRatio(aspectMode);
-    const paddingTop = ratio ? `${100 / ratio}%` : undefined;
+    const ratio = useMemo(() => {
+        switch (aspectMode) {
+            case "16:10": return 16 / 10;
+            case "4:3":   return 4 / 3;
+            case "3:2":   return 3 / 2;
+            case "A4":    return 210 / 297;
+            default:      return 16 / 9;
+        }
+    }, [aspectMode]);
 
-    // 배경 이미지 URL 생성
-    React.useEffect(() => {
-        let alive = true;
-        setUrl(null);
-        setErr(null);
-
-        // 빈 페이지 표시 모드면 URL 생성 생략
-        if (isBlank || !fileKey || Number(page || 0) <= 0) return;
-
+    // 이미지 URL
+    useEffect(() => {
+        let off = false;
         (async () => {
-            try {
-                const u = await resolveWebpUrl(fileKey, page, { cachebuster: true });
-                if (__DBG) console.log("[preview] resolved", { fileKey, page, url: u });
-                if (!alive) return;
-                setUrl(u);
-            } catch (e: any) {
-                if (!alive) return;
-                setErr(e?.message || "미리보기 URL 생성 실패");
-            }
+            if (isBlank) { setImgUrl(null); return; }
+            const idx0 = Math.max(0, page - 1);
+            const url = await signedSlidesUrl(`${fileKey}/${idx0}.webp`, 120);
+            if (!off) setImgUrl(url);
         })();
-
-        return () => { alive = false; };
+        return () => { off = true; };
     }, [fileKey, page, version, isBlank]);
 
-    const StageBox: React.FC<{ children: React.ReactNode }> = ({ children }) => (
-        <div
-            style={{
-                position: "relative",
-                width: "100%",
-                maxWidth: "100%",
-            }}
-        >
-            {ratio ? <div style={{ paddingTop }} /> : null}
-            <div
-                style={{
-                    position: ratio ? "absolute" : "relative",
-                    inset: ratio ? 0 : undefined,
-                    display: "grid",
-                    placeItems: "center",
-                }}
-            >
-                {children}
-            </div>
-        </div>
-    );
+    const stageRef = useRef<HTMLDivElement>(null);
+    const dragRef = useRef<{ id: string; ox: number; oy: number } | null>(null);
+
+    // 드래그 핸들러
+    useEffect(() => {
+        const el = stageRef.current;
+        if (!el) return;
+
+        const onPointerDown = (e: PointerEvent) => {
+            const target = (e.target as HTMLElement)?.closest('[data-ov="1"]') as HTMLElement | null;
+            if (!target) return;
+            if (target.getAttribute("data-draggable") !== "1") return;
+            const id = target.getAttribute("data-id")!;
+            const rect = el.getBoundingClientRect();
+            const x = (e.clientX - rect.left) / rect.width;
+            const y = (e.clientY - rect.top) / rect.height;
+            dragRef.current = { id, ox: x, oy: y };
+            (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+        };
+        const onPointerMove = (e: PointerEvent) => {
+            if (!dragRef.current) return;
+            const rect = el.getBoundingClientRect();
+            const x = (e.clientX - rect.left) / rect.width;
+            const y = (e.clientY - rect.top) / rect.height;
+            const dx = x, dy = y;
+            // 경계 클램프
+            const nx = Math.max(0, Math.min(1, dx));
+            const ny = Math.max(0, Math.min(1, dy));
+            onMoveOverlay?.(dragRef.current.id, nx, ny);
+        };
+        const onPointerUp = () => { dragRef.current = null; };
+
+        el.addEventListener("pointerdown", onPointerDown);
+        window.addEventListener("pointermove", onPointerMove);
+        window.addEventListener("pointerup", onPointerUp);
+        return () => {
+            el.removeEventListener("pointerdown", onPointerDown);
+            window.removeEventListener("pointermove", onPointerMove);
+            window.removeEventListener("pointerup", onPointerUp);
+        };
+    }, [onMoveOverlay, zoom]);
+
+    // 스타일
+    const baseW = 960;                 // 프리뷰 기준 폭
+    const w = Math.round(baseW * zoom);
+    const h = Math.round(w / ratio);
 
     return (
         <div
-            className="panel"
+            ref={stageRef}
             style={{
-                height,
                 position: "relative",
+                width: w,
+                height: h,
+                border: "1px solid rgba(148,163,184,.25)",
+                borderRadius: 12,
                 overflow: "hidden",
-                background: "#0b1220",
+                background: isBlank ? "#fff" : "transparent",
+                userSelect: "none",
             }}
         >
-            {/* 본문 배경 (이미지 or 빈 캔버스) */}
-            <div
-                style={{
-                    position: "relative",
-                    width: "100%",
-                    height: "100%",
-                    display: "grid",
-                    placeItems: "center",
-                }}
-            >
-                <StageBox>
-                    {/* 빈 페이지 or 이미지 */}
-                    {isBlank || Number(page || 0) <= 0 ? (
-                        <div
-                            style={{
-                                width: "100%",
-                                height: "100%",
-                                background: "#ffffff",
-                                borderRadius: 2,
-                                transform: `scale(${zoom})`,
-                                transformOrigin: "center",
-                            }}
-                        />
-                    ) : url ? (
-                        <img
-                            src={url}
-                            alt={`page-${page}`}
-                            style={{
-                                maxWidth: "100%",
-                                maxHeight: "100%",
-                                transform: `scale(${zoom})`,
-                                transformOrigin: "center",
-                                userSelect: "none",
-                                zIndex: 0, // 이미지 레이어는 항상 아래
-                            }}
-                            draggable={false}
-                        />
-                    ) : (
-                        <div style={{ opacity: 0.6, fontSize: 12 }}>{err || "로딩 중…"}</div>
-                    )}
-                </StageBox>
-            </div>
+            {!isBlank && imgUrl && (
+                <img
+                    src={imgUrl}
+                    alt="slide"
+                    style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "contain" }}
+                    draggable={false}
+                />
+            )}
 
-            {/* 퀴즈 오버레이(최상위 z-index) */}
-            {Array.isArray(overlays) &&
-                overlays.map((ov) => {
-                    const p = ov?.payload || {};
-                    const left = `${(Number(p.x ?? 0) * 100).toFixed(4)}%`;
-                    const top = `${(Number(p.y ?? 0) * 100).toFixed(4)}%`;
-                    const width = `${(Number(p.w ?? 0) * 100).toFixed(4)}%`;
-                    const height = `${(Number(p.h ?? 0) * 100).toFixed(4)}%`;
-                    const zIndex = (ov.z ?? 0) + 1000; // 항상 이미지 위
-
-                    const question =
-                        p.prompt ?? p.question ?? p.title ?? p.label ?? "";
-                    const bg = p.bg ?? p.bgColor ?? "rgba(255,255,255,0.06)";
-                    const fg = p.fg ?? p.fgColor ?? "#E5E7EB";
-
-                    return (
-                        <div
-                            key={ov.id}
-                            style={{
-                                position: "absolute",
-                                left,
-                                top,
-                                width,
-                                height,
-                                border: "1px dashed rgba(255,255,255,0.35)",
-                                background: bg,
-                                color: fg,
-                                fontSize: 12,
-                                display: "grid",
-                                placeItems: "center",
-                                zIndex,
-                                pointerEvents: "none",
-                                borderRadius: 8,
-                                padding: 4,
-                                backdropFilter: "blur(1px)",
-                            }}
-                            title={question}
-                        >
-                            {question || "퀴즈"}
+            {/* overlays */}
+            {overlays.map((ov) => {
+                if (ov.type !== "quiz") return null;
+                const { x, y, w, h, bg, fg, draggable } = ov.payload;
+                return (
+                    <div
+                        key={ov.id}
+                        data-ov="1"
+                        data-id={ov.id}
+                        data-draggable={draggable ? "1" : "0"}
+                        style={{
+                            position: "absolute",
+                            left: `${x * 100}%`,
+                            top: `${y * 100}%`,
+                            width: `${w * 100}%`,
+                            height: `${h * 100}%`,
+                            transform: "translate(-0%, -0%)",
+                            zIndex: ov.z ?? 20,
+                            display: "grid",
+                            gap: 6,
+                            borderRadius: 10,
+                            padding: 10,
+                            background: bg ?? "rgba(17,24,39,.85)",
+                            color: fg ?? "#fff",
+                            cursor: draggable ? "grab" : "default",
+                            boxShadow: "0 2px 10px rgba(0,0,0,.25)",
+                        }}
+                        title={draggable ? "드래그하여 위치를 조정하세요" : ""}
+                    >
+                        <div style={{ fontWeight: 700, fontSize: 14 }}>
+                            {ov?.payload?.prompt || "(문항 없음)"}
                         </div>
-                    );
-                })}
+                        <div style={{ fontSize: 11, opacity: .75 }}>
+                            키워드: {(ov?.payload?.keywords ?? []).join(", ")} · 임계: {ov?.payload?.threshold ?? 1}
+                        </div>
+                    </div>
+                );
+            })}
         </div>
     );
 }

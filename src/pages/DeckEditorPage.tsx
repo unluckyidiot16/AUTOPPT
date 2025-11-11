@@ -272,47 +272,45 @@ export default function DeckEditorPage() {
            const found = items.find((it: any) => it?.type === "page" && Number(it?.srcPage ?? -1) === pg);
            return !!(found as any)?.blank || !!(found as any)?.isBlank;
          }, [items, previewPage]);
-    
+
     const overlaysForPreview: Overlay[] = useMemo(() => {
         const p = Number(previewPage ?? 0);
         if (!p || !Array.isArray(items)) return [];
         return items
-                    // 붙일 페이지 우선(없으면 srcPage)
-                    .filter((it: any) => {
-                      if (!(it?.type === "quiz" || it?.kind === "quiz")) return false;
-                      const pageRef = Number(it.attachToSrcPage ?? it.srcPage ?? it.page ?? 0);
-                      return pageRef === p;
-                    })
-                .map((q: any, idx: number) => {
-                      // 위치 프리셋(tl/tr/bl/br) → x,y 기본값
-                          const pos = q.position ?? "tl";
-                      const defXY: Record<string, [number, number]> = {
-                            tl: [0.06, 0.06], tr: [0.64, 0.06], bl: [0.06, 0.72], br: [0.64, 0.72],
-                            free: [0.1, 0.1],
-                          };
-                      const [dx, dy] = defXY[pos] ?? [0.1, 0.1];
-                      const x = Number(q.posX ?? q.x ?? dx);
-                      const y = Number(q.posY ?? q.y ?? dy);
-                      const w = Number(q.w ?? 0.3);
-                      const h = Number(q.h ?? 0.2);
-                      return ({
-                id: String(q.id ?? `quiz-${p}-${idx}`),
-                z: Number(q.z ?? 10 + idx),
-                type: "quiz",
-                payload: {
-                    x, y, w, h,
-                    // 🔑 QuizOverlay가 읽는 키
-                    prompt: q.prompt ?? q.payload?.prompt ?? "",
-                    keywords: Array.isArray(q.keywords) ? q.keywords : (q.payload?.keywords ?? []),
-                    threshold: Number(q.threshold ?? q.payload?.threshold ?? 1),
-                    // 색상(양쪽 키 모두 허용)
-                    bg: q.bg ?? q.bgColor ?? q.payload?.bg ?? q.payload?.bgColor ?? "rgba(17,24,39,.85)",
-                    fg: q.fg ?? q.fgColor ?? q.payload?.fg ?? q.payload?.fgColor ?? "#fff",
-                    ...q.payload, // (마지막 병합 유지)
-                },
-                      });
-                });
+            .filter((it: any) => {
+                if (!(it?.type === "quiz" || it?.kind === "quiz")) return false;
+                const pageRef = Number(it.attachToSrcPage ?? it.srcPage ?? it.page ?? 0);
+                return pageRef === p;
+            })
+            .map((q: any, idx: number) => {
+                const pos = q.position ?? "tl";
+                const defXY: Record<string, [number, number]> = {
+                    tl: [0.06, 0.06], tr: [0.64, 0.06], bl: [0.06, 0.72], br: [0.64, 0.72], free: [0.1, 0.1],
+                };
+                const [dx, dy] = defXY[pos] ?? [0.1, 0.1];
+                const x = Number(q.posX ?? q.x ?? dx);
+                const y = Number(q.posY ?? q.y ?? dy);
+                const w = Number(q.w ?? 0.3);
+                const h = Number(q.h ?? 0.2);
+                return {
+                    id: String(q.id ?? `quiz-${p}-${idx}`),
+                    z: Number(q.z ?? 10 + idx),
+                    type: "quiz",
+                    payload: {
+                        x, y, w, h,
+                        position: pos,
+                        draggable: pos === "free",     // ← 자유배치에서만 드래그 허용
+                        prompt: q.prompt ?? q.payload?.prompt ?? "",
+                        keywords: Array.isArray(q.keywords) ? q.keywords : (q.payload?.keywords ?? []),
+                        threshold: Number(q.threshold ?? q.payload?.threshold ?? 1),
+                        bg: q.bg ?? q.bgColor ?? q.payload?.bg ?? q.payload?.bgColor ?? "rgba(17,24,39,.85)",
+                        fg: q.fg ?? q.fgColor ?? q.payload?.fg ?? q.payload?.fgColor ?? "#fff",
+                        ...q.payload,
+                    },
+                } as any;
+            });
     }, [items, previewPage]);
+
 
     // 상단 내비
     const dec = () => setPreviewPage((p) => clampPage((p ?? 1) - 1));
@@ -446,15 +444,29 @@ export default function DeckEditorPage() {
                     {/* 프리뷰 (페이지 1 이상일 때만 렌더 → 0.webp 방지) */}
                     <div>
                         <EditorPreviewPane
-                           fileKey={fileKey ?? ""}
-                           // 빈 페이지(0)는 URL 생성이 필요 없으므로 page는 아무 값이나 가능
-                           page={Number(previewPage || 0) <= 0 ? 1 : Number(previewPage)}
-                           isBlank={previewIsBlank}
-                           version={cacheVer}
-                           overlays={overlaysForPreview}
-                           zoom={zoom}
-                           aspectMode={aspectMode}
+                            key={`${previewKey}-${previewPage}-${zoom}-${aspectMode}-${cacheVer}`}  // ← 잔상 제거
+                            fileKey={fileKey ?? ""}
+                            page={Number(previewPage || 0) <= 0 ? 1 : Number(previewPage)}
+                            isBlank={previewIsBlank}
+                            version={cacheVer}
+                            overlays={overlaysForPreview}
+                            zoom={zoom}
+                            aspectMode={aspectMode}
+                            onMoveOverlay={(id, nx, ny) => {
+                                // 프리뷰에서 드래그 → 편집기 상태 갱신
+                                if (!applyPatchRef.current) return;
+                                applyPatchRef.current(cur =>
+                                    cur.map((it: any) => {
+                                        if (!(it?.type === "quiz" || it?.kind === "quiz")) return it;
+                                        const _id = String(it.id ?? "");
+                                        return _id === id
+                                            ? { ...it, posX: nx, posY: ny, x: nx, y: ny }
+                                            : it;
+                                    }),
+                                );
+                            }}
                         />
+
                     </div>
 
                     {/* 오른쪽 편집기 */}
