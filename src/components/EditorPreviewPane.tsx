@@ -2,6 +2,8 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { resolveWebpUrl } from "../utils/supaFiles";
 
+const __DBG = typeof window !== "undefined" && new URLSearchParams(location.search).has("debugSlides");
+
 type Props = {
     fileKey: string;
     page: number;                 // 1-base, 0 => 빈 캔버스
@@ -32,9 +34,12 @@ export default function EditorPreviewPane({
                 return;
             }
             try {
+                // 썸네일과 완전히 동일한 경로/함수 사용
                 const u = await resolveWebpUrl(fileKey, page, { ttlSec: 600, cachebuster: true });
+                if (__DBG) console.log("[preview] resolved", { fileKey, page, url: u });
                 if (!off) setBgUrl(u);
-            } catch {
+            } catch (e) {
+                if (__DBG) console.warn("[preview] resolve error", e);
                 if (!off) setBgUrl(null);
             }
         })();
@@ -42,8 +47,8 @@ export default function EditorPreviewPane({
     }, [fileKey, page, ver]);
 
     const aspectStyle: React.CSSProperties =
-        aspectMode === "auto" ? {} :
-            aspectMode === "16:9"  ? { aspectRatio: "16 / 9" }  :
+        aspectMode === "auto" ? { aspectRatio: "16 / 9" } :
+            aspectMode === "16:9" ? { aspectRatio: "16 / 9" } :
                 aspectMode === "16:10" ? { aspectRatio: "16 / 10" } :
                     aspectMode === "4:3"   ? { aspectRatio: "4 / 3" }   :
                         aspectMode === "3:2"   ? { aspectRatio: "3 / 2" }   :
@@ -75,7 +80,7 @@ export default function EditorPreviewPane({
                         overflow: "hidden",
                     }}
                 >
-                    {/* 배경 이미지는 <img>로 직접 렌더 (배경 CSS 대신) */}
+                    {/* 배경 이미지 */}
                     {bgUrl ? (
                         <img
                             src={bgUrl}
@@ -96,22 +101,36 @@ export default function EditorPreviewPane({
                             style={{
                                 position: "absolute", inset: 0,
                                 display: "grid", placeItems: "center",
-                                color: "#9CA3AF", fontSize: 14, opacity: 0.6,
+                                color: "#9CA3AF", fontSize: 14, opacity: 0.9,
                             }}
                         >
-                            빈 페이지(배경 없음)
+                            {page > 0 ? "이미지를 불러오는 중…" : "빈 페이지"}
                         </div>
                     )}
 
+                    {/* (옵션) 디버그 라벨 */}
+                    {__DBG && (
+                        <div
+                            style={{
+                                position: "absolute", left: 8, top: 8,
+                                padding: "4px 8px", fontSize: 12, borderRadius: 6,
+                                background: "rgba(0,0,0,.55)", color: "#cbd5e1",
+                            }}
+                        >
+                            p.{page} {bgUrl ? "✅" : "❌"}
+                        </div>
+                    )}
+
+                    {/* 오버레이(퀴즈 등) */}
                     {overlays
                         .slice()
                         .sort((a, b) => (a.z ?? 0) - (b.z ?? 0))
-                        .map((ov: any) => {
+                        .map((ov: any, idx: number) => {
                             if (ov.type !== "quiz") return null;
                             const { x = 0.1, y = 0.1, w = 0.3, h = 0.2, question = "" } = ov.payload ?? {};
                             return (
                                 <div
-                                    key={ov.id}
+                                    key={ov.id ?? idx}
                                     style={{
                                         position: "absolute",
                                         left: `${x * 100}%`, top: `${y * 100}%`,
