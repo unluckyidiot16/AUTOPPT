@@ -1,6 +1,16 @@
 // src/utils/supaFiles.ts
 import { supabase } from "../supabaseClient";
 
+async function probeImage(url: string): Promise<boolean> {
+      return new Promise((resolve) => {
+            const img = new Image();
+            img.onload = () => resolve(true);
+            img.onerror = () => resolve(false);
+            img.decoding = "async";
+            img.src = url;
+          });
+    }
+
 /** 내부 유틸: 버킷 prefix 제거 */
 function stripBucketPrefix(key: string, bucket: string) {
     return key.replace(new RegExp(`^${bucket}/`, "i"), "");
@@ -57,6 +67,20 @@ function slidesPrefixOfAny(fileKey?: string | null): string | null {
     return slidesPrefixOfPresentationsFile(fileKey);
 }
 
+/** PDF 키에서 slides-타임스탬프 추출 (있으면) */
+function slidesTimestampFromPdfKey(fileKey?: string | null): string | null {
+      const m = String(fileKey ?? "").match(/slides-(\d+)\.pdf$/i);
+      return m ? m[1] : null;
+    }
+
+/** 후보 프리픽스: (1) <deck> 루트, (2) <deck>/slides-TS (있으면) */
+    function slidesCandidatePrefixes(fileKey?: string | null): string[] {
+          const base = slidesPrefixOfAny(fileKey);
+          if (!base) return [];
+          const ts = slidesTimestampFromPdfKey(fileKey);
+          return ts ? [base, `${base}/slides-${ts}`] : [base];
+        }
+
 /** decks.file_key(또는 presentations PDF key) + 페이지(1-base) → slides/* 내부 이미지 키 */
 export function resolveSlidesKey(fileKey: string, page: number): string | null {
     const prefix = slidesPrefixOfAny(fileKey);
@@ -83,11 +107,16 @@ export async function resolveWebpUrl(
     page: number,
     opts?: { ttlSec?: number; cachebuster?: boolean },
 ): Promise<string | null> {
-    const k = resolveSlidesKey(fileKey, page);
-    if (!k) return null;
-    const url = await signedSlidesUrl(k, opts?.ttlSec ?? 1800);
-    if (!url) return null;
-    return opts?.cachebuster ? `${url}&_=${Date.now()}` : url;
+    const prefixes = slidesCandidatePrefixes(fileKey);
+        if (!prefixes.length) return null;
+        const n = Math.max(0, page - 1); // 1-base → 0-base
+        for (const p of prefixes) {
+                const key = `${p}/${n}.webp`;
+                const url = await signedSlidesUrl(key, opts?.ttlSec ?? 1800);
+                if (!url) continue;
+                if (await probeImage(url)) return opts?.cachebuster ? `${url}&_=${Date.now()}` : url;
+            }
+        return null;
 }
 
 /** presentations 버킷의 PDF 키 → 읽기 URL (Signed 우선, Public 폴백) */

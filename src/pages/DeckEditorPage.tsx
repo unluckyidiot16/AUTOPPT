@@ -66,11 +66,18 @@ async function copyDirCrossBuckets(
 
 async function getActualSlidesCountByFileKey(fileKey: string): Promise<number> {
     const prefix =
-        slidesPrefixOfPresentationsFile(fileKey) ??
-        slidesPrefixOfPresentationsFile(String(fileKey).replace(/^presentations\//i, "")) ??
-        null;
-    if (!prefix) return 0;
-    return await countWebps("slides", prefix).catch(() => 0);
+              slidesPrefixOfPresentationsFile(fileKey) ??
+              slidesPrefixOfPresentationsFile(String(fileKey).replace(/^presentations\//i, "")) ??
+              null;
+        if (!prefix) return 0;
+        const p1 = await countWebps("slides", prefix).catch(() => 0);
+        if (p1 > 0) return p1;
+        const ts = String(fileKey).match(/slides-(\d+)\.pdf$/i)?.[1] || null;
+        if (ts) {
+              const p2 = await countWebps("slides", `${prefix}/slides-${ts}`).catch(() => 0);
+              if (p2 > 0) return p2;
+            }
+        return 0;
 }
 
 
