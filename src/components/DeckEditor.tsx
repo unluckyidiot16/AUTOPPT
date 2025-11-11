@@ -199,9 +199,16 @@ export default function DeckEditor({
     const pushPage = (srcPage: number) =>
         setItems(arr => [...arr, makePageItem(srcPage)]);
     const pushBlankPage = () => {
-          setItems(arr => [...arr, makePageItem(0)]);
-          setTargetPage(0); onSelectPage?.(0);
-        };
+           const maxPg = Math.max(
+                 0,
+                 ...items
+               .filter(i => i.type === "page")
+               .map(i => (i as any).srcPage as number)
+           );
+           const nextPg = maxPg + 1;
+           setItems(arr => [...arr, { type: "page", kind: "page", srcPage: nextPg, blank: true } as any]);
+           setTargetPage(nextPg); onSelectPage?.(nextPg);
+         };
     
     const pushQuiz = () => setItems((arr) => [...arr, {
         type: "quiz",
@@ -522,9 +529,15 @@ export default function DeckEditor({
                                                     붙일 페이지:&nbsp;
                                                     <select className="input" value={q.attachToSrcPage ?? 0}
                                                             onChange={(e) => {
-                                                                const v = Math.max(0, Number(e.target.value) || 0);
-                                                                setItems(arr => { const next = arr.slice(); (next[i] as QuizX).attachToSrcPage = v; return next; });
-                                                            }}>
+                                                                   const v = Math.max(0, Number(e.target.value) || 0);
+                                                                   setItems(arr => {
+                                                                         const next = arr.slice();
+                                                                         const q = (next[i] as QuizX);
+                                                                         q.attachToSrcPage = v;
+                                                                         q.srcPage = v;              // ← 프리뷰에서도 동일 페이지를 보도록 동기화
+                                                                         return next;
+                                                                       });
+                                                                 }}
                                                         {pagesList.map((p) => (<option key={`opt-${p}`} value={p}>{p === 0 ? "빈 화면(0)" : `p.${p}`}</option>))}
                                                     </select>
                                                 </label>
@@ -564,6 +577,7 @@ export default function DeckEditor({
                 <EditorThumbnailStrip
                     fileKey={fileKey ?? null}
                     items={pageThumbs.map(t => ({ id: t.id, page: t.page }))}
+                    version={Date.now()}
                     onReorder={onReorderPages}
                     onSelect={onSelectThumb}
                     onAdd={onAddPage}

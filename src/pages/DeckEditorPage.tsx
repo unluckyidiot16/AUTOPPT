@@ -161,9 +161,9 @@ export default function DeckEditorPage() {
         list.filter((it: any) => it?.type === "page").length;
 
     const clampPage = (p: number | null | undefined) => {
-        const max = Math.max(1, Number(totalPages || 0));
-        const n = Math.max(1, Number(p || 1));
-        return Math.min(n, max);
+           const max = Math.max(0, Number(totalPages || 0));
+           const n = Math.max(0, Number(p ?? 0));  // 0(빈 화면) 허용
+           return Math.min(n, Math.max(0, max));
     };
 
     useEffect(() => { setPreviewPage(p => clampPage(p)); }, [totalPages]);
@@ -277,23 +277,41 @@ export default function DeckEditorPage() {
         const p = Number(previewPage ?? 0);
         if (!p || !Array.isArray(items)) return [];
         return items
-            .filter((it: any) => (it?.type === "quiz" || it?.kind === "quiz") && Number((it as any)?.srcPage ?? (it as any)?.page) === p)
-            .map((q: any, idx: number) => ({
+                    // 붙일 페이지 우선(없으면 srcPage)
+                    .filter((it: any) => {
+                      if (!(it?.type === "quiz" || it?.kind === "quiz")) return false;
+                      const pageRef = Number(it.attachToSrcPage ?? it.srcPage ?? it.page ?? 0);
+                      return pageRef === p;
+                    })
+                .map((q: any, idx: number) => {
+                      // 위치 프리셋(tl/tr/bl/br) → x,y 기본값
+                          const pos = q.position ?? "tl";
+                      const defXY: Record<string, [number, number]> = {
+                            tl: [0.06, 0.06], tr: [0.64, 0.06], bl: [0.06, 0.72], br: [0.64, 0.72],
+                            free: [0.1, 0.1],
+                          };
+                      const [dx, dy] = defXY[pos] ?? [0.1, 0.1];
+                      const x = Number(q.posX ?? q.x ?? dx);
+                      const y = Number(q.posY ?? q.y ?? dy);
+                      const w = Number(q.w ?? 0.3);
+                      const h = Number(q.h ?? 0.2);
+                      return ({
                 id: String(q.id ?? `quiz-${p}-${idx}`),
                 z: Number(q.z ?? 10 + idx),
                 type: "quiz",
                 payload: {
-                    x: Number(q.x ?? 0.1),
-                    y: Number(q.y ?? 0.1),
-                    w: Number(q.w ?? 0.3),
-                    h: Number(q.h ?? 0.2),
-                    question: q.prompt ?? q.question ?? q.payload?.question ?? "",
-                    answer: q.answer ?? q.payload?.answer ?? "",
-                    bg: q.bg ?? q.bgColor ?? q.payload?.bg ?? q.payload?.bgColor,
-                    fg: q.fg ?? q.fgColor ?? q.payload?.fg ?? q.payload?.fgColor,
-                    ...q.payload,
+                    x, y, w, h,
+                    // 🔑 QuizOverlay가 읽는 키
+                    prompt: q.prompt ?? q.payload?.prompt ?? "",
+                    keywords: Array.isArray(q.keywords) ? q.keywords : (q.payload?.keywords ?? []),
+                    threshold: Number(q.threshold ?? q.payload?.threshold ?? 1),
+                    // 색상(양쪽 키 모두 허용)
+                    bg: q.bg ?? q.bgColor ?? q.payload?.bg ?? q.payload?.bgColor ?? "rgba(17,24,39,.85)",
+                    fg: q.fg ?? q.fgColor ?? q.payload?.fg ?? q.payload?.fgColor ?? "#fff",
+                    ...q.payload, // (마지막 병합 유지)
                 },
-            }));
+                      });
+                });
     }, [items, previewPage]);
 
     // 상단 내비
@@ -431,7 +449,7 @@ export default function DeckEditorPage() {
                            fileKey={fileKey ?? ""}
                            // 빈 페이지(0)는 URL 생성이 필요 없으므로 page는 아무 값이나 가능
                            page={Number(previewPage || 0) <= 0 ? 1 : Number(previewPage)}
-                           isBlank={Number(previewPage || 0) <= 0}
+                           isBlank={previewIsBlank}
                            version={cacheVer}
                            overlays={overlaysForPreview}
                            zoom={zoom}
