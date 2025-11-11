@@ -9,11 +9,12 @@ const __DBG =
 type Overlay = { id: string; z?: number; type: string; payload?: any };
 
 type Props = {
-    fileKey: string;                // slides prefix or presentations key
-    page: number;                   // 1-based (0이면 빈 화면)
-    height?: number | string;       // 컨테이너 높이
-    version?: number | string;      // 캐시 버스터
-    overlays?: Overlay[];           // 정규좌표(0..1)
+    fileKey: string;
+    page: number; // 1-base. 0이면 빈 캔버스 취급
+    isBlank?: boolean;           // 빈 페이지 강제 표시
+    height?: number | string;
+    version?: number | string;   // 캐시버스터
+    overlays?: Overlay[];        // 0..1 정규 좌표
     zoom?: 0.5 | 0.75 | 1 | 1.25 | 1.5;
     aspectMode?: "auto" | "16:9" | "16:10" | "4:3" | "3:2" | "A4";
 };
@@ -25,13 +26,14 @@ function aspectToRatio(mode: Props["aspectMode"]) {
         case "4:3": return 4 / 3;
         case "3:2": return 3 / 2;
         case "A4": return 210 / 297; // w/h
-        default: return null;         // auto
+        default: return null; // auto
     }
 }
 
 export default function EditorPreviewPane({
                                               fileKey,
                                               page,
+                                              isBlank,
                                               height = "calc(100vh - 220px)",
                                               version,
                                               overlays = [],
@@ -40,21 +42,23 @@ export default function EditorPreviewPane({
                                           }: Props) {
     const [url, setUrl] = React.useState<string | null>(null);
     const [err, setErr] = React.useState<string | null>(null);
-    const containerRef = React.useRef<HTMLDivElement>(null);
 
-    // URL 준비(썸네일과 동일 경로: <img src>에 그대로 사용)
+    const ratio = aspectToRatio(aspectMode);
+    const paddingTop = ratio ? `${100 / ratio}%` : undefined;
+
+    // 배경 이미지 URL 생성
     React.useEffect(() => {
         let alive = true;
         setUrl(null);
         setErr(null);
 
-        const p = Number(page || 0);
-        if (!fileKey || !p) return;
+        // 빈 페이지 표시 모드면 URL 생성 생략
+        if (isBlank || !fileKey || Number(page || 0) <= 0) return;
 
         (async () => {
             try {
-                const u = await resolveWebpUrl(fileKey, p, { cachebuster: true });
-                if (__DBG) console.log("[preview] resolved", { fileKey, page: p, url: u });
+                const u = await resolveWebpUrl(fileKey, page, { cachebuster: true });
+                if (__DBG) console.log("[preview] resolved", { fileKey, page, url: u });
                 if (!alive) return;
                 setUrl(u);
             } catch (e: any) {
@@ -64,14 +68,32 @@ export default function EditorPreviewPane({
         })();
 
         return () => { alive = false; };
-    }, [fileKey, page, version]);
+    }, [fileKey, page, version, isBlank]);
 
-    const ratio = aspectToRatio(aspectMode);
-    const paddingTop = ratio ? `${100 / ratio}%` : undefined; // aspect-ratio 흉내
+    const StageBox: React.FC<{ children: React.ReactNode }> = ({ children }) => (
+        <div
+            style={{
+                position: "relative",
+                width: "100%",
+                maxWidth: "100%",
+            }}
+        >
+            {ratio ? <div style={{ paddingTop }} /> : null}
+            <div
+                style={{
+                    position: ratio ? "absolute" : "relative",
+                    inset: ratio ? 0 : undefined,
+                    display: "grid",
+                    placeItems: "center",
+                }}
+            >
+                {children}
+            </div>
+        </div>
+    );
 
     return (
         <div
-            ref={containerRef}
             className="panel"
             style={{
                 height,
@@ -80,7 +102,7 @@ export default function EditorPreviewPane({
                 background: "#0b1220",
             }}
         >
-            {/* 슬라이드 본문(이미지) */}
+            {/* 본문 배경 (이미지 or 빈 캔버스) */}
             <div
                 style={{
                     position: "relative",
@@ -90,39 +112,20 @@ export default function EditorPreviewPane({
                     placeItems: "center",
                 }}
             >
-                {/* 고정 비율 모드 */}
-                {ratio ? (
-                    <div style={{ position: "relative", width: "100%", maxWidth: "100%" }}>
-                        <div style={{ paddingTop }} />
+                <StageBox>
+                    {/* 빈 페이지 or 이미지 */}
+                    {isBlank || Number(page || 0) <= 0 ? (
                         <div
                             style={{
-                                position: "absolute",
-                                inset: 0,
-                                display: "grid",
-                                placeItems: "center",
+                                width: "100%",
+                                height: "100%",
+                                background: "#ffffff",
+                                borderRadius: 2,
+                                transform: `scale(${zoom})`,
+                                transformOrigin: "center",
                             }}
-                        >
-                            {url ? (
-                                <img
-                                    src={url}
-                                    alt={`page-${page}`}
-                                    style={{
-                                        maxWidth: "100%",
-                                        maxHeight: "100%",
-                                        transform: `scale(${zoom})`,
-                                        transformOrigin: "center center",
-                                        userSelect: "none",
-                                    }}
-                                    draggable={false}
-                                />
-                            ) : (
-                                <div style={{ opacity: 0.6, fontSize: 12 }}>{err || "로딩 중…"}</div>
-                            )}
-                        </div>
-                    </div>
-                ) : (
-                    // auto 모드
-                    url ? (
+                        />
+                    ) : url ? (
                         <img
                             src={url}
                             alt={`page-${page}`}
@@ -130,50 +133,60 @@ export default function EditorPreviewPane({
                                 maxWidth: "100%",
                                 maxHeight: "100%",
                                 transform: `scale(${zoom})`,
-                                transformOrigin: "center center",
+                                transformOrigin: "center",
                                 userSelect: "none",
+                                zIndex: 0, // 이미지 레이어는 항상 아래
                             }}
                             draggable={false}
                         />
                     ) : (
                         <div style={{ opacity: 0.6, fontSize: 12 }}>{err || "로딩 중…"}</div>
-                    )
-                )}
+                    )}
+                </StageBox>
             </div>
 
-            {/* 오버레이(정규좌표 0..1) */}
-            {Array.isArray(overlays) && overlays.map((ov) => {
-                const p = ov?.payload || {};
-                const left = `${(Number(p.x ?? 0) * 100).toFixed(4)}%`;
-                const top = `${(Number(p.y ?? 0) * 100).toFixed(4)}%`;
-                const width = `${(Number(p.w ?? 0) * 100).toFixed(4)}%`;
-                const height = `${(Number(p.h ?? 0) * 100).toFixed(4)}%`;
-                const zIndex = (ov.z ?? 0) + 100;
+            {/* 퀴즈 오버레이(최상위 z-index) */}
+            {Array.isArray(overlays) &&
+                overlays.map((ov) => {
+                    const p = ov?.payload || {};
+                    const left = `${(Number(p.x ?? 0) * 100).toFixed(4)}%`;
+                    const top = `${(Number(p.y ?? 0) * 100).toFixed(4)}%`;
+                    const width = `${(Number(p.w ?? 0) * 100).toFixed(4)}%`;
+                    const height = `${(Number(p.h ?? 0) * 100).toFixed(4)}%`;
+                    const zIndex = (ov.z ?? 0) + 1000; // 항상 이미지 위
 
-                const question =
-                    p.prompt ?? p.question ?? p.title ?? p.label ?? "";
+                    const question =
+                        p.prompt ?? p.question ?? p.title ?? p.label ?? "";
+                    const bg = p.bg ?? p.bgColor ?? "rgba(255,255,255,0.06)";
+                    const fg = p.fg ?? p.fgColor ?? "#E5E7EB";
 
-                return (
-                    <div
-                        key={ov.id}
-                        style={{
-                            position: "absolute",
-                            left, top, width, height,
-                            border: "1px dashed rgba(255,255,255,0.5)",
-                            background: "rgba(255,255,255,0.04)",
-                            color: "#E5E7EB",
-                            fontSize: 12,
-                            display: "grid",
-                            placeItems: "center",
-                            zIndex,
-                            pointerEvents: "none",
-                        }}
-                        title={question}
-                    >
-                        {question || "퀴즈"}
-                    </div>
-                );
-            })}
+                    return (
+                        <div
+                            key={ov.id}
+                            style={{
+                                position: "absolute",
+                                left,
+                                top,
+                                width,
+                                height,
+                                border: "1px dashed rgba(255,255,255,0.35)",
+                                background: bg,
+                                color: fg,
+                                fontSize: 12,
+                                display: "grid",
+                                placeItems: "center",
+                                zIndex,
+                                pointerEvents: "none",
+                                borderRadius: 8,
+                                padding: 4,
+                                backdropFilter: "blur(1px)",
+                            }}
+                            title={question}
+                        >
+                            {question || "퀴즈"}
+                        </div>
+                    );
+                })}
         </div>
     );
 }

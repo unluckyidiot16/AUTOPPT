@@ -1,30 +1,22 @@
 // src/components/EditorThumbnailStrip.tsx
-import React, { useMemo } from "react";
+import React from "react";
 import WebpThumb from "./WebpThumb";
 
-type ThumbItem = { id: string; page: number };
+type ThumbItem = { id: string; page: number; blank?: boolean };
 
 type Props = {
     fileKey?: string | null;
     items: ThumbItem[];
-    onReorder: (next: ThumbItem[]) => void;   // (향후 드래그 정렬용)
+    onReorder: (next: ThumbItem[]) => void;
     onSelect: (id: string) => void;
     onAdd: () => void;
     onDuplicate: (id: string) => void;
     onDelete: (id: string) => void;
-
-    /** 썸네일 크기 */
+    orientation?: "horizontal" | "vertical";
     thumbWidth?: number;
     thumbHeight?: number;
-
-    /** 캐시 버전(선택) */
-    version?: number | string;
-
-    /** 스트립 방향 */
-    orientation?: "horizontal" | "vertical";
-
-    /** (세로 모드) 최대 높이, (가로 모드) 고정 높이 */
-    maxExtent?: number; // px
+    maxExtent?: number;
+    version?: string | number;
 };
 
 export default function EditorThumbnailStrip({
@@ -35,79 +27,49 @@ export default function EditorThumbnailStrip({
                                                  onAdd,
                                                  onDuplicate,
                                                  onDelete,
-                                                 thumbWidth = 120,
-                                                 thumbHeight = 120,
-                                                 version,
                                                  orientation = "horizontal",
-                                                 maxExtent,
+                                                 thumbWidth = 120,
+                                                 thumbHeight = 80,
+                                                 maxExtent = 240,
+                                                 version,
                                              }: Props) {
-    const ver = useMemo(() => String(version ?? ""), [version]);
-    const isH = orientation === "horizontal";
+    const outerStyle: React.CSSProperties =
+        orientation === "vertical"
+            ? { width: 164 }
+            : { width: "100%" };
 
-    // 바깥 스크롤 컨테이너: 레이아웃을 늘리지 않고 자기 영역에만 스크롤
-    const outerStyle: React.CSSProperties = isH
-        ? {
-            width: "100%",
-            maxWidth: "100%",
-            overflowX: "auto",
-            overflowY: "hidden",
-            padding: 8,
-            borderTop: "1px solid rgba(148,163,184,.15)",
-            height: `${maxExtent ?? thumbHeight + 48}px`, // ← 숫자 보장
-            boxSizing: "border-box",
-        }
-        : {
-            width: "100%",
-            maxWidth: "100%",
-            overflowY: "auto",
-            overflowX: "hidden",
-            padding: 8,
-            borderRight: "1px solid rgba(148,163,184,.15)",
-            height: `${maxExtent ?? 420}px`,
-            boxSizing: "border-box",
-        };
-
-    const trackStyle: React.CSSProperties = isH
-            ? {
-                display: "flex",
-                flexWrap: "nowrap",     // 줄바꿈 방지
-                gap: 8,
-                alignItems: "flex-start",
-            width: "max-content",   // 내용 폭만큼 확장 → 바깥 컨테이너에서 overflow-x 작동
-            minWidth: "max-content"
-    }
-    : { display: "grid", gap: 8, alignContent: "start" };
+    const trackStyle: React.CSSProperties =
+        orientation === "vertical"
+            ? { display: "grid", gap: 8, maxHeight: maxExtent, overflow: "auto" }
+            : { display: "flex", gap: 8, overflowX: "auto" };
 
     return (
         <div style={outerStyle}>
             <div style={trackStyle}>
                 {items.map((it) => {
-                    const isBlank =
-                        !fileKey ||
-                        typeof it.page !== "number" ||
-                        !Number.isFinite(it.page) ||
-                        it.page <= 0;
+                    const isBlank = !!it.blank || !fileKey || !Number.isFinite(it.page) || it.page <= 0;
 
                     const thumb = isBlank ? (
                         <div
                             style={{
                                 width: thumbWidth,
                                 height: thumbHeight,
-                                background: "#111827",
                                 borderRadius: 8,
+                                background: "#ffffff",
                                 display: "grid",
                                 placeItems: "center",
+                                color: "#111827",
                                 fontSize: 12,
-                                opacity: 0.7,
                                 userSelect: "none",
+                                border: "1px solid rgba(0,0,0,.1)",
                             }}
                             aria-hidden
                         >
-                            0
+                            BLANK
                         </div>
                     ) : (
                         <WebpThumb
-                            key={`${fileKey}-${it.page}-${ver}`}
+                            key={`${fileKey}-${it.page}-${version ?? ""}`}
                             fileKey={fileKey!}
                             page={it.page}
                             width={thumbWidth}
@@ -126,11 +88,10 @@ export default function EditorThumbnailStrip({
                                 onKeyDown={(e) => {
                                     if (e.key === "Enter" || e.key === " ") onSelect(it.id);
                                 }}
-                                style={{ cursor: "pointer", outline: "none" }}
+                                style={{ cursor: "pointer" }}
                             >
                                 {thumb}
                             </div>
-
                             <div style={{ display: "flex", gap: 6 }}>
                                 <button className="btn" onClick={() => onDuplicate(it.id)}>복제</button>
                                 <button className="btn" onClick={() => onDelete(it.id)}>삭제</button>

@@ -253,8 +253,12 @@ export default function DeckEditorPage() {
     }, [loading, items, totalPages]);
 
     // 프리뷰 계산
-    const previewBgPage = useMemo(() => Number(previewPage || 0), [previewPage]);
-
+    const previewIsBlank = useMemo(() => {
+           const pg = Number(previewPage || 0);
+           const found = items.find((it: any) => it?.type === "page" && Number(it?.srcPage ?? -1) === pg);
+           return !!(found as any)?.blank || !!(found as any)?.isBlank;
+         }, [items, previewPage]);
+    
     const overlaysForPreview: Overlay[] = useMemo(() => {
         const p = Number(previewPage ?? 0);
         if (!p || !Array.isArray(items)) return [];
@@ -271,6 +275,8 @@ export default function DeckEditorPage() {
                     h: Number(q.h ?? 0.2),
                     question: q.prompt ?? q.question ?? q.payload?.question ?? "",
                     answer: q.answer ?? q.payload?.answer ?? "",
+                    bg: q.bg ?? q.bgColor ?? q.payload?.bg ?? q.payload?.bgColor,
+                    fg: q.fg ?? q.fgColor ?? q.payload?.fg ?? q.payload?.fgColor,
                     ...q.payload,
                 },
             }));
@@ -284,31 +290,25 @@ export default function DeckEditorPage() {
 
     // “빈 페이지 추가” (낙관적 추가)
     const addBlankPage = () => {
-        const make = (): ManifestItem =>
-            ({ id: crypto.randomUUID?.() ?? String(Date.now()), type: "page", kind: "page", srcPage: 0 } as any);
-        let delegated = false;
-        if (applyPatchRef.current) {
-            applyPatchRef.current((cur) => { delegated = true; return [...cur, make()]; });
-        }
-        if (!delegated) setItems((cur) => [...cur, make()]);
-    };
+           if (!applyPatchRef.current) return;
+           const maxPg = Math.max(0, ...pageThumbs.map(t => t.page));
+           const id = crypto.randomUUID?.() ?? String(Date.now());
+           applyPatchRef.current(cur => ([...cur, { id, type: "page", kind: "page", srcPage: maxPg + 1, blank: true } as any]));
+           setPreviewPage(maxPg + 1);
+         };
 
     // 왼쪽 세로 스트립용 썸네일 목록
     const pageThumbs = useMemo(() => {
-        // 1) manifest 기반
-        const manifestPages: { id: string; page: number; idx: number }[] = [];
-        items.forEach((it, idx) => {
-            if ((it as any)?.type === "page") {
-                                const pg = Number((it as any).srcPage ?? 0);
-                                manifestPages.push({ id: `pg-${idx}`, page: pg, idx });
-                            }
-                    });
-                if (manifestPages.length > 0) return manifestPages;
-                // 2) 폴백: totalPages 기반 1..N
-                    return Array.from({ length: Math.max(0, Number(totalPages || 0)) }, (_, i) => ({
-                        id: `pg-fb-${i + 1}`, page: i + 1, idx: i
-                }));
-            }, [items, totalPages]);
+           const arr: { id: string; page: number; idx: number; blank?: boolean }[] = [];
+           items.forEach((it, idx) => {
+                 if ((it as any)?.type === "page") {
+                       const pg = Number((it as any).srcPage ?? 0);
+                       const blank = !!(it as any).blank || !!(it as any).isBlank;
+                       arr.push({ id: `pg-${idx}`, page: pg, idx, blank });
+                     }
+               });
+           return arr;
+         }, [items]);
 
     const reorderPages = (next: { id: string; page: number; idx: number }[]) => {
         if (!applyPatchRef.current) return;
@@ -396,7 +396,7 @@ export default function DeckEditorPage() {
                         <div>
                             <EditorThumbnailStrip
                                 fileKey={fileKey ?? null}
-                                items={pageThumbs.map(t => ({ id: t.id, page: t.page }))}
+                                items={pageThumbs.map(t => ({ id: t.id, page: t.page, blank: t.blank }))}
                                 version={cacheVer}
                                 onReorder={reorderPages}
                                 onSelect={selectThumb}
@@ -413,10 +413,11 @@ export default function DeckEditorPage() {
 
                     {/* 프리뷰 (페이지 1 이상일 때만 렌더 → 0.webp 방지) */}
                     <div>
-                        {totalPages > 0 && (previewBgPage ?? 0) >= 1 ? (
+                        {totalPages > 0 && (previewIsBlank ?? 0) >= 1 ? (
                             <EditorPreviewPane
                                 fileKey={fileKey}
-                                page={previewBgPage}
+                                page={previewIsBlank}
+                                isBlank={previewIsBlank}
                                 height="calc(100vh - 220px)"
                                 version={cacheVer}
                                 overlays={overlaysForPreview}

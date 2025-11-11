@@ -425,6 +425,36 @@ export default function DeckEditor({
                                                            return next;
                                                        })} />
                                             </div>
+                                            <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+                                                <label style={{ display: "grid", gap: 4 }}>
+                                                    <span style={{ fontSize: 12, opacity: .7 }}>배경색(bg)</span>
+                                                    <input
+                                                        type="color"
+                                                        value={(q as any).bg ?? (q as any).payload?.bg ?? "#1f2937"}
+                                                        onChange={(e) => setItems(arr => {
+                                                            const next = arr.slice();
+                                                            const v = e.target.value;
+                                                            (next[i] as any).bg = v;
+                                                            (next[i] as any).payload = { ...(next[i] as any).payload, bg: v };
+                                                            return next;
+                                                        })}
+                                                    />
+                                                </label>
+                                                <label style={{ display: "grid", gap: 4 }}>
+                                                    <span style={{ fontSize: 12, opacity: .7 }}>글자색(fg)</span>
+                                                    <input
+                                                        type="color"
+                                                        value={(q as any).fg ?? (q as any).payload?.fg ?? "#e5e7eb"}
+                                                        onChange={(e) => setItems(arr => {
+                                                            const next = arr.slice();
+                                                            const v = e.target.value;
+                                                            (next[i] as any).fg = v;
+                                                            (next[i] as any).payload = { ...(next[i] as any).payload, fg: v };
+                                                            return next;
+                                                        })}
+                                                    />
+                                                </label>
+                                            </div>
 
                                             {/* 매칭 옵션 */}
                                             <div className="panel" style={{ display: "grid", gap: 8 }}>
