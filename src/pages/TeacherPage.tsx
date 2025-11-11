@@ -1,4 +1,4 @@
-// src/pages/TeacherPage.tsx (WebP-only)
+// src/pages/TeacherPage.tsx (WebP-only + QR 모달 + 간단 링크 전송)
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { supabase } from "../supabaseClient";
@@ -10,6 +10,7 @@ import { useArrowNav } from "../hooks/useArrowNav";
 import { getBasePath } from "../utils/getBasePath";
 import SlideStage, { type Overlay } from "../components/SlideStage";
 import { slidesPrefixOfAny, signedSlidesUrl } from "../utils/supaFiles";
+import { RoomQR } from "../components/RoomQR";
 
 type RpcOverlay = { id: string; z: number; type: string; payload: any };
 type RpcSlide = { index: number; kind: string; material_id: string | null; page_index: number | null; image_key: string | null; overlays: RpcOverlay[]; };
@@ -83,16 +84,16 @@ export default function TeacherPage() {
         })();
     }, [ensureRoomId, roomCode]);
 
-    // ── 배정 현황(실제 파일/슬라이드) 수집용 ─────────────────────────────────────
+    // ── 배정 현황(실제 파일/슬라이드) 수집용 ────────────────────────────────
     type SlotAssign = {
         slot: number;
         deck_id: string | null;
         title: string | null;
-        file_key: string | null;      // 항상 slides prefix 기대
+        file_key: string | null;
         file_pages: number | null;
-        slides_prefix: string | null; // 실제 참조되는 slides/* 프리픽스
-        slides_count: number | null;  // 실제 .webp 개수
-        page0_url: string | null;     // 0.webp 서명 URL
+        slides_prefix: string | null;
+        slides_count: number | null;
+        page0_url: string | null;
     };
     const [assigned, setAssigned] = useState<SlotAssign[]>([]);
     const [assignLoading, setAssignLoading] = useState(false);
@@ -109,26 +110,16 @@ export default function TeacherPage() {
         try {
             const rid = await ensureRoomId();
 
-            const { data: maps } = await supabase
-                .from("room_decks")
-                .select("slot,deck_id")
-                .eq("room_id", rid);
+            const { data: maps } = await supabase.from("room_decks").select("slot,deck_id").eq("room_id", rid);
 
-            const { data: lessons } = await supabase
-                .from("room_lessons")
-                .select("slot")
-                .eq("room_id", rid)
-                .order("slot", { ascending: true });
+            const { data: lessons } = await supabase.from("room_lessons").select("slot").eq("room_id", rid).order("slot", { ascending: true });
 
             const allSlots = (lessons ?? []).map(r => Number(r.slot));
             const deckIds = Array.from(new Set((maps ?? []).map(m => m.deck_id).filter(Boolean))) as string[];
 
             const decks: Record<string, { id: string; title: string | null; file_key: string | null; file_pages: number | null }> = {};
             if (deckIds.length) {
-                const { data: ds } = await supabase
-                    .from("decks")
-                    .select("id,title,file_key,file_pages")
-                    .in("id", deckIds);
+                const { data: ds } = await supabase.from("decks").select("id,title,file_key,file_pages").in("id", deckIds);
                 for (const d of ds ?? []) decks[d.id] = d as any;
             }
 
@@ -138,7 +129,6 @@ export default function TeacherPage() {
                 const deckId = (map?.deck_id as string | null) ?? null;
                 const d = deckId ? decks[deckId] : null;
 
-                // slides prefix: rooms/<rid>/decks/<deckId> 우선, 없으면 decks/<slug> 등 원본 프리픽스
                 let slidesPrefix: string | null = null;
                 let slidesCount: number | null = null;
 
@@ -148,7 +138,7 @@ export default function TeacherPage() {
                     if (c > 0) { slidesPrefix = preferRoomPrefix; slidesCount = c; }
                 }
                 if (slidesPrefix == null) {
-                    const fromSrc = d?.file_key ? slidesPrefixOfAny(d.file_key) : null;  // file_key 자체를 정규화
+                    const fromSrc = d?.file_key ? slidesPrefixOfAny(d.file_key) : null;
                     if (fromSrc) {
                         const c2 = await countSlides(fromSrc);
                         slidesPrefix = fromSrc;
@@ -182,21 +172,16 @@ export default function TeacherPage() {
     }, [ensureRoomId, roomCode]);
 
     const [manifest, setManifest] = useState<RpcManifest | null>(null);
-
     useEffect(() => { refreshAssigned(); }, [refreshAssigned, manifest, roomId]);
 
-    // manifest RPC 실패 시 폴백 조립
+    // manifest RPC 실패 시 폴백
     const buildManifestFallback = useCallback(async (roomCodeStr: string): Promise<RpcManifest | null> => {
         try {
             const { data: roomRow } = await supabase.from("rooms").select("id").eq("code", roomCodeStr).maybeSingle();
             const rid = roomRow?.id as string | undefined;
             if (!rid) return null;
 
-            const { data: lessons } = await supabase
-                .from("room_lessons")
-                .select("slot,current_index")
-                .eq("room_id", rid)
-                .order("slot", { ascending: true });
+            const { data: lessons } = await supabase.from("room_lessons").select("slot,current_index").eq("room_id", rid).order("slot", { ascending: true });
 
             const { data: maps } = await supabase.from("room_decks").select("slot,deck_id").eq("room_id", rid);
 
@@ -329,12 +314,12 @@ export default function TeacherPage() {
         const pageIdx0 = Number(slide?.page_index ?? idx);
         let key: string | null = slide?.image_key ?? null;
 
-        // 1) rooms/<roomId>/decks/<deckId>/<page>.webp (material_id 우선)
+        // 1) rooms/<roomId>/decks/<deckId>/<page>.webp
         if (!key && roomId && slide?.material_id) {
             key = `rooms/${roomId}/decks/${slide.material_id}/${Math.max(0, pageIdx0)}.webp`;
         }
 
-        // 2) decks/<slug>/<page>.webp (원본 프리픽스)
+        // 2) decks/<slug>/<page>.webp
         if (!key && slide?.material_id) {
             let prefix = deckPrefixCache.current.get(slide.material_id);
             if (!prefix) {
@@ -345,7 +330,7 @@ export default function TeacherPage() {
             if (prefix) key = `${prefix}/${Math.max(0, pageIdx0)}.webp`;
         }
 
-        // 3) manifest가 비어 있을 때 assigned 폴백
+        // 3) assigned 폴백
         if (!key) {
             const a = assigned.find((x) => x.slot === activeSlot);
             if (a?.slides_prefix && (a.slides_count ?? 0) > pageIdx0) {
@@ -400,13 +385,81 @@ export default function TeacherPage() {
         })();
     }, [ensureRoomId, page]);
 
+    // ── QR 모달 + 링크 전송 채널 ────────────────────────────────────────
+    const [showQR, setShowQR] = useState(false);
+    const [quickLink, setQuickLink] = useState("");
+    const [linkChan, setLinkChan] = useState<ReturnType<typeof supabase.channel> | null>(null);
+
+    useEffect(() => {
+        if (!roomCode) return;
+        const ch = supabase.channel(`link:${roomCode}`, { config: { broadcast: { self: false } } });
+        ch.subscribe((status) => { if (status === "SUBSCRIBED") DBG.ok("link channel ready"); });
+        setLinkChan(ch);
+        return () => { supabase.removeChannel(ch); };
+    }, [roomCode]);
+
+    const copyStudentUrl = useCallback(async () => {
+        try {
+            await navigator.clipboard.writeText(studentUrl);
+            alert("학생 접속 링크를 복사했습니다.");
+        } catch {
+            prompt("아래 주소를 복사하세요:", studentUrl);
+        }
+    }, [studentUrl]);
+
+    const sendLinkToStudents = useCallback(async (url?: string) => {
+        const u = (url ?? quickLink || "").trim();
+        if (!u) { alert("보낼 링크를 입력하세요."); return; }
+        if (!linkChan) { alert("실시간 연결이 아직 준비되지 않았습니다."); return; }
+        await linkChan.send({ type: "broadcast", event: "link", payload: { url: u, by: "teacher", at: Date.now() } });
+        setQuickLink("");
+        DBG.ok("link sent", u);
+    }, [quickLink, linkChan]);
+
+    // ── UI 블록 ──────────────────────────────────────────────────────────
     const StageBlock = (
         <div className="panel" style={{ padding: 12 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
-                <div style={{ fontSize: 12, opacity: 0.7 }}>{activeSlot}교시 · 페이지 {page}{totalPages ? ` / ${totalPages}` : ""}</div>
+                <div style={{ fontSize: 12, opacity: 0.7 }}>
+                    {activeSlot}교시 · 페이지 {page}{totalPages ? ` / ${totalPages}` : ""}
+                </div>
                 <a className="btn" href={studentUrl} target="_blank" rel="noreferrer">학생 접속 링크</a>
+                <button className="btn" onClick={copyStudentUrl}>복사</button>
+                <button className="btn" onClick={() => setShowQR(true)}>QR</button>
                 <span className="badge" title="Realtime">{connected ? "RT:ON" : "RT:OFF"}</span>
             </div>
+
+            {/* QR 모달 */}
+            {showQR && (
+                <div
+                    role="dialog"
+                    aria-modal="true"
+                    onClick={() => setShowQR(false)}
+                    style={{
+                        position: "fixed", inset: 0, background: "rgba(0,0,0,.5)",
+                        display: "grid", placeItems: "center", zIndex: 1000
+                    }}
+                >
+                    <div
+                        onClick={(e) => e.stopPropagation()}
+                        style={{ background: "#fff", borderRadius: 12, padding: 16, width: 340, maxWidth: "90vw", boxShadow: "0 10px 30px rgba(0,0,0,.25)" }}
+                    >
+                        <div style={{ display: "flex", alignItems: "center" }}>
+                            <div style={{ fontWeight: 700, fontSize: 16 }}>학생 접속 QR</div>
+                            <button className="btn" onClick={() => setShowQR(false)} style={{ marginLeft: "auto" }}>닫기</button>
+                        </div>
+                        <div style={{ display: "grid", placeItems: "center", marginTop: 12 }}>
+                            <RoomQR url={studentUrl} size={220} />
+                            <div style={{ marginTop: 8, fontSize: 12, wordBreak: "break-all", textAlign: "center" }}>{studentUrl}</div>
+                            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                                <button className="btn" onClick={copyStudentUrl}>주소 복사</button>
+                                <button className="btn" onClick={() => sendLinkToStudents(studentUrl)}>학생에게 전송</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             <div className="slide-stage" style={{ width: "100%", height: "72vh", display: "grid", placeItems: "center", overflow: "hidden" }}>
                 <SlideStage bgUrl={activeBgUrl} overlays={activeOverlays} mode="teacher" />
             </div>
@@ -414,6 +467,22 @@ export default function TeacherPage() {
                 <button className="btn" onClick={prev} disabled={page <= 1}>◀ 이전</button>
                 <button className="btn" onClick={() => gotoPageForSlot(activeSlot, page)}>🔓 현재 페이지 재전송</button>
                 <button className="btn" onClick={next} disabled={!!totalPages && page >= totalPages}>다음 ▶</button>
+            </div>
+
+            {/* 간단 링크 보내기 */}
+            <div style={{ marginTop: 12 }}>
+                <div style={{ fontWeight: 700, marginBottom: 6, fontSize: 13 }}>학생에게 간단 링크 보내기</div>
+                <div style={{ display: "flex", gap: 8 }}>
+                    <input
+                        className="input"
+                        placeholder="https:// … (학생에게 보낼 링크)"
+                        value={quickLink}
+                        onChange={(e) => setQuickLink(e.target.value)}
+                        style={{ flex: 1 }}
+                    />
+                    <button className="btn" onClick={() => sendLinkToStudents()}>보내기</button>
+                    <button className="btn" onClick={() => sendLinkToStudents(studentUrl)}>학생 접속 링크</button>
+                </div>
             </div>
         </div>
     );
